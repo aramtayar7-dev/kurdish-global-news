@@ -176,3 +176,97 @@ class TestArticleValidatorRecency:
         )
         is_valid, reason = validator.validate(article)
         assert is_valid is True
+
+
+class TestTelegramPublisherHarden:
+    """Test TelegramPublisher initialization hardening and retry behavior."""
+
+    @pytest.mark.asyncio
+    async def test_initialize_httpx_request_configuration(self):
+        """Verify HTTPXRequest is configured with timeouts and IPv4 transport."""
+        from tg_bot.publisher import TelegramPublisher
+        from telegram.error import TimedOut
+
+        with patch("tg_bot.publisher.TELEGRAM_BOT_TOKEN", "123456:FAKE_TOKEN"), \
+             patch("tg_bot.publisher.TELEGRAM_CHANNEL_ID", "@test_channel"), \
+             patch("tg_bot.publisher.Bot") as mock_bot_cls, \
+             patch("tg_bot.publisher.ImageHandler.initialize", new_callable=AsyncMock):
+
+            mock_bot_instance = MagicMock()
+            mock_user = MagicMock()
+            mock_user.username = "test_bot"
+            mock_user.first_name = "Test"
+            mock_bot_instance.get_me = AsyncMock(return_value=mock_user)
+            mock_bot_cls.return_value = mock_bot_instance
+
+            pub = TelegramPublisher()
+            await pub.initialize()
+
+            # Verify Bot was instantiated with custom request
+            mock_bot_cls.assert_called_once()
+            _, kwargs = mock_bot_cls.call_args
+            assert "request" in kwargs
+            req = kwargs["request"]
+            timeout = req._client_kwargs["timeout"]
+            assert timeout.connect == 30.0
+            assert timeout.read == 30.0
+            assert timeout.write == 30.0
+            assert timeout.pool == 30.0
+            assert req._client_kwargs["limits"].max_connections == 8
+
+            # Verify IPv4 transport is present
+            transport = req._client_kwargs.get("transport")
+            assert transport is not None
+            assert transport._pool._local_address == "0.0.0.0"
+
+    @pytest.mark.asyncio
+    async def test_initialize_retry_on_timeout(self):
+        """Verify get_me() retries on TimedOut and succeeds if next attempt succeeds."""
+        from tg_bot.publisher import TelegramPublisher
+        from telegram.error import TimedOut
+
+        with patch("tg_bot.publisher.TELEGRAM_BOT_TOKEN", "123456:FAKE_TOKEN"), \
+             patch("tg_bot.publisher.TELEGRAM_CHANNEL_ID", "@test_channel"), \
+             patch("tg_bot.publisher.Bot") as mock_bot_cls, \
+             patch("tg_bot.publisher.ImageHandler.initialize", new_callable=AsyncMock), \
+             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+
+            mock_bot_instance = MagicMock()
+            mock_user = MagicMock()
+            mock_user.username = "test_bot"
+            mock_user.first_name = "Test"
+
+            # Fail on attempt 1, succeed on attempt 2
+            mock_bot_instance.get_me = AsyncMock(
+                side_effect=[TimedOut("Connect timeout"), mock_user]
+            )
+            mock_bot_cls.return_value = mock_bot_instance
+
+            pub = TelegramPublisher()
+            await pub.initialize()
+
+            assert mock_bot_instance.get_me.await_count == 2
+            mock_sleep.assert_awaited_once_with(2)
+
+    @pytest.mark.asyncio
+    async def test_initialize_raises_after_max_retries(self):
+        """Verify get_me() raises TimedOut if all 3 attempts fail."""
+        from tg_bot.publisher import TelegramPublisher
+        from telegram.error import TimedOut
+
+        with patch("tg_bot.publisher.TELEGRAM_BOT_TOKEN", "123456:FAKE_TOKEN"), \
+             patch("tg_bot.publisher.TELEGRAM_CHANNEL_ID", "@test_channel"), \
+             patch("tg_bot.publisher.Bot") as mock_bot_cls, \
+             patch("tg_bot.publisher.ImageHandler.initialize", new_callable=AsyncMock), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+
+            mock_bot_instance = MagicMock()
+            mock_bot_instance.get_me = AsyncMock(side_effect=TimedOut("Connect timeout"))
+            mock_bot_cls.return_value = mock_bot_instance
+
+            pub = TelegramPublisher()
+            with pytest.raises(TimedOut):
+                await pub.initialize()
+
+            assert mock_bot_instance.get_me.await_count == 3
+

@@ -12,7 +12,9 @@ import io
 import logging
 from typing import Optional
 
+import httpx
 from telegram import Bot
+from telegram.request import HTTPXRequest
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TelegramError, TimedOut, NetworkError, BadRequest
 
@@ -40,16 +42,41 @@ class TelegramPublisher:
         if not self._channel_id:
             raise ValueError("TELEGRAM_CHANNEL_ID is not configured.")
 
-        self._bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        # Configure HTTPXRequest with generous cloud timeouts and IPv4 transport
+        # Prevents GitHub Actions / Azure CI from hanging on broken IPv6 routes to api.telegram.org
+        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=3)
+        request = HTTPXRequest(
+            connect_timeout=30.0,
+            read_timeout=30.0,
+            write_timeout=30.0,
+            pool_timeout=30.0,
+            connection_pool_size=8,
+            httpx_kwargs={"transport": transport},
+        )
+        self._bot = Bot(token=TELEGRAM_BOT_TOKEN, request=request)
         await self._image_handler.initialize()
 
-        # Verify bot connectivity
-        try:
-            me = await self._bot.get_me()
-            logger.info("Telegram bot connected: @%s (%s)", me.username, me.first_name)
-        except TelegramError as e:
-            logger.error("Failed to connect to Telegram: %s", e)
-            raise
+        # Verify bot connectivity with retries for cloud/CI network jitter
+        max_init_retries = 3
+        for attempt in range(max_init_retries):
+            try:
+                me = await self._bot.get_me()
+                logger.info("Telegram bot connected: @%s (%s)", me.username, me.first_name)
+                break
+            except (TimedOut, NetworkError) as e:
+                if attempt < max_init_retries - 1:
+                    wait_time = 2 * (attempt + 1)
+                    logger.warning(
+                        "Telegram connection attempt %d/%d timed out or network error: %s. Retrying in %ds...",
+                        attempt + 1, max_init_retries, e, wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error("Failed to connect to Telegram after %d attempts: %s", max_init_retries, e)
+                    raise
+            except TelegramError as e:
+                logger.error("Failed to connect to Telegram: %s", e)
+                raise
 
     async def cleanup(self) -> None:
         """Clean up resources."""

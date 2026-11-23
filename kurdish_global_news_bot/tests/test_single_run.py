@@ -112,6 +112,9 @@ def test_github_actions_workflow_configuration():
     assert "bot-db-" in content
 
     # Execution & Directory
+    assert "Prefer IPv4 for Telegram API" in content
+    assert "net.ipv6.conf.all.disable_ipv6=1" in content
+    assert "net.ipv6.conf.default.disable_ipv6=1" in content
     assert "working-directory: kurdish_global_news_bot" in content
     assert "python main.py --once" in content
 
