@@ -1,0 +1,53 @@
+name: Kurdish Global News Bot
+
+on:
+  schedule:
+    # Runs every 30 minutes by default (safe for private repositories with 2,000 free minutes/month).
+    # If this repository is Public (unlimited GitHub Actions minutes), change this to '*/5 * * * *' for real-time 5-minute discovery!
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime
+
+concurrency:
+  group: news-bot-run
+  cancel-in-progress: false
+
+jobs:
+  run-news-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'kurdish_global_news_bot/requirements.txt'
+
+      - name: Restore or Cache SQLite Database
+        uses: actions/cache@v4
+        with:
+          path: kurdish_global_news_bot/data
+          key: bot-db-${{ github.run_id }}
+          restore-keys: |
+            bot-db-
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r kurdish_global_news_bot/requirements.txt
+
+      - name: Run News Bot Cycle
+        working-directory: kurdish_global_news_bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ENABLE_GEMINI_PROOFREAD: 'true'
+          ENABLE_LOCAL_LLM: 'false'
+          AUTO_PUBLISH: 'true'
+          MAX_ARTICLE_AGE_MINUTES: '60'
+        run: |
+          python main.py --once

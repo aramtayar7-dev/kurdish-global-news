@@ -130,6 +130,64 @@ class NewsEngine:
         stats = await self._db.get_stats()
         logger.info("Database stats: %s", stats)
 
+    async def run_once(self) -> None:
+        """
+        Execute one complete discovery -> filter -> translate -> publish cycle,
+        flush/close the database cleanly, and exit.
+        """
+        logger.info("╔══════════════════════════════════════════╗")
+        logger.info("║   Kurdish Global News Bot — Single Run   ║")
+        logger.info("╚══════════════════════════════════════════╝")
+
+        # 1. Connect database & run migrations
+        await self._db.connect()
+        await run_migrations(self._db.conn)
+
+        # 2. Initialize components
+        self._recovery = RecoveryManager(self._db)
+        self._pipeline = ArticlePipeline(
+            db=self._db,
+            publisher=self._publisher,
+            health=self._health,
+            metrics=self._metrics,
+        )
+
+        for name in ["discovery", "pipeline", "publishing", "translation", "database"]:
+            self._health.register_component(name)
+
+        try:
+            # 3. Initialize Telegram publisher
+            await self._publisher.initialize()
+            channel_ok = await self._publisher.test_connection()
+            if not channel_ok:
+                logger.error("Cannot access Telegram channel. Check TELEGRAM_CHANNEL_ID and bot permissions.")
+                raise RuntimeError("Telegram channel not accessible.")
+
+            # 4. Initialize sources
+            await self._init_sources()
+
+            # 5. Cold start check
+            db_empty = await self._db.is_empty()
+            self._pipeline.set_cold_start(db_empty)
+            if db_empty:
+                logger.info(
+                    "Cold start detected: database is empty. Startup safety guard active (ignoring articles older than %d minutes).",
+                    MAX_ARTICLE_AGE_MINUTES,
+                )
+
+            # 6. Run crash recovery if any interrupted articles exist
+            recovery_summary = await self._recovery.run_startup_recovery()
+            if recovery_summary["interrupted_recovered"] > 0:
+                await self._process_recovered_articles()
+
+            # 7. Execute ONE complete discovery & publishing cycle
+            logger.info("Executing single discovery and publishing cycle...")
+            await self._discovery_cycle()
+        finally:
+            # 8. Clean shutdown & close DB
+            await self.stop()
+            logger.info("Single run completed cleanly.")
+
     async def stop(self) -> None:
         """Gracefully shut down all components."""
         logger.info("Engine shutting down...")
