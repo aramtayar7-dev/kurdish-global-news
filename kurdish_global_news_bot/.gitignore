@@ -1,0 +1,42 @@
+# Sensitive environments and keys
+.env
+.env.*
+*.env
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache & build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Databases & logs (protect ephemeral data, local SQLite, and credentials)
+*.db
+*.db-journal
+*.db-wal
+*.log
+logs/
+data/*.db
+backups/
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage

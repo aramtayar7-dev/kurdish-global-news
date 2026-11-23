@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: kurdish-global-news-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: PORT
+        value: 10000
+      - key: AUTO_PUBLISH
+        value: "true"
+      - key: ENABLE_LOCAL_LLM
+        value: "false"
+      - key: MAX_ARTICLE_AGE_MINUTES
+        value: "30"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHANNEL_ID
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
