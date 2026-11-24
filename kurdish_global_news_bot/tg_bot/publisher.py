@@ -19,7 +19,12 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.request import HTTPXRequest
 
-from config import ENABLE_IMAGES, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
+from config import (
+    ENABLE_IMAGES,
+    NOTIFY_DAILY_DIGEST,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHANNEL_ID,
+)
 from processing.card_generator import NewsCardGenerator
 from processing.content_formatter import ContentFormatter
 from processing.translator import trim_at_sentence_boundary
@@ -115,6 +120,9 @@ class TelegramPublisher:
         """Generate branded 1280x720 news card, send via send_photo, and clean up temp file."""
         assert self._bot is not None
 
+        breaking = bool(getattr(article, "is_breaking", False))
+        disable_notification = not breaking
+
         image_bytes: Optional[bytes] = None
         if article.image_url:
             image_bytes = await self._image_handler.download_image(article.image_url)
@@ -133,11 +141,14 @@ class TelegramPublisher:
                     photo=photo_file,
                     caption=caption,
                     parse_mode=ParseMode.HTML,
+                    disable_notification=disable_notification,
                 )
             if message:
                 logger.info(
-                    "Published branded card: msg_id=%d, category=%s, title='%s'",
+                    "Published branded card: msg_id=%d, breaking=%s, silent=%s, category=%s, title='%s'",
                     message.message_id,
+                    breaking,
+                    disable_notification,
                     article.category,
                     article.original_title[:60],
                 )
@@ -159,6 +170,8 @@ class TelegramPublisher:
         """Publish a text-only article with web page preview disabled."""
         assert self._bot is not None
 
+        breaking = bool(getattr(article, "is_breaking", False))
+        disable_notification = not breaking
         text = self._formatter.format_telegram_message(article)
 
         try:
@@ -168,11 +181,14 @@ class TelegramPublisher:
                 text=text,
                 parse_mode=ParseMode.HTML,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
+                disable_notification=disable_notification,
             )
             if message:
                 logger.info(
-                    "Published text-only: msg_id=%d, title='%s'",
+                    "Published text-only: msg_id=%d, breaking=%s, silent=%s, title='%s'",
                     message.message_id,
+                    breaking,
+                    disable_notification,
                     article.original_title[:60],
                 )
                 return message.message_id
@@ -186,16 +202,20 @@ class TelegramPublisher:
         digest_text: str,
         card_path: Path,
         header_caption: str = "",
+        disable_notification: Optional[bool] = None,
     ) -> Optional[int]:
         """
         Publish the nightly Kurdish news digest cover card and roundup text:
         - If digest_text <= 1024 chars: send photo with digest_text as caption.
         - If digest_text > 1024 chars: send photo with short header caption,
           followed immediately by the full digest text (web preview disabled).
+        Defaults to silent delivery unless NOTIFY_DAILY_DIGEST is True.
         Always cleans up temporary card_path afterward.
         """
         if not self._bot:
             raise RuntimeError("Publisher not initialized. Call initialize() first.")
+
+        silent = (not NOTIFY_DAILY_DIGEST) if disable_notification is None else bool(disable_notification)
 
         try:
             if len(digest_text) <= 1024:
@@ -206,9 +226,13 @@ class TelegramPublisher:
                         photo=photo_file,
                         caption=digest_text,
                         parse_mode=ParseMode.HTML,
+                        disable_notification=silent,
                     )
                 if message:
-                    logger.info("Published nightly digest card + caption: msg_id=%d", message.message_id)
+                    logger.info(
+                        "Published nightly digest card + caption: msg_id=%d, silent=%s",
+                        message.message_id, silent,
+                    )
                     return message.message_id
                 return None
 
@@ -224,6 +248,7 @@ class TelegramPublisher:
                     photo=photo_file,
                     caption=short_caption,
                     parse_mode=ParseMode.HTML,
+                    disable_notification=silent,
                 )
 
             text_msg = await self._send_with_retry(
@@ -232,9 +257,13 @@ class TelegramPublisher:
                 text=digest_text,
                 parse_mode=ParseMode.HTML,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
+                disable_notification=silent,
             )
             if text_msg:
-                logger.info("Published nightly digest card + full text follow-up: msg_id=%d", text_msg.message_id)
+                logger.info(
+                    "Published nightly digest card + full text follow-up: msg_id=%d, silent=%s",
+                    text_msg.message_id, silent,
+                )
                 return text_msg.message_id
             return photo_msg.message_id if photo_msg else None
         except Exception as e:

@@ -39,6 +39,7 @@ def _float(val: str | None, default: float) -> float:
 # ═══════════════════════════════════════════════════
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHANNEL_ID: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
+NOTIFY_DAILY_DIGEST: bool = _bool(os.getenv("NOTIFY_DAILY_DIGEST"), False)
 
 # ═══════════════════════════════════════════════════
 # Discovery & Scheduling
@@ -93,15 +94,18 @@ CARD_HEIGHT: int = 720
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # ═══════════════════════════════════════════════════
-# Database
+# Database (SQLite default; Supabase PostgREST when SUPABASE_URL + SUPABASE_KEY are set)
 # ═══════════════════════════════════════════════════
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", str(_PROJECT_ROOT / "data" / "news_bot.db"))
+SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
 
 # ═══════════════════════════════════════════════════
 # Article Filtering & Recency
 # ═══════════════════════════════════════════════════
 MAX_ARTICLE_AGE_HOURS: float = float(os.getenv("MAX_ARTICLE_AGE_HOURS", "3.0"))
 MAX_ARTICLE_AGE_MINUTES: int = _int(os.getenv("MAX_ARTICLE_AGE_MINUTES"), 30)
+DEDUP_WINDOW_HOURS: int = _int(os.getenv("DEDUP_WINDOW_HOURS"), 12)
 
 # ═══════════════════════════════════════════════════
 # News Prioritization & Category Balancer (60/40 Split)

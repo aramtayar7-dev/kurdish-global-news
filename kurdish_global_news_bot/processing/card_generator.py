@@ -304,6 +304,7 @@ class NewsCardGenerator:
         self,
         article: Article,
         image_bytes: Optional[bytes] = None,
+        is_breaking: Optional[bool] = None,
     ) -> bytes:
         """Synchronously render 1280x720 branded JPEG news card and return bytes."""
         bg = self._prepare_background(image_bytes)
@@ -312,6 +313,11 @@ class NewsCardGenerator:
 
         draw = ImageDraw.Draw(canvas)
         rtl_kw = self._rtl_kwargs()
+        effective_breaking = (
+            bool(getattr(article, "is_breaking", False))
+            if is_breaking is None
+            else bool(is_breaking)
+        )
 
         # Resolve category label & pill badge color
         canonical_cat = normalize_category(
@@ -332,7 +338,7 @@ class NewsCardGenerator:
         total_headline_h = len(lines) * line_height
         headline_top_y = footer_y - bottom_padding - total_headline_h
 
-        # 1. Category pill badge above headline (right-aligned)
+        # 1. Category pill badge (+ optional breaking "بەپەلە" badge) above headline
         pill_font = self._load_font(25)
         cat_w, cat_h = self._measure_text(draw, kurdish_cat, pill_font)
         pill_pad_x = 20
@@ -354,6 +360,27 @@ class NewsCardGenerator:
             fill=(255, 255, 255, 255),
             **rtl_kw,
         )
+
+        if effective_breaking:
+            breaking_label = "بەپەلە"
+            brk_w, brk_h = self._measure_text(draw, breaking_label, pill_font)
+            brk_pad_x = 18
+            brk_pill_w = brk_w + (brk_pad_x * 2)
+            brk_x1 = pill_x0 - 12
+            brk_x0 = brk_x1 - brk_pill_w
+            if brk_x0 >= MARGIN_X:
+                draw.rounded_rectangle(
+                    [(brk_x0, pill_y), (brk_x1, pill_y + pill_h)],
+                    radius=12,
+                    fill=(220, 38, 38, 255),
+                )
+                draw.text(
+                    (brk_x1 - brk_pad_x - brk_w, pill_y + (pill_h - brk_h) // 2 - 4),
+                    breaking_label,
+                    font=pill_font,
+                    fill=(255, 255, 255, 255),
+                    **rtl_kw,
+                )
 
         # 2. Bold wrapped Sorani headline (right-aligned, max 3 lines)
         cur_y = headline_top_y
@@ -414,9 +441,12 @@ class NewsCardGenerator:
         self,
         article: Article,
         image_bytes: Optional[bytes] = None,
+        is_breaking: Optional[bool] = None,
     ) -> bytes:
         """Asynchronously generate a 1280x720 news graphic card as JPEG bytes."""
-        return await asyncio.to_thread(self.render_card_sync, article, image_bytes)
+        return await asyncio.to_thread(
+            self.render_card_sync, article, image_bytes, is_breaking
+        )
 
     @staticmethod
     async def _write_temp_jpeg(card_bytes: bytes, prefix: str) -> Path:
@@ -434,9 +464,12 @@ class NewsCardGenerator:
         self,
         article: Article,
         image_bytes: Optional[bytes] = None,
+        is_breaking: Optional[bool] = None,
     ) -> Path:
         """Asynchronously generate a temporary JPEG card file and return its Path."""
-        card_bytes = await self.generate_card_bytes(article, image_bytes=image_bytes)
+        card_bytes = await self.generate_card_bytes(
+            article, image_bytes=image_bytes, is_breaking=is_breaking
+        )
         return await self._write_temp_jpeg(card_bytes, prefix="kgn_card_")
 
     def render_digest_card_sync(self, date_label: str, story_count: int) -> bytes:

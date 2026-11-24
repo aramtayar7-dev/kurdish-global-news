@@ -70,6 +70,12 @@ def resolve_category_display(category: Optional[str]) -> tuple[str, str]:
 class ContentFormatter:
     """Formats articles for Telegram publication in Kurdish Sorani."""
 
+    def _format_headline(self, article: Article) -> str:
+        """Escape the headline and prepend the breaking badge prefix when active."""
+        raw_title = (article.translated_title or article.original_title or "").strip()
+        prefix = "🔴 بەپەلە | " if getattr(article, "is_breaking", False) else ""
+        return self._escape_html(f"{prefix}{raw_title}")
+
     def format_telegram_message(self, article: Article) -> str:
         """
         Format an article as a Telegram HTML text message.
@@ -77,7 +83,7 @@ class ContentFormatter:
         parts: list[str] = []
 
         kurdish_cat, emoji = resolve_category_display(article.category)
-        headline = self._escape_html(article.translated_title or article.original_title)
+        headline = self._format_headline(article)
         parts.append(f"{emoji} <b>{headline}</b>")
 
         summary = article.translated_summary or article.original_summary
@@ -108,7 +114,7 @@ class ContentFormatter:
         without cutting mid-sentence (`...`) or truncating footer tags.
         """
         kurdish_cat, emoji = resolve_category_display(article.category)
-        headline = self._escape_html(article.translated_title or article.original_title)
+        headline = self._format_headline(article)
         header = f"{emoji} <b>{headline}</b>"
 
         footer_parts = [

@@ -31,6 +31,7 @@ jobs:
           cache-dependency-path: 'kurdish_global_news_bot/requirements.txt'
 
       - name: Restore or Cache SQLite Database
+        continue-on-error: true
         uses: actions/cache@v4
         with:
           path: kurdish_global_news_bot/data
@@ -59,6 +60,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ENABLE_LOCAL_LLM: 'false'
         run: |
           if [ "${{ inputs.force }}" = "true" ]; then

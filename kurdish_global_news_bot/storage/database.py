@@ -18,6 +18,12 @@ import aiosqlite
 
 from config import DATABASE_PATH, BACKUP_DIR
 from storage.models import Article, Source, Event
+from storage.utils import (
+    compute_url_hash as _compute_url_hash,
+    filter_recent_headlines as _filter_recent_headlines,
+    parse_utc_timestamp as _parse_utc_timestamp_util,
+    prioritize_digest_articles as _prioritize_digest_articles,
+)
 
 logger = logging.getLogger("database")
 KURDISTAN_TZ = timezone(timedelta(hours=3))
@@ -293,15 +299,14 @@ class Database:
     @staticmethod
     def compute_url_hash(url: str) -> str:
         """Compute deterministic SHA-256 hash of a canonicalized URL."""
-        canonical = Article.canonicalize_url(url) if url else ""
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return _compute_url_hash(url)
 
     async def mark_url_skipped(
         self, url: str, title: str = "", score: float = 0.0, reason: str = ""
     ) -> str:
         """Persist a skipped URL hash in SQLite so it is never re-evaluated."""
         canonical = Article.canonicalize_url(url)
-        url_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        url_hash = self.compute_url_hash(canonical)
         now = datetime.now(timezone.utc).isoformat()
         async with self._lock:
             await self.conn.execute(
@@ -341,6 +346,26 @@ class Database:
             rows = await cursor.fetchall()
             return [self._row_to_article(row) for row in rows]
 
+    @staticmethod
+    def _parse_utc_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
+        """Parse an ISO/RFC timestamp string into a UTC-aware datetime, or None."""
+        return _parse_utc_timestamp_util(ts_str)
+
+    async def get_recent_published_headlines(self, hours: int = 12) -> list[dict]:
+        """
+        Fetch id, original_title, translated_title, and category of all PUBLISHED
+        articles from the last `hours` hours (newest first).
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
+        async with self.conn.execute(
+            """SELECT id, original_title, translated_title, category, published_at, discovered_at
+               FROM articles WHERE status = 'PUBLISHED'
+               ORDER BY published_at DESC, id DESC LIMIT 200"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return _filter_recent_headlines([dict(row) for row in rows], cutoff)
+
     async def get_published_articles_last_24h(self, limit: int = 10) -> list[Article]:
         """
         Fetch published articles from the last 24 hours ordered by importance/relevance
@@ -353,32 +378,14 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
 
-        from dateutil import parser as dateparser
         recent_24h: list[Article] = []
         for row in rows:
             art = self._row_to_article(row)
-            ts_str = art.published_at or art.discovered_at
-            if not ts_str:
-                continue
-            try:
-                dt = dateparser.parse(ts_str)
-                if not dt:
-                    continue
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                if dt >= cutoff:
-                    recent_24h.append(art)
-            except Exception:
-                continue
+            dt = self._parse_utc_timestamp(art.published_at or art.discovered_at)
+            if dt is not None and dt >= cutoff:
+                recent_24h.append(art)
 
-        # Sort descending by Kurdistan priority + importance_score, then recency
-        def _sort_key(a: Article) -> tuple[float, int, float, str]:
-            is_kurd = 1 if (a.category or "").strip().lower() == "kurdistan" else 0
-            boosted = (a.importance_score or 0.0) + (0.20 if is_kurd else 0.0)
-            return (boosted, is_kurd, a.importance_score or 0.0, a.published_at or "")
-
-        recent_24h.sort(key=_sort_key, reverse=True)
-        return recent_24h[:limit]
+        return _prioritize_digest_articles(recent_24h, limit=limit)
 
     async def is_digest_published_for_date(self, digest_date: str) -> bool:
         """Return True if a daily digest has already been recorded for `digest_date` (YYYY-MM-DD)."""

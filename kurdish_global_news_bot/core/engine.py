@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from storage.database import Database, get_kurdistan_date_str
+from storage import create_database, get_kurdistan_date_str
 from storage.migrations import run_migrations
 from core.scheduler import DiscoveryScheduler
 from core.pipeline import ArticlePipeline
@@ -51,7 +51,7 @@ class NewsEngine:
     """
 
     def __init__(self) -> None:
-        self._db = Database()
+        self._db = create_database()
         self._publisher = TelegramPublisher()
         self._health = HealthMonitor()
         self._metrics = Metrics()
@@ -75,7 +75,8 @@ class NewsEngine:
 
         # 1. Connect database
         await self._db.connect()
-        await run_migrations(self._db.conn)
+        if getattr(self._db, "conn", None) is not None:
+            await run_migrations(self._db.conn)
 
         # 2. Initialize components
         self._recovery = RecoveryManager(self._db)
@@ -144,9 +145,10 @@ class NewsEngine:
         logger.info("║   Kurdish Global News Bot — Single Run   ║")
         logger.info("╚══════════════════════════════════════════╝")
 
-        # 1. Connect database & run migrations
+        # 1. Connect database & run migrations (SQLite only)
         await self._db.connect()
-        await run_migrations(self._db.conn)
+        if getattr(self._db, "conn", None) is not None:
+            await run_migrations(self._db.conn)
 
         # 2. Initialize components
         self._recovery = RecoveryManager(self._db)
@@ -208,7 +210,8 @@ class NewsEngine:
         logger.info("╚══════════════════════════════════════════╝")
 
         await self._db.connect()
-        await run_migrations(self._db.conn)
+        if getattr(self._db, "conn", None) is not None:
+            await run_migrations(self._db.conn)
 
         digest_gen = self._digest_generator or DailyDigestGenerator()
         card_gen = self._card_generator or NewsCardGenerator()

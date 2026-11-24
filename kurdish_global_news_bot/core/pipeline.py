@@ -17,6 +17,7 @@ from storage.database import Database
 from storage.models import Article, Event
 from core.importance_ranker import ImportanceRanker
 from core.duplicate_detector import DuplicateDetector
+from processing.deduplicator import SemanticDeduplicator
 from processing.extractor import ArticleExtractor
 from processing.validator import ArticleValidator
 from processing.translator import TranslationEngine, TranslationError
@@ -59,6 +60,7 @@ class ArticlePipeline:
         self._validator = ArticleValidator()
         self._ranker = ImportanceRanker()
         self._dedup = DuplicateDetector(db)
+        self._semantic_dedup = SemanticDeduplicator(db)
         self._translator = TranslationEngine()
         self._formatter = ContentFormatter()
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_ARTICLES)
@@ -69,8 +71,9 @@ class ArticlePipeline:
         self._cold_start = enabled
 
     async def cleanup(self) -> None:
-        """Clean up pipeline resources (ranker and translator sessions)."""
+        """Clean up pipeline resources (ranker, semantic deduplicator, and translator sessions)."""
         await self._ranker.cleanup()
+        await self._semantic_dedup.cleanup()
         await self._translator.cleanup()
 
     async def _check_cold_start(self) -> bool:
@@ -187,7 +190,8 @@ class ArticlePipeline:
                 self._metrics.increment("articles_low_global_relevance")
                 return False
 
-            if relevance.is_breaking and not relevance.used_fallback:
+            article.is_breaking = bool(relevance.is_breaking and relevance.score >= 9)
+            if article.is_breaking and not relevance.used_fallback:
                 priority = Priority.CRITICAL
                 article.priority = Priority.CRITICAL
             if not relevance.used_fallback:
@@ -195,6 +199,33 @@ class ArticlePipeline:
                 if article.category == "kurdistan" and article.priority == Priority.NORMAL:
                     priority = Priority.HIGH
                     article.priority = Priority.HIGH
+
+            # ── Step 4.5: Cross-Source Semantic Event Deduplication (After Classification, Before Scrape/Translate) ──
+            dedup_res = await self._semantic_dedup.check_duplicate(article)
+            if dedup_res.is_duplicate:
+                matched_ref = f"#{dedup_res.matched_id}" if dedup_res.matched_id is not None else "#unknown"
+                dedup_reason = dedup_res.reason or "Duplicate event"
+                await self._db.update_article_status(
+                    article_id,
+                    ArticleStatus.REJECTED_DUPLICATE,
+                    error_message=f"SKIPPED [Duplicate Event]: matches {matched_ref} ({dedup_reason})",
+                    importance_score=relevance.score / 10.0,
+                    priority=priority,
+                )
+                await self._db.mark_url_skipped(
+                    article.canonical_url or article.original_url,
+                    title=article.original_title,
+                    score=float(relevance.score),
+                    reason=f"Duplicate Event {matched_ref}: {dedup_reason}",
+                )
+                logger.info(
+                    "SKIPPED [Duplicate Event]: %s — matches %s (%s)",
+                    article.original_title[:100],
+                    matched_ref,
+                    dedup_reason,
+                )
+                self._metrics.increment("articles_semantic_duplicate")
+                return False
 
             # ── Step 5: Extract full article text & og:image, verify depth ──
             full_text, og_image = await self._extractor.fetch_article_content_and_image(article.original_url)

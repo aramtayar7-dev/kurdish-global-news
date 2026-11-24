@@ -43,6 +43,7 @@ class Article:
     country: str = ""
     region: str = ""
     named_entities: str = ""  # JSON string
+    is_breaking: bool = False
 
     def compute_content_hash(self) -> str:
         """Compute a hash of the article's core content for deduplication."""
