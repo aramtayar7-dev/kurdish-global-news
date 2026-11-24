@@ -175,12 +175,19 @@ class SemanticDeduplicator:
             f"{json.dumps(recent_payload, ensure_ascii=False)}"
         )
 
-    async def check_duplicate(self, article: Article) -> DedupResult:
+    async def check_duplicate(
+        self,
+        article: Article,
+        extra_recent: Optional[list[dict[str, Any]]] = None,
+    ) -> DedupResult:
         """
         Check whether `article` duplicates an event published in the last
-        `DEDUP_WINDOW_HOURS` hours. Fails open on Gemini errors.
+        `DEDUP_WINDOW_HOURS` hours (or already accepted in `extra_recent` for this batch).
+        Fails open on Gemini errors.
         """
         recent_headlines = await self._db.get_recent_published_headlines(hours=self._window_hours)
+        if extra_recent:
+            recent_headlines = list(extra_recent) + list(recent_headlines)
         if not recent_headlines:
             return DedupResult(
                 is_duplicate=False,

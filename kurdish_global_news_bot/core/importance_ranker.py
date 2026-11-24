@@ -59,6 +59,49 @@ KURDISTAN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Southern Kurdistan (Bashur) geographic, governmental, and security identifiers
+BASHUR_PATTERN = re.compile(
+    r"(erbil|hewler|sulaymaniyah|slemani|\bsuli\b|duhok|halabja|kirkuk|peshmerga|\bkrg\b|"
+    r"kurdistan region|iraqi kurdistan|south kurdistan|bashur|erbil[\s\-–]+baghdad|"
+    r"baghdad[\s\-–]+erbil|nechirvan|masrour|barzani|talabani|disputed areas?|article 140|"
+    r"هەولێر|سلێمانی|دهۆک|هەڵەبجە|کەرکوک|پێشمەرگە|هەرێمی کوردستان|حکومەتی هەرێم|"
+    r"کوردستانی باشوور|باشوور|بارزانی|تاڵەبانی|هەولێر و بەغدا|مووچە)",
+    re.IGNORECASE,
+)
+
+NON_BASHUR_KURDISTAN_PATTERN = re.compile(
+    r"(rojava|qamishli|kobani|hasakah|\bsdf\b|north and east syria|diyarbakir|amed|\bbakur\b|"
+    r"van turkey|dem party|rojhelat|sanandaj|mahabad|kermanshah|urmia|"
+    r"ڕۆژئاوا|قامیشلۆ|کۆبانێ|حەسەکە|باکوور|ئامەد|ڕۆژهەڵات|سنە|مەهاباد|ورمێ|کرماشان)",
+    re.IGNORECASE,
+)
+
+# Politics, government, diplomacy, war, security, drone/missile incidents
+POLITICS_WAR_PATTERN = re.compile(
+    r"(\bwar\b|\bwars\b|armed conflict|\bmilitary\b|\bdefense\b|peshmerga|security force|"
+    r"airstrike|airstrikes|\bstrike\b|\bstrikes\b|\bdrone\b|\bdrones\b|\bmissile\b|\bmissiles\b|"
+    r"\brocket\b|\brockts\b|\bshelling\b|\battack\b|\battacks\b|\bcombat\b|ceasefire|"
+    r"\btroops\b|\bsecurity\b|\bintelligence\b|\belection\b|\bparliament\b|\bgovernment\b|"
+    r"\bcabinet\b|prime minister|\bpresident\b|(?:foreign|defense|interior)\s+ministry|\bdiplomac|\btreaty\b|\bsummit\b|"
+    r"\bsanctions\b|\bcrisis\b|political|strategic|erbil[\s\-–]+baghdad|baghdad[\s\-–]+erbil|"
+    r"disputed area|article 140|budget dispute|شەڕ|سەربازی|هێرش|درۆن|موشەک|تۆپباران|"
+    r"پێشمەرگە|ئەمنی|ئاسایش|سیاسی|حکومەت|پەرلەمان|هەڵبژاردن|دیپلۆماسی|سەرۆک|وەزیران|قەیران|ململانێ)",
+    re.IGNORECASE,
+)
+
+# Regional geopolitics prioritized ahead of generic non-political international stories
+REGIONAL_GEOPOLITICAL_PATTERN = re.compile(
+    r"(\biraq\b|baghdad|\biran\b|tehran|turkey|ankara|syria|damascus|united states|\bu\.s\.?\b|"
+    r"washington|middle east|israel|\bgaza\b|lebanon|hezbollah|pentagon|\bnato\b|white house|kremlin|"
+    r"عێراق|بەغدا|ئێران|تورکیا|سوریا|ئەمریکا|واشنتن|ڕۆژهەڵاتی ناوەڕاست|ئیسرائیل|غەززە|لوبنان)",
+    re.IGNORECASE,
+)
+
+PRIORITY_TIER_1A = "1A"
+PRIORITY_TIER_1B = "1B"
+PRIORITY_TIER_2 = "2"
+PRIORITY_TIER_3 = "3"
+
 LEGACY_TO_CANONICAL_CATEGORY: dict[str, str] = {
     "kurdistan": "kurdistan",
     "wars & armed conflicts": "military_conflict",
@@ -108,8 +151,10 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "opinions, analyses, forecasts, routine economic updates, or reactions — EVEN IF the article is high-priority Kurdistan news with score 8 or 9.\n"
     "- High importance alone does NOT make an article breaking news.\n\n"
     "Scoring Criteria (1 to 10):\n"
-    "- 8 to 10 (HIGH PASS): Any significant political, security, economic, or human-rights development in ANY of the 4 parts of Kurdistan "
-    "(MUST get score >= 8 and category=\"kurdistan\"); OR major wars, military escalations, world leader summits, global economy/sanctions, major AI/tech releases, and high-impact cyberattacks.\n"
+    "- 9 to 10 (HIGHEST PRIORITY): Major Southern Kurdistan (Bashur — Erbil, Sulaymaniyah, Duhok, Halabja, Kirkuk, KRG, Peshmerga, Erbil-Baghdad) politics, "
+    "war, security/drone/missile incidents; or major wars, military escalations, world leader summits, and severe crises.\n"
+    "- 8 (HIGH PASS): Any significant political, security, economic (salaries/مووچە, oil/energy, official decrees), or human-rights development in ANY of the 4 parts of Kurdistan "
+    "(MUST get score >= 8 and category=\"kurdistan\"); regional geopolitics (Iraq, Iran, Turkey, Syria, US, Middle East); major global economy/sanctions, AI breakthroughs, and critical cyberattacks.\n"
     "- 7 (PASS): Notable international diplomacy, cross-border crises, significant space/science milestones.\n"
     "- 1 to 6 (REJECT): Hyper-local domestic news in foreign countries (e.g., individual US state lawsuits, municipal/city politics, "
     "local crime, routine business/licensing disputes, local court cases), celebrity gossip, sports trivia, clickbait, or minor opinion fluff.\n\n"
@@ -165,6 +210,95 @@ def is_strict_breaking(article: Article) -> bool:
         getattr(article, "is_breaking", False)
         and float(getattr(article, "importance_score", 0.0) or 0.0) >= 9.0
     )
+
+
+def is_bashur_article(article: Article) -> bool:
+    """
+    Identify Southern Kurdistan (Bashur) stories covering Erbil, Sulaymaniyah,
+    Duhok, Halabja, Kirkuk, KRG, Peshmerga, or Erbil-Baghdad relations.
+    Excludes non-Bashur Rojava/Bakur/Rojhelat stories unless they focus on Bashur.
+    """
+    region = (getattr(article, "region", "") or "").strip().lower()
+    category = (getattr(article, "category", "") or "").strip().lower()
+    text = f"{article.original_title or ''} {article.original_summary or ''}"
+
+    if BASHUR_PATTERN.search(text):
+        return True
+    if ("south" in region or "bashur" in region) and (
+        category == "kurdistan" or KURDISTAN_PATTERN.search(text)
+    ):
+        return True
+    if NON_BASHUR_KURDISTAN_PATTERN.search(text) or region in {
+        "west kurdistan",
+        "north kurdistan",
+        "east kurdistan",
+    }:
+        return False
+    return False
+
+
+def is_politics_or_war(article: Article) -> bool:
+    """Return True if an article focuses on politics, governance, diplomacy, or war/security."""
+    category = (getattr(article, "category", "") or "").strip().lower()
+    if category in {
+        "military_conflict",
+        "politics_world",
+        "wars & armed conflicts",
+        "military & defense",
+        "world leaders & governments",
+        "international politics",
+        "diplomacy & international relations",
+    }:
+        return True
+    text = f"{article.original_title or ''} {article.original_summary or ''}"
+    return bool(POLITICS_WAR_PATTERN.search(text))
+
+
+def is_regional_geopolitics(article: Article) -> bool:
+    """Return True if an article covers Iraq, Iran, Turkey, Syria, US, or Middle East geopolitics."""
+    text = f"{article.original_title or ''} {article.original_summary or ''} {article.country or ''}"
+    return bool(REGIONAL_GEOPOLITICAL_PATTERN.search(text))
+
+
+def classify_priority_tier(article: Article) -> str:
+    """
+    Assign explicit priority tiers for 5-of-8 Bashur selection:
+      - '1A': Southern Kurdistan (Bashur) politics, war, security/drone/missile, Peshmerga, Erbil-Baghdad
+      - '1B': Other major Southern Kurdistan news (salaries/مووچە, oil/economy, decrees)
+      - '2': Global & regional politics/war/conflict (Iraq, Iran, Turkey, Syria, US, Middle East first)
+      - '3': Non-political/lifestyle/other global stories
+    """
+    if is_bashur_article(article):
+        if is_politics_or_war(article):
+            return PRIORITY_TIER_1A
+        return PRIORITY_TIER_1B
+
+    if is_politics_or_war(article):
+        return PRIORITY_TIER_2
+
+    return PRIORITY_TIER_3
+
+
+def article_selection_sort_key(article: Article) -> tuple:
+    """
+    Sort key ordering candidates within selection pools:
+      - Bashur Priority 1A (politics & war) strictly ahead of 1B (local/economic Bashur)
+      - Global Priority 2 (politics & war; regional Middle East/Iraq/Iran/Turkey/Syria/US first)
+        strictly ahead of Priority 3 (non-political/other global)
+      - Higher importance_score wins within the same sub-tier
+    """
+    tier = classify_priority_tier(article)
+    tier_order = {
+        PRIORITY_TIER_1A: 0,
+        PRIORITY_TIER_1B: 1,
+        PRIORITY_TIER_2: 2,
+        PRIORITY_TIER_3: 3,
+    }[tier]
+    breaking_rank = 0 if is_strict_breaking(article) else 1
+    regional_rank = 0 if is_regional_geopolitics(article) else 1
+    score = -float(getattr(article, "importance_score", 0.0) or 0.0)
+    pub = getattr(article, "published_at", "") or getattr(article, "publication_date", "") or ""
+    return (tier_order, breaking_rank, regional_rank, score, pub)
 
 
 class ImportanceRanker:

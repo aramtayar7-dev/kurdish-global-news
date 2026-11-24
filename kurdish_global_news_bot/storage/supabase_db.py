@@ -300,7 +300,7 @@ class SupabaseDatabase:
         if only_published:
             params["status"] = "eq.PUBLISHED"
         else:
-            params["status"] = "not.in.(REJECTED_DUPLICATE,FAILED,SKIPPED)"
+            params["status"] = "not.in.(DISCOVERED,REJECTED_DUPLICATE,FAILED,SKIPPED)"
         if exclude_id is not None:
             params["id"] = f"neq.{exclude_id}"
         resp = await self._request("GET", "articles", params=params)

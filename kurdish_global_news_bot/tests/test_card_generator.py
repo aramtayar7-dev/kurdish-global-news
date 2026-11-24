@@ -13,7 +13,8 @@ import pytest
 from PIL import Image
 
 from config import ASSETS_DIR, CARD_HEIGHT, CARD_WIDTH
-from processing.card_generator import MARGIN_X, NewsCardGenerator
+import processing.card_generator as card_gen_mod
+from processing.card_generator import MARGIN_X, NewsCardGenerator, _RTL_RESHAPER
 from storage.models import Article
 from tg_bot.publisher import TelegramPublisher
 
@@ -148,3 +149,71 @@ class TestNewsCardGenerator:
         # Verify temporary JPEG card file was deleted after send_photo
         assert len(created_paths) == 1
         assert not created_paths[0].exists()
+
+    @pytest.mark.asyncio
+    async def test_non_raqm_rtl_shapes_after_wrapping_and_preserves_raqm_behavior(self, monkeypatch):
+        """
+        Verify Windows non-raqm fallback shapes & bidi-reorders each wrapped Kurdish line
+        and badge label cleanly (without passing direction='rtl'), while raqm=True keeps text untouched.
+        """
+        assert _RTL_RESHAPER.configuration.getboolean("support_ligatures") is True
+
+        raw_headline = "حکومەتی هەرێمی کوردستان پرۆژەیەکی گەورەی وزە و ئابووری لە هەولێر و سلێمانی ڕاگەیاند"
+        art = Article(
+            translated_title=raw_headline,
+            category="kurdistan",
+            source_name="Kurdistan24",
+            is_breaking=True,
+            importance_score=9.5,
+        )
+
+        # 1. Simulate non-raqm (Windows) explicitly
+        monkeypatch.setattr(card_gen_mod, "_HAS_RAQM", False)
+        generator = NewsCardGenerator()
+
+        prepared_inputs: list[str] = []
+        orig_prepare = generator._prepare_rtl_text
+
+        def spy_prepare(text: str) -> str:
+            prepared_inputs.append(text)
+            return orig_prepare(text)
+
+        wrapped_logical_lines: list[list[str]] = []
+        orig_wrap = generator._wrap_headline
+
+        def spy_wrap(draw, headline, max_width):
+            lines, font, lh = orig_wrap(draw, headline, max_width)
+            wrapped_logical_lines.append(list(lines))
+            # Logical lines are NOT reshaped prior to wrapping
+            assert all(word in raw_headline for line in lines for word in line.split())
+            return lines, font, lh
+
+        monkeypatch.setattr(generator, "_prepare_rtl_text", spy_prepare)
+        monkeypatch.setattr(generator, "_wrap_headline", spy_wrap)
+
+        assert generator._rtl_kwargs() == {}
+        shaped_sample = generator._prepare_rtl_text("کوردستان")
+        assert shaped_sample != "کوردستان"
+        prepared_inputs.clear()
+
+        card_bytes = await generator.generate_card_bytes(art, is_breaking=True)
+        with Image.open(io.BytesIO(card_bytes)) as img:
+            assert img.size == (1280, 720)
+            assert img.format == "JPEG"
+
+        # Wrapping occurred before shaping; badge + breaking + wrapped logical lines were shaped afterward
+        assert len(wrapped_logical_lines) == 1
+        assert "کوردستان" in prepared_inputs
+        assert "بەپەلە" in prepared_inputs
+        for logical_line in wrapped_logical_lines[0]:
+            assert logical_line in prepared_inputs
+
+        # Digest card also shapes cleanly without raqm
+        digest_bytes = await generator.generate_digest_card_bytes("٢٤ی تشرینی دووەم ٢٠٢٦", 5)
+        with Image.open(io.BytesIO(digest_bytes)) as dimg:
+            assert dimg.size == (1280, 720)
+
+        # 2. Simulate raqm=True (Linux / GitHub Actions): logical text untouched and direction='rtl' enabled
+        monkeypatch.setattr(card_gen_mod, "_HAS_RAQM", True)
+        assert generator._rtl_kwargs() == {"direction": "rtl"}
+        assert orig_prepare("کوردستان") == "کوردستان"

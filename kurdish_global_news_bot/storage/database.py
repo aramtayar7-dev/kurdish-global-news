@@ -269,7 +269,7 @@ class Database:
         if only_published:
             query += " AND status = 'PUBLISHED'"
         else:
-            query += " AND status NOT IN ('REJECTED_DUPLICATE', 'FAILED', 'SKIPPED')"
+            query += " AND status NOT IN ('DISCOVERED', 'REJECTED_DUPLICATE', 'FAILED', 'SKIPPED')"
         if exclude_id is not None:
             query += " AND id != ?"
             params.append(exclude_id)

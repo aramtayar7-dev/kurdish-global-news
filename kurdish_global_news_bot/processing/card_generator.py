@@ -20,6 +20,8 @@ from pathlib import Path
 import tempfile
 from typing import Optional
 
+import arabic_reshaper
+from bidi.algorithm import get_display
 from PIL import Image, ImageDraw, ImageFont, ImageOps, features
 
 from config import ASSETS_DIR, CARD_HEIGHT, CARD_WIDTH, CHANNEL_HANDLE
@@ -30,10 +32,13 @@ from storage.models import Article
 logger = logging.getLogger("processing.card_generator")
 
 _HAS_RAQM: bool = features.check("raqm")
+_RTL_RESHAPER = arabic_reshaper.ArabicReshaper(
+    configuration={"support_ligatures": True}
+)
 if not _HAS_RAQM:
     logger.warning(
         "Pillow libraqm is not available in this environment; "
-        "using standard font layout fallback (install libfribidi0 libharfbuzz0b libraqm0 for RTL shaping)."
+        "using arabic-reshaper + python-bidi RTL fallback (install libfribidi0 libharfbuzz0b libraqm0 for native raqm shaping)."
     )
 
 CATEGORY_COLORS: dict[str, tuple[int, int, int]] = {
@@ -109,6 +114,17 @@ class NewsCardGenerator:
     def _rtl_kwargs() -> dict[str, str]:
         """Only pass direction='rtl' when libraqm is active so Windows tests never raise KeyError."""
         return {"direction": "rtl"} if _HAS_RAQM else {}
+
+    @staticmethod
+    def _prepare_rtl_text(text: str) -> str:
+        """
+        Shape and reorder RTL text only when Pillow lacks native `raqm` support.
+        On Linux/CI with `libraqm`, return the logical text untouched so HarfBuzz/FriBidi
+        renders identifiably as before.
+        """
+        if not text or _HAS_RAQM:
+            return text
+        return get_display(_RTL_RESHAPER.reshape(text))
 
     def _measure_text(
         self,
@@ -340,7 +356,8 @@ class NewsCardGenerator:
 
         # 1. Category pill badge (+ optional breaking "بەپەلە" badge) above headline
         pill_font = self._load_font(25)
-        cat_w, cat_h = self._measure_text(draw, kurdish_cat, pill_font)
+        rendered_cat = self._prepare_rtl_text(kurdish_cat)
+        cat_w, cat_h = self._measure_text(draw, rendered_cat, pill_font)
         pill_pad_x = 20
         pill_h = 44
         pill_w = cat_w + (pill_pad_x * 2)
@@ -355,15 +372,15 @@ class NewsCardGenerator:
         )
         draw.text(
             (right_edge - pill_pad_x - cat_w, pill_y + (pill_h - cat_h) // 2 - 4),
-            kurdish_cat,
+            rendered_cat,
             font=pill_font,
             fill=(255, 255, 255, 255),
             **rtl_kw,
         )
 
         if effective_breaking:
-            breaking_label = "بەپەلە"
-            brk_w, brk_h = self._measure_text(draw, breaking_label, pill_font)
+            rendered_breaking = self._prepare_rtl_text("بەپەلە")
+            brk_w, brk_h = self._measure_text(draw, rendered_breaking, pill_font)
             brk_pad_x = 18
             brk_pill_w = brk_w + (brk_pad_x * 2)
             brk_x1 = pill_x0 - 12
@@ -376,7 +393,7 @@ class NewsCardGenerator:
                 )
                 draw.text(
                     (brk_x1 - brk_pad_x - brk_w, pill_y + (pill_h - brk_h) // 2 - 4),
-                    breaking_label,
+                    rendered_breaking,
                     font=pill_font,
                     fill=(255, 255, 255, 255),
                     **rtl_kw,
@@ -388,19 +405,20 @@ class NewsCardGenerator:
             if not line:
                 cur_y += line_height
                 continue
-            line_w, _ = self._measure_text(draw, line, headline_font)
+            rendered_line = self._prepare_rtl_text(line)
+            line_w, _ = self._measure_text(draw, rendered_line, headline_font)
             line_x = max(MARGIN_X, right_edge - line_w)
             # Subtle drop shadow
             draw.text(
                 (line_x + 2, cur_y + 2),
-                line,
+                rendered_line,
                 font=headline_font,
                 fill=(0, 0, 0, 185),
                 **rtl_kw,
             )
             draw.text(
                 (line_x, cur_y),
-                line,
+                rendered_line,
                 font=headline_font,
                 fill=(255, 255, 255, 255),
                 **rtl_kw,
@@ -520,7 +538,7 @@ class NewsCardGenerator:
         right_edge = CARD_WIDTH - MARGIN_X
 
         # Nightly edition pill badge (gold background)
-        badge_text = "وەشانی شەوانە"
+        badge_text = self._prepare_rtl_text("وەشانی شەوانە")
         badge_font = self._load_font(26)
         bw, bh = self._measure_text(draw, badge_text, badge_font)
         pill_pad_x = 24
@@ -541,7 +559,7 @@ class NewsCardGenerator:
         )
 
         # Main RTL title: پوختەی هەواڵەکانی ئەمڕۆ
-        main_title = "پوختەی هەواڵەکانی ئەمڕۆ"
+        main_title = self._prepare_rtl_text("پوختەی هەواڵەکانی ئەمڕۆ")
         title_font = self._load_font(62)
         tw, th = self._measure_text(draw, main_title, title_font)
         if tw > CONTENT_MAX_WIDTH:
@@ -553,7 +571,7 @@ class NewsCardGenerator:
         draw.text((title_x, title_y), main_title, font=title_font, fill=(255, 255, 255, 255), **rtl_kw)
 
         # Subtitle: Kurdish date + story count
-        subtitle = f"{date_label}  •  گرنگترین {story_count} هەواڵی ڕۆژ"
+        subtitle = self._prepare_rtl_text(f"{date_label}  •  گرنگترین {story_count} هەواڵی ڕۆژ")
         sub_font = self._load_font(32)
         sw, _ = self._measure_text(draw, subtitle, sub_font)
         if sw > CONTENT_MAX_WIDTH:

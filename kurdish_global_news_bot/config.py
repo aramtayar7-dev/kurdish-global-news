@@ -108,11 +108,17 @@ MAX_ARTICLE_AGE_MINUTES: int = _int(os.getenv("MAX_ARTICLE_AGE_MINUTES"), 30)
 DEDUP_WINDOW_HOURS: int = _int(os.getenv("DEDUP_WINDOW_HOURS"), 12)
 
 # ═══════════════════════════════════════════════════
-# News Prioritization & Category Balancer (60/40 Split)
+# News Prioritization & Balancer (5-of-8 Bashur Quota + 60/40 Category Ratio)
 # ═══════════════════════════════════════════════════
 PRIMARY_CATEGORY_RATIO: float = _float(os.getenv("PRIMARY_CATEGORY_RATIO"), 0.60)
 SECONDARY_CATEGORY_RATIO: float = _float(os.getenv("SECONDARY_CATEGORY_RATIO"), 0.40)
 FALLBACK_WINDOW_MINUTES: int = _int(os.getenv("FALLBACK_WINDOW_MINUTES"), 20)
+
+BATCH_PUBLISH_LIMIT: int = _int(os.getenv("BATCH_PUBLISH_LIMIT"), 8)
+BASHUR_QUOTA_PER_8: int = _int(os.getenv("BASHUR_QUOTA_PER_8"), 5)
+GLOBAL_QUOTA_PER_8: int = max(0, 8 - BASHUR_QUOTA_PER_8)
+BASHUR_TARGET_RATIO: float = BASHUR_QUOTA_PER_8 / 8.0
+GLOBAL_TARGET_RATIO: float = 1.0 - BASHUR_TARGET_RATIO
 
 # ═══════════════════════════════════════════════════
 # Network

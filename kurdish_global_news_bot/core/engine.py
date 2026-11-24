@@ -35,7 +35,7 @@ from monitoring.metrics import Metrics, Timer
 from config import (
     ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, CHANNEL_HANDLE,
     MAX_CONCURRENT_SOURCES, ArticleStatus, BACKUP_INTERVAL_HOURS,
-    MAX_ARTICLE_AGE_MINUTES,
+    MAX_ARTICLE_AGE_MINUTES, BATCH_PUBLISH_LIMIT,
 )
 
 logger = logging.getLogger("core.engine")
@@ -443,39 +443,49 @@ class NewsEngine:
             logger.info("Discovered %d raw articles from %d sources.",
                          len(all_raw_articles), len(self._sources))
 
+            published_this_cycle = 0
             if all_raw_articles:
                 # Extract and prepare articles
                 new_articles = await self._extract_and_insert(all_raw_articles)
                 logger.info("%d new articles to process.", len(new_articles))
 
                 if new_articles:
-                    # Process and publish IMMEDIATELY — each article independently
-                    pipeline_results = await self._pipeline.process_batch(new_articles)
+                    # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
+                    pipeline_results = await self._pipeline.process_batch(
+                        new_articles, max_publish=BATCH_PUBLISH_LIMIT
+                    )
+                    published_this_cycle = pipeline_results.get("published", 0)
                     logger.info("Pipeline results: %s", pipeline_results)
 
-            # Check and publish held articles (balancer fallback window or ratio relaxation)
-            await self._publish_held_articles()
+            # Check and publish held articles within remaining cycle capacity
+            remaining_capacity = max(0, BATCH_PUBLISH_LIMIT - published_this_cycle)
+            if remaining_capacity > 0:
+                await self._publish_held_articles(max_additional=remaining_capacity)
 
             # Cold start protection completed after first discovery pass
             self._pipeline.set_cold_start(False)
 
-    async def _publish_held_articles(self) -> None:
-        """Evaluate held READY_TO_PUBLISH articles against balancer and publish if eligible."""
-        held_articles = await self._db.get_articles_by_status(ArticleStatus.READY_TO_PUBLISH, limit=10)
+    async def _publish_held_articles(self, max_additional: int = BATCH_PUBLISH_LIMIT) -> None:
+        """Evaluate held READY_TO_PUBLISH articles against 5-of-8 balancer and publish if eligible."""
+        if max_additional <= 0:
+            return
+        held_articles = await self._db.get_articles_by_status(ArticleStatus.READY_TO_PUBLISH, limit=20)
         if not held_articles:
             return
 
-        from config import is_primary_category
-        for held in held_articles:
+        recent_published = await self._db.get_recent_published_articles(limit=8)
+        plan = self._pipeline._quota_balancer.select_batch(
+            held_articles,
+            limit=max_additional,
+            recent_published=recent_published,
+        )
+        for held in plan.selected:
             held.is_breaking = is_strict_breaking(held)
-            publish_now, reason = await self._pipeline.should_publish_now(held)
-            if publish_now:
-                category_group = "PRIMARY" if is_primary_category(held.category) else "SECONDARY"
-                logger.info(
-                    "[BALANCER] [%s] Held article %d ('%s') is now eligible: %s",
-                    category_group, held.id, held.original_title[:60], reason,
-                )
-                await self._pipeline._publish_immediately(held)
+            logger.info(
+                "[BALANCER] Held article %s ('%s') eligible under 5-of-8 plan: %s",
+                held.id, held.original_title[:60], plan.reason,
+            )
+            await self._pipeline._publish_immediately(held)
 
     async def _fetch_from_source(self, source: BaseSource) -> list[RawArticle]:
         """Fetch articles from a single source with bounded concurrency."""

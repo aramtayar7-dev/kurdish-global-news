@@ -16,8 +16,14 @@ from config import MIN_GLOBAL_RELEVANCE_SCORE, ArticleStatus, Priority
 from core.engine import NewsEngine
 from core.importance_ranker import (
     GLOBAL_RELEVANCE_SYSTEM_PROMPT,
+    PRIORITY_TIER_1A,
+    PRIORITY_TIER_1B,
+    PRIORITY_TIER_2,
+    PRIORITY_TIER_3,
     ImportanceRanker,
     RelevanceEvaluation,
+    classify_priority_tier,
+    is_bashur_article,
 )
 from core.pipeline import ArticlePipeline
 from monitoring.health import HealthMonitor
@@ -257,6 +263,47 @@ class TestGeminiRelevanceAndCategoryClassifier:
         assert res_fallback.category == "kurdistan"
         assert res_fallback.score >= 8
         assert res_fallback.is_breaking is False
+
+    def test_bashur_politics_war_1a_vs_1b_vs_global_tiers(self):
+        """Verify 1A Bashur Politics/War > 1B Bashur Economy/Salaries > 2 Global Politics/War > 3 Tech."""
+        bashur_war = Article_factory(
+            title="Drone strike targets security compound near Erbil airport",
+            summary="Peshmerga and regional authorities opened an urgent investigation into the military attack.",
+            category="kurdistan",
+            region="South Kurdistan",
+        )
+        bashur_salary = Article_factory(
+            title="KRG finance ministry begins monthly public salary distribution",
+            summary="Officials in Sulaymaniyah and Duhok confirmed civil servant payroll transfers started.",
+            category="kurdistan",
+            region="South Kurdistan",
+        )
+        west_kurdistan = Article_factory(
+            title="SDF reinforces defensive positions in Qamishli countryside",
+            summary="Rojava authorities monitored deployments along the northern Syrian corridor.",
+            category="kurdistan",
+            region="West Kurdistan",
+        )
+        global_pol = Article_factory(
+            title="Iraq and Iran officials hold diplomatic border crisis summit",
+            summary="Baghdad hosted high-level foreign ministry talks.",
+            category="politics_world",
+        )
+        global_tech = Article_factory(
+            title="New consumer graphics processor released by chipmaker",
+            summary="Benchmark tests showed faster gaming performance.",
+            category="ai_tech",
+        )
+
+        assert is_bashur_article(bashur_war) is True
+        assert is_bashur_article(bashur_salary) is True
+        assert is_bashur_article(west_kurdistan) is False
+        assert is_bashur_article(global_pol) is False
+
+        assert classify_priority_tier(bashur_war) == PRIORITY_TIER_1A
+        assert classify_priority_tier(bashur_salary) == PRIORITY_TIER_1B
+        assert classify_priority_tier(global_pol) == PRIORITY_TIER_2
+        assert classify_priority_tier(global_tech) == PRIORITY_TIER_3
 
 
 class TestPipelineAndSkippedUrlPersistence:

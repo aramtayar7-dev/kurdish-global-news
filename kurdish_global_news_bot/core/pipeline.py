@@ -15,7 +15,13 @@ from typing import Optional
 from datetime import datetime, timezone
 from storage.database import Database
 from storage.models import Article, Event
-from core.importance_ranker import ImportanceRanker
+from core.importance_ranker import (
+    ImportanceRanker,
+    article_selection_sort_key,
+    classify_priority_tier,
+    is_bashur_article,
+)
+from core.balancer import QuotaBalancer
 from core.duplicate_detector import DuplicateDetector
 from processing.deduplicator import SemanticDeduplicator
 from processing.extractor import ArticleExtractor
@@ -30,7 +36,7 @@ from config import (
     MAX_CONCURRENT_ARTICLES, PRIMARY_CATEGORIES,
     PRIMARY_CATEGORY_RATIO, SECONDARY_CATEGORY_RATIO,
     FALLBACK_WINDOW_MINUTES, MAX_ARTICLE_AGE_MINUTES,
-    is_primary_category,
+    BATCH_PUBLISH_LIMIT, is_primary_category,
 )
 
 logger = logging.getLogger("core.pipeline")
@@ -61,6 +67,7 @@ class ArticlePipeline:
         self._ranker = ImportanceRanker()
         self._dedup = DuplicateDetector(db)
         self._semantic_dedup = SemanticDeduplicator(db)
+        self._quota_balancer = QuotaBalancer(batch_limit=BATCH_PUBLISH_LIMIT)
         self._translator = TranslationEngine()
         self._formatter = ContentFormatter()
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_ARTICLES)
@@ -92,253 +99,273 @@ class ArticlePipeline:
         async with self._semaphore:
             return await self._process_single(article)
 
+    async def _evaluate_candidate(
+        self,
+        article: Article,
+        extra_recent: Optional[list[dict]] = None,
+    ) -> bool:
+        """
+        Run validation, scoring, local + semantic cross-source dedup, and Gemini
+        global relevance classification BEFORE scraping/translation or slot allocation.
+        """
+        article_id = article.id
+        logger.info(
+            "[DISCOVERED] Processing article %s: '%s' (source: %s, pub_date: %s)",
+            article_id, article.original_title[:80], article.source_name,
+            article.publication_date or "N/A",
+        )
+
+        # ── Step 1: Validate ──
+        await self._db.update_article_status(article_id, ArticleStatus.VALIDATING)
+        is_cold = await self._check_cold_start()
+        is_valid, rejection_reason = self._validator.validate(article, is_cold_start=is_cold)
+        if not is_valid:
+            await self._db.update_article_status(
+                article_id, ArticleStatus.FAILED,
+                error_message=f"Validation failed: {rejection_reason}",
+            )
+            logger.info("[FILTERED] Article %s rejected (%s): '%s'",
+                        article_id, rejection_reason, article.original_title[:80])
+            self._metrics.increment("articles_rejected")
+            return False
+
+        # ── Step 2: Score importance ──
+        await self._db.update_article_status(article_id, ArticleStatus.PROCESSING)
+        score, priority = self._ranker.score_article(article)
+        article.importance_score = score
+        article.priority = priority
+
+        credibility = ArticleExtractor.get_source_credibility(article.source_name)
+        if not self._ranker.is_eligible(score, credibility):
+            await self._db.update_article_status(
+                article_id, ArticleStatus.FAILED,
+                error_message=f"Below importance threshold: score={score:.2f}",
+                importance_score=score, priority=priority,
+            )
+            logger.info("[FILTERED] Article %s below threshold (score=%.2f, cred=%.2f): '%s'",
+                        article_id, score, credibility, article.original_title[:80])
+            self._metrics.increment("articles_below_threshold")
+            return False
+
+        # ── Step 3: Duplicate detection ──
+        is_dup, dup_reason = await self._dedup.is_duplicate(article)
+        if is_dup:
+            await self._db.update_article_status(
+                article_id, ArticleStatus.REJECTED_DUPLICATE,
+                error_message=dup_reason,
+                importance_score=score, priority=priority,
+            )
+            logger.info("[FILTERED] Article %s duplicate (%s): '%s'",
+                        article_id, dup_reason, article.original_title[:80])
+            self._metrics.increment("articles_duplicate")
+            return False
+
+        same_event, event_reason = await self._dedup.is_same_event_already_published(article)
+        if same_event:
+            is_update = await self._dedup.is_meaningful_update(article)
+            if not is_update:
+                await self._db.update_article_status(
+                    article_id, ArticleStatus.REJECTED_DUPLICATE,
+                    error_message=f"Same event: {event_reason}",
+                    importance_score=score, priority=priority,
+                )
+                logger.info("[FILTERED] Article %s same event (%s): '%s'",
+                            article_id, event_reason, article.original_title[:80])
+                self._metrics.increment("articles_same_event")
+                return False
+            else:
+                logger.info("Article %s is a meaningful update to existing event.", article_id)
+
+        # ── Step 4: Global Importance & Relevance Gatekeeper (LLM Check) ──
+        relevance = await self._ranker.evaluate_global_relevance(article)
+        if not relevance.passed:
+            reason_text = relevance.reason or "Below global relevance threshold"
+            await self._db.update_article_status(
+                article_id, ArticleStatus.SKIPPED,
+                error_message=f"SKIPPED [Low Global Relevance {relevance.score}/10]: {reason_text}",
+                importance_score=relevance.score / 10.0,
+                priority=Priority.LOW,
+            )
+            await self._db.mark_url_skipped(
+                article.canonical_url or article.original_url,
+                title=article.original_title,
+                score=float(relevance.score),
+                reason=reason_text,
+            )
+            logger.info(
+                "SKIPPED [Low Global Relevance %d/10]: %s — %s",
+                relevance.score,
+                article.original_title[:100],
+                reason_text,
+            )
+            self._metrics.increment("articles_low_global_relevance")
+            return False
+
+        # Strict breaking gate: only breaking when BOTH is_breaking is True AND score >= 9.0
+        article.importance_score = float(relevance.score)
+        if not relevance.used_fallback:
+            article.category = relevance.category
+        article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
+
+        if article.is_breaking and not relevance.used_fallback:
+            priority = Priority.CRITICAL
+            article.priority = Priority.CRITICAL
+        elif not relevance.used_fallback and article.category == "kurdistan":
+            if article.priority in (Priority.CRITICAL, Priority.NORMAL):
+                priority = Priority.HIGH
+                article.priority = Priority.HIGH
+        elif not article.is_breaking and article.priority == Priority.CRITICAL and not relevance.used_fallback:
+            priority = Priority.HIGH
+            article.priority = Priority.HIGH
+
+        # ── Step 4.5: Cross-Source Semantic Event Deduplication (After Classification, Before Scrape/Translate) ──
+        dedup_res = await self._semantic_dedup.check_duplicate(article, extra_recent=extra_recent)
+        if dedup_res.is_duplicate:
+            matched_ref = f"#{dedup_res.matched_id}" if dedup_res.matched_id is not None else "#unknown"
+            dedup_reason = dedup_res.reason or "Duplicate event"
+            await self._db.update_article_status(
+                article_id,
+                ArticleStatus.REJECTED_DUPLICATE,
+                error_message=f"SKIPPED [Duplicate Event]: matches {matched_ref} ({dedup_reason})",
+                importance_score=relevance.score / 10.0,
+                priority=priority,
+            )
+            await self._db.mark_url_skipped(
+                article.canonical_url or article.original_url,
+                title=article.original_title,
+                score=float(relevance.score),
+                reason=f"Duplicate Event {matched_ref}: {dedup_reason}",
+            )
+            logger.info(
+                "SKIPPED [Duplicate Event]: %s — matches %s (%s)",
+                article.original_title[:100],
+                matched_ref,
+                dedup_reason,
+            )
+            self._metrics.increment("articles_semantic_duplicate")
+            return False
+
+        return True
+
+    async def _scrape_translate_and_publish(
+        self,
+        article: Article,
+        check_category_balancer: bool = True,
+    ) -> bool:
+        """Run full-article scraping, translation, DB ready update, and Telegram delivery."""
+        article_id = article.id
+        priority = article.priority
+
+        # ── Step 5: Extract full article text & og:image, verify depth ──
+        full_text, og_image = await self._extractor.fetch_article_content_and_image(article.original_url)
+        if not article.image_url and og_image:
+            article.image_url = og_image
+
+        if full_text and len(full_text) >= 160:
+            article_content = full_text[:3000]
+            article.original_summary = article_content
+            logger.info(
+                "Extracted %d chars of full article text from %s",
+                len(article_content),
+                article.original_url[:70],
+            )
+        else:
+            fallback = (article.original_summary or "").strip()
+            insufficient, reason = ArticleExtractor.is_insufficient_detail(
+                article.original_title,
+                fallback,
+                min_len=160,
+                max_similarity=70.0,
+            )
+            if insufficient:
+                await self._db.update_article_status(
+                    article_id, ArticleStatus.FAILED,
+                    error_message=f"SKIPPED: insufficient article detail ({reason})",
+                    importance_score=article.importance_score, priority=priority,
+                )
+                logger.info(
+                    "[FILTERED] SKIPPED: insufficient article detail for article %s ('%s'): %s",
+                    article_id, article.original_title[:80], reason,
+                )
+                self._metrics.increment("articles_insufficient_detail")
+                return False
+            article_content = fallback[:3000]
+
+        # ── Step 5b: Translate to Kurdish Sorani & Gemini Proofread ──
+        await self._db.update_article_status(article_id, ArticleStatus.TRANSLATING)
+        try:
+            with Timer(self._metrics, "translation_time"):
+                article.translated_title, article.translated_summary = (
+                    await self._translator.translate_article(
+                        title=article.original_title,
+                        summary=article_content,
+                    )
+                )
+
+            title_ok = await self._translator.validate_translation(
+                article.translated_title, article.original_title
+            )
+            if not title_ok:
+                raise TranslationError("Title translation validation failed.")
+
+            logger.info("[TRANSLATED] Article %s translated: '%s' -> '%s'",
+                        article_id, article.original_title[:60], article.translated_title[:60])
+
+        except TranslationError as e:
+            retry_count = await self._db.increment_retry(article_id, str(e))
+            if retry_count >= MAX_RETRIES:
+                await self._db.update_article_status(
+                    article_id, ArticleStatus.FAILED,
+                    error_message=f"Translation failed after {MAX_RETRIES} retries: {e}",
+                )
+            self._health.record_failure("translation", str(e))
+            self._metrics.increment("translation_failures")
+            logger.warning("Translation failed for article %s: %s", article_id, str(e)[:200])
+            return False
+
+        # ── Step 6: Update article with all computed fields ──
+        await self._db.update_article_status(
+            article_id, ArticleStatus.READY_TO_PUBLISH,
+            translated_title=article.translated_title,
+            translated_summary=article.translated_summary,
+            original_summary=article.original_summary,
+            category=article.category,
+            image_url=article.image_url,
+            importance_score=article.importance_score,
+            priority=priority,
+        )
+
+        # ── Step 6b: Publish immediately ──
+        if AUTO_PUBLISH:
+            if check_category_balancer:
+                category_group = "PRIMARY" if is_primary_category(article.category) else "SECONDARY"
+                publish_now, reason = await self.should_publish_now(article)
+                if publish_now:
+                    logger.info("[BALANCER] [%s] Publishing article %s ('%s'): %s",
+                                category_group, article_id, article.category, reason)
+                    return await self._publish_immediately(article)
+                else:
+                    logger.info("[BALANCER] [%s] Holding article %s ('%s'): %s",
+                                category_group, article_id, article.category, reason)
+                    return False
+            return await self._publish_immediately(article)
+        else:
+            logger.info("Article %s ready but AUTO_PUBLISH is off.", article_id)
+            return False
+
     async def _process_single(self, article: Article) -> bool:
         """Full pipeline for a single article."""
         start_time = time.time()
         article_id = article.id
 
         try:
-            logger.info("[DISCOVERED] Processing article %d: '%s' (source: %s, pub_date: %s)",
-                        article_id, article.original_title[:80], article.source_name,
-                        article.publication_date or "N/A")
-
-            # ── Step 1: Validate ──
-            await self._db.update_article_status(article_id, ArticleStatus.VALIDATING)
-            is_cold = await self._check_cold_start()
-            is_valid, rejection_reason = self._validator.validate(article, is_cold_start=is_cold)
-            if not is_valid:
-                await self._db.update_article_status(
-                    article_id, ArticleStatus.FAILED,
-                    error_message=f"Validation failed: {rejection_reason}",
-                )
-                logger.info("[FILTERED] Article %d rejected (%s): '%s'",
-                            article_id, rejection_reason, article.original_title[:80])
-                self._metrics.increment("articles_rejected")
+            eligible = await self._evaluate_candidate(article)
+            if not eligible:
                 return False
-
-            # ── Step 2: Score importance ──
-            await self._db.update_article_status(article_id, ArticleStatus.PROCESSING)
-            score, priority = self._ranker.score_article(article)
-            article.importance_score = score
-            article.priority = priority
-
-            credibility = ArticleExtractor.get_source_credibility(article.source_name)
-            if not self._ranker.is_eligible(score, credibility):
-                await self._db.update_article_status(
-                    article_id, ArticleStatus.FAILED,
-                    error_message=f"Below importance threshold: score={score:.2f}",
-                    importance_score=score, priority=priority,
-                )
-                logger.info("[FILTERED] Article %d below threshold (score=%.2f, cred=%.2f): '%s'",
-                            article_id, score, credibility, article.original_title[:80])
-                self._metrics.increment("articles_below_threshold")
-                return False
-
-            # ── Step 3: Duplicate detection ──
-            is_dup, dup_reason = await self._dedup.is_duplicate(article)
-            if is_dup:
-                await self._db.update_article_status(
-                    article_id, ArticleStatus.REJECTED_DUPLICATE,
-                    error_message=dup_reason,
-                    importance_score=score, priority=priority,
-                )
-                logger.info("[FILTERED] Article %d duplicate (%s): '%s'",
-                            article_id, dup_reason, article.original_title[:80])
-                self._metrics.increment("articles_duplicate")
-                return False
-
-            # Check event-level duplication
-            same_event, event_reason = await self._dedup.is_same_event_already_published(article)
-            if same_event:
-                # Allow if it's a meaningful update
-                is_update = await self._dedup.is_meaningful_update(article)
-                if not is_update:
-                    await self._db.update_article_status(
-                        article_id, ArticleStatus.REJECTED_DUPLICATE,
-                        error_message=f"Same event: {event_reason}",
-                        importance_score=score, priority=priority,
-                    )
-                    logger.info("[FILTERED] Article %d same event (%s): '%s'",
-                                article_id, event_reason, article.original_title[:80])
-                    self._metrics.increment("articles_same_event")
-                    return False
-                else:
-                    logger.info("Article %d is a meaningful update to existing event.", article_id)
-
-            # ── Step 4: Global Importance & Relevance Gatekeeper (LLM Check) ──
-            relevance = await self._ranker.evaluate_global_relevance(article)
-            if not relevance.passed:
-                reason_text = relevance.reason or "Below global relevance threshold"
-                await self._db.update_article_status(
-                    article_id, ArticleStatus.SKIPPED,
-                    error_message=f"SKIPPED [Low Global Relevance {relevance.score}/10]: {reason_text}",
-                    importance_score=relevance.score / 10.0,
-                    priority=Priority.LOW,
-                )
-                await self._db.mark_url_skipped(
-                    article.canonical_url or article.original_url,
-                    title=article.original_title,
-                    score=float(relevance.score),
-                    reason=reason_text,
-                )
-                logger.info(
-                    "SKIPPED [Low Global Relevance %d/10]: %s — %s",
-                    relevance.score,
-                    article.original_title[:100],
-                    reason_text,
-                )
-                self._metrics.increment("articles_low_global_relevance")
-                return False
-
-            # Strict breaking gate: only breaking when BOTH is_breaking is True AND score >= 9.0
-            if not relevance.used_fallback:
-                article.importance_score = float(relevance.score)
-                article.category = relevance.category
-            else:
-                article.importance_score = float(relevance.score)
-            article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
-
-            if article.is_breaking and not relevance.used_fallback:
-                priority = Priority.CRITICAL
-                article.priority = Priority.CRITICAL
-            elif not relevance.used_fallback and article.category == "kurdistan":
-                if article.priority == Priority.CRITICAL:
-                    # Demote accidental keyword/boost CRITICAL on non-breaking Kurdistan news
-                    priority = Priority.HIGH
-                    article.priority = Priority.HIGH
-                elif article.priority == Priority.NORMAL:
-                    priority = Priority.HIGH
-                    article.priority = Priority.HIGH
-            elif not article.is_breaking and article.priority == Priority.CRITICAL and not relevance.used_fallback:
-                priority = Priority.HIGH
-                article.priority = Priority.HIGH
-
-            # ── Step 4.5: Cross-Source Semantic Event Deduplication (After Classification, Before Scrape/Translate) ──
-            dedup_res = await self._semantic_dedup.check_duplicate(article)
-            if dedup_res.is_duplicate:
-                matched_ref = f"#{dedup_res.matched_id}" if dedup_res.matched_id is not None else "#unknown"
-                dedup_reason = dedup_res.reason or "Duplicate event"
-                await self._db.update_article_status(
-                    article_id,
-                    ArticleStatus.REJECTED_DUPLICATE,
-                    error_message=f"SKIPPED [Duplicate Event]: matches {matched_ref} ({dedup_reason})",
-                    importance_score=relevance.score / 10.0,
-                    priority=priority,
-                )
-                await self._db.mark_url_skipped(
-                    article.canonical_url or article.original_url,
-                    title=article.original_title,
-                    score=float(relevance.score),
-                    reason=f"Duplicate Event {matched_ref}: {dedup_reason}",
-                )
-                logger.info(
-                    "SKIPPED [Duplicate Event]: %s — matches %s (%s)",
-                    article.original_title[:100],
-                    matched_ref,
-                    dedup_reason,
-                )
-                self._metrics.increment("articles_semantic_duplicate")
-                return False
-
-            # ── Step 5: Extract full article text & og:image, verify depth ──
-            full_text, og_image = await self._extractor.fetch_article_content_and_image(article.original_url)
-            if not article.image_url and og_image:
-                article.image_url = og_image
-
-            if full_text and len(full_text) >= 160:
-                article_content = full_text[:3000]
-                article.original_summary = article_content
-                logger.info(
-                    "Extracted %d chars of full article text from %s",
-                    len(article_content),
-                    article.original_url[:70],
-                )
-            else:
-                # Fallback to RSS description / existing summary
-                fallback = (article.original_summary or "").strip()
-                insufficient, reason = ArticleExtractor.is_insufficient_detail(
-                    article.original_title,
-                    fallback,
-                    min_len=160,
-                    max_similarity=70.0,
-                )
-                if insufficient:
-                    await self._db.update_article_status(
-                        article_id, ArticleStatus.FAILED,
-                        error_message=f"SKIPPED: insufficient article detail ({reason})",
-                        importance_score=score, priority=priority,
-                    )
-                    logger.info(
-                        "[FILTERED] SKIPPED: insufficient article detail for article %d ('%s'): %s",
-                        article_id, article.original_title[:80], reason,
-                    )
-                    self._metrics.increment("articles_insufficient_detail")
-                    return False
-                article_content = fallback[:3000]
-
-            # ── Step 5: Translate to Kurdish Sorani & Gemini Proofread ──
-            await self._db.update_article_status(article_id, ArticleStatus.TRANSLATING)
-            try:
-                with Timer(self._metrics, "translation_time"):
-                    article.translated_title, article.translated_summary = (
-                        await self._translator.translate_article(
-                            title=article.original_title,
-                            summary=article_content,
-                        )
-                    )
-
-                # Validate translation
-                title_ok = await self._translator.validate_translation(
-                    article.translated_title, article.original_title
-                )
-                if not title_ok:
-                    raise TranslationError("Title translation validation failed.")
-
-                logger.info("[TRANSLATED] Article %d translated: '%s' -> '%s'",
-                            article_id, article.original_title[:60], article.translated_title[:60])
-
-            except TranslationError as e:
-                retry_count = await self._db.increment_retry(article_id, str(e))
-                if retry_count >= MAX_RETRIES:
-                    await self._db.update_article_status(
-                        article_id, ArticleStatus.FAILED,
-                        error_message=f"Translation failed after {MAX_RETRIES} retries: {e}",
-                    )
-                self._health.record_failure("translation", str(e))
-                self._metrics.increment("translation_failures")
-                logger.warning("Translation failed for article %d: %s", article_id, str(e)[:200])
-                return False
-
-            # ── Step 6: Update article with all computed fields ──
-            await self._db.update_article_status(
-                article_id, ArticleStatus.READY_TO_PUBLISH,
-                translated_title=article.translated_title,
-                translated_summary=article.translated_summary,
-                original_summary=article.original_summary,
-                category=article.category,
-                image_url=article.image_url,
-                importance_score=article.importance_score,
-                priority=priority,
-            )
-
-            # ── Step 6: Publish immediately with 60/40 balancer (if auto-publish is on) ──
-            if AUTO_PUBLISH:
-                category_group = "PRIMARY" if is_primary_category(article.category) else "SECONDARY"
-                publish_now, reason = await self.should_publish_now(article)
-                if publish_now:
-                    logger.info("[BALANCER] [%s] Publishing article %d ('%s'): %s",
-                                category_group, article_id, article.category, reason)
-                    return await self._publish_immediately(article)
-                else:
-                    logger.info("[BALANCER] [%s] Holding article %d ('%s'): %s",
-                                category_group, article_id, article.category, reason)
-                    return False
-            else:
-                logger.info("Article %d ready but AUTO_PUBLISH is off.", article_id)
-                return False
+            return await self._scrape_translate_and_publish(article, check_category_balancer=True)
 
         except Exception as e:
-            logger.error("Pipeline error for article %d: %s", article_id, str(e)[:300])
+            logger.error("Pipeline error for article %s: %s", article_id, str(e)[:300])
             try:
                 await self._db.update_article_status(
                     article_id, ArticleStatus.FAILED,
@@ -456,26 +483,97 @@ class ArticlePipeline:
             self._metrics.increment("publish_failures")
             return False
 
-    async def process_batch(self, articles: list[Article]) -> dict[str, int]:
+    async def process_batch(
+        self,
+        articles: list[Article],
+        max_publish: Optional[int] = None,
+    ) -> dict[str, int]:
         """
-        Process multiple articles concurrently, each independently.
-        Each article is published immediately when ready — no batch accumulation.
+        Evaluate candidates (filtering + cross-source batch dedup), enforce the
+        elastic 5-of-8 Southern Kurdistan (Bashur) / Global quota, and publish
+        selected winners in strict order:
+          1. Genuine breaking emergencies
+          2. Southern Kurdistan (Bashur) — Politics & War first
+          3. Global & regional news
         """
         results = {"published": 0, "rejected": 0, "failed": 0}
-
         if not articles:
             return results
 
-        # Process articles concurrently with bounded concurrency
-        tasks = [self.process_article(article) for article in articles]
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        effective_limit = BATCH_PUBLISH_LIMIT if max_publish is None else max(0, max_publish)
 
-        for outcome in outcomes:
-            if isinstance(outcome, Exception):
+        # Evaluate highest-priority candidates first so duplicate outlets lose cleanly
+        prioritized = sorted(articles, key=article_selection_sort_key)
+        eligible: list[Article] = []
+        accepted_batch_refs: list[dict] = []
+
+        for art in prioritized:
+            try:
+                ok = await self._evaluate_candidate(art, extra_recent=accepted_batch_refs)
+                if ok:
+                    eligible.append(art)
+                    accepted_batch_refs.append({
+                        "id": art.id,
+                        "original_title": art.original_title or "",
+                        "translated_title": art.translated_title or "",
+                        "category": art.category or "",
+                        "published_at": art.published_at or art.discovered_at or "",
+                    })
+                else:
+                    results["rejected"] += 1
+            except Exception as exc:
+                logger.error("Batch evaluation error for '%s': %s", art.original_title[:60], str(exc)[:200])
                 results["failed"] += 1
-            elif outcome:
-                results["published"] += 1
-            else:
-                results["rejected"] += 1
+
+        if not eligible:
+            return results
+
+        recent_published = await self._db.get_recent_published_articles(limit=8)
+        plan = self._quota_balancer.select_batch(
+            eligible,
+            limit=effective_limit,
+            recent_published=recent_published,
+        )
+        logger.info("[BALANCER] %s", plan.reason)
+
+        reserves = sorted(plan.deferred, key=article_selection_sort_key)
+        target_slots = len(plan.selected)
+
+        for selected_art in plan.selected:
+            try:
+                published = await self._scrape_translate_and_publish(
+                    selected_art, check_category_balancer=False
+                )
+                if published:
+                    results["published"] += 1
+                else:
+                    results["rejected"] += 1
+                    # Backfill empty slot elastically if reserve candidates exist
+                    while reserves and results["published"] < target_slots:
+                        backup = reserves.pop(0)
+                        try:
+                            if await self._scrape_translate_and_publish(backup, check_category_balancer=False):
+                                results["published"] += 1
+                                break
+                            results["rejected"] += 1
+                        except Exception as exc:
+                            logger.error("Backup publish error: %s", str(exc)[:200])
+                            results["failed"] += 1
+            except Exception as exc:
+                logger.error("Batch publish error for article %s: %s", selected_art.id, str(exc)[:200])
+                results["failed"] += 1
+
+        for leftover in reserves:
+            try:
+                await self._db.update_article_status(
+                    leftover.id,
+                    ArticleStatus.SKIPPED,
+                    error_message="Deferred: outside 5-of-8 batch quota slots",
+                    importance_score=leftover.importance_score,
+                    priority=leftover.priority,
+                )
+            except Exception:
+                pass
+            results["rejected"] += 1
 
         return results
