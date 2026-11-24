@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs every 30 minutes by default (safe for private repositories with 2,000 free minutes/month).
     # If this repository is Public (unlimited GitHub Actions minutes), change this to '*/5 * * * *' for real-time 5-minute discovery!
-    - cron: '*/30 * * * *'
+    - cron: '7,27,47 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime
 
 concurrency:
