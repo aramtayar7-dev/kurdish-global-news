@@ -7,6 +7,7 @@ Async SQLite database layer with connection pooling, migrations, and CRUD operat
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import shutil
 from datetime import datetime, timezone
@@ -119,6 +120,15 @@ class Database:
                 message TEXT DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS skipped_urls (
+                url_hash TEXT PRIMARY KEY,
+                canonical_url TEXT NOT NULL,
+                title TEXT DEFAULT '',
+                score REAL DEFAULT 0.0,
+                reason TEXT DEFAULT '',
+                skipped_at TEXT NOT NULL
+            );
+
             -- Indexes for performance
             CREATE INDEX IF NOT EXISTS idx_articles_canonical_url ON articles(canonical_url);
             CREATE INDEX IF NOT EXISTS idx_articles_content_hash ON articles(content_hash);
@@ -128,6 +138,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_articles_normalized_title ON articles(normalized_title);
             CREATE INDEX IF NOT EXISTS idx_events_fingerprint ON events(event_fingerprint);
             CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp ON system_logs(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_skipped_urls_canonical ON skipped_urls(canonical_url);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_canonical_url_unique
                 ON articles(canonical_url);
         """)
@@ -235,7 +246,7 @@ class Database:
         if only_published:
             query += " AND status = 'PUBLISHED'"
         else:
-            query += " AND status NOT IN ('REJECTED_DUPLICATE', 'FAILED')"
+            query += " AND status NOT IN ('REJECTED_DUPLICATE', 'FAILED', 'SKIPPED')"
         if exclude_id is not None:
             query += " AND id != ?"
             params.append(exclude_id)
@@ -261,6 +272,47 @@ class Database:
         async with self.conn.execute("SELECT COUNT(*) AS cnt FROM articles") as cursor:
             row = await cursor.fetchone()
             return bool(row["cnt"] == 0) if row else True
+
+    @staticmethod
+    def compute_url_hash(url: str) -> str:
+        """Compute deterministic SHA-256 hash of a canonicalized URL."""
+        canonical = Article.canonicalize_url(url) if url else ""
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    async def mark_url_skipped(
+        self, url: str, title: str = "", score: float = 0.0, reason: str = ""
+    ) -> str:
+        """Persist a skipped URL hash in SQLite so it is never re-evaluated."""
+        canonical = Article.canonicalize_url(url)
+        url_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            await self.conn.execute(
+                """INSERT OR REPLACE INTO skipped_urls
+                   (url_hash, canonical_url, title, score, reason, skipped_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (url_hash, canonical, title[:300], score, reason[:500], now),
+            )
+            await self.conn.commit()
+        return url_hash
+
+    async def is_url_skipped(self, url: str) -> bool:
+        """Check if a URL hash or canonical URL has already been marked as skipped."""
+        if not url:
+            return False
+        canonical = Article.canonicalize_url(url)
+        url_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        async with self.conn.execute(
+            "SELECT 1 FROM skipped_urls WHERE url_hash = ? LIMIT 1",
+            (url_hash,),
+        ) as cursor:
+            if await cursor.fetchone():
+                return True
+        async with self.conn.execute(
+            "SELECT 1 FROM articles WHERE canonical_url = ? AND status = 'SKIPPED' LIMIT 1",
+            (canonical,),
+        ) as cursor:
+            return (await cursor.fetchone()) is not None
 
     async def get_recent_published_articles(self, limit: int = 20) -> list[Article]:
         """Fetch the most recently published articles."""

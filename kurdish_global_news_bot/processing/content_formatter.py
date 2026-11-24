@@ -17,6 +17,33 @@ from config import CATEGORY_EMOJIS
 
 logger = logging.getLogger("processing.formatter")
 
+# Central Kurdish (Sorani) translations for news categories
+CATEGORY_LABELS_KURDISH: dict[str, str] = {
+    "Wars & Armed Conflicts": "شەڕ و پێکدادانی چەکداری",
+    "Military & Defense": "سەربازی و بەرگری",
+    "World Leaders & Governments": "سەرکردە و حکومەتەکان",
+    "Diplomacy & International Relations": "دیپلۆماسی و پەیوەندییە نێودەوڵەتییەکان",
+    "International Politics": "سیاسەتی نێودەوڵەتی",
+    "Global Economy & Financial Markets": "ئابووریی جیهانی و بازاڕەکان",
+    "AI & Technology": "تەکنەلۆژیا و زیرەکیی دەستکرد",
+    "AI & Tech": "تەکنەلۆژیا و زیرەکیی دەستکرد",
+    "Science & Research": "زانست و توێژینەوە",
+    "Science & Space": "زانست و بۆشایی ئاسمان",
+    "Space & Astronomy": "زانست و بۆشایی ئاسمان",
+    "Cybersecurity": "ئاسایشی سایبەری",
+    "Health & Medical": "تەندروستی و پزیشکی",
+    "Climate & Environment": "کەشوهەوا و ژینگە",
+    "Natural Disasters & Emergencies": "کارەساتی سروشتی و فریاگوزاری",
+    "Energy, Oil & Gas": "وزە، نەوت و گاز",
+    "International Organizations": "ڕێکخراوە نێودەوڵەتییەکان",
+    "Human Rights & Humanitarian": "مافی مرۆڤ و کاروباری مرۆیی",
+    "Criminal Investigations & Security": "لێکۆڵینەوەی تاوان و ئاسایش",
+    "International Sports": "وەرزشی نێودەوڵەتی",
+    "Business & Corporate": "کاروبار و کۆمپانیاکان",
+    "World News": "هەواڵی جیهانی",
+    "Other Significant Events": "هەواڵی جیهانی",
+}
+
 
 class ContentFormatter:
     """Formats articles for Telegram publication in Kurdish Sorani."""
@@ -50,8 +77,9 @@ class ContentFormatter:
         parts.append("\n━━━━━━━━━━━━━━━")
 
         # 4. Category
-        category_text = article.category or "هەواڵ"
-        parts.append(f"📂 {self._escape_html(category_text)}")
+        raw_cat = article.category or "Other Significant Events"
+        kurdish_cat = CATEGORY_LABELS_KURDISH.get(raw_cat, raw_cat)
+        parts.append(f"📂 {self._escape_html(kurdish_cat)}")
 
         # 5. Source
         if article.source_name:
@@ -83,11 +111,15 @@ class ContentFormatter:
 
         summary = article.translated_summary or article.original_summary
         if summary:
-            # Shorter summary for captions
-            summary = self._escape_html(self._truncate_summary(summary, max_len=350))
+            # Shorter summary for captions (fits comfortably in 1024 char limit)
+            summary = self._escape_html(self._truncate_summary(summary, max_len=650))
             parts.append(f"\n{summary}")
 
         parts.append("\n━━━━━━━━━━━━━━━")
+
+        raw_cat = article.category or "Other Significant Events"
+        kurdish_cat = CATEGORY_LABELS_KURDISH.get(raw_cat, raw_cat)
+        parts.append(f"📂 {self._escape_html(kurdish_cat)}")
 
         if article.source_name:
             parts.append(f"📡 {self._escape_html(article.source_name)}")

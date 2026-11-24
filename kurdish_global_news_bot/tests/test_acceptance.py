@@ -41,10 +41,15 @@ async def test_acceptance_criteria_2_breaking_article_published_immediately(temp
 
     pipeline = ArticlePipeline(temp_db, publisher, health, metrics)
 
-    # Mock translation to avoid external network dependency in unit test
+    # Mock external network dependencies in unit test
+    from core.importance_ranker import RelevanceEvaluation
     with patch.object(pipeline._translator, 'translate_title', new_callable=AsyncMock) as mock_tr_title, \
-         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary:
+         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary, \
+         patch.object(pipeline._extractor, 'fetch_full_article_text', new_callable=AsyncMock) as mock_scrape, \
+         patch.object(pipeline._ranker, 'evaluate_global_relevance', new_callable=AsyncMock) as mock_rel:
         
+        mock_rel.return_value = RelevanceEvaluation(score=9, is_breaking=True, reason="Mock breaking", passed=True)
+        mock_scrape.return_value = None
         mock_tr_title.return_value = "هێرشی بەپەلە لە پایتەخت ئەنجامدرا"
         mock_tr_summary.return_value = "بەپێی هەواڵە بەپەلەکان ڕووداوێکی گەورە ڕوویدا."
 
@@ -52,7 +57,11 @@ async def test_acceptance_criteria_2_breaking_article_published_immediately(temp
             original_url="https://reuters.com/world/breaking-news-urgent-1",
             canonical_url="https://reuters.com/world/breaking-news-urgent-1",
             original_title="Breaking: Urgent security crisis declared in capital",
-            original_summary="Government declared state of emergency after massive crisis unfolded.",
+            original_summary=(
+                "Government declared a nationwide state of emergency after a major security crisis unfolded across the capital district. "
+                "Security forces and emergency response teams deployed to secure key administrative buildings and critical infrastructure, "
+                "while international embassies advised citizens to shelter in place amid ongoing operations."
+            ),
             source_name="Reuters",
             category="International Politics",
             publication_date=datetime.now(timezone.utc).isoformat(),
@@ -89,9 +98,14 @@ async def test_acceptance_criteria_3_normal_article_published_immediately(temp_d
 
     pipeline = ArticlePipeline(temp_db, publisher, health, metrics)
 
+    from core.importance_ranker import RelevanceEvaluation
     with patch.object(pipeline._translator, 'translate_title', new_callable=AsyncMock) as mock_tr_title, \
-         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary:
+         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary, \
+         patch.object(pipeline._extractor, 'fetch_full_article_text', new_callable=AsyncMock) as mock_scrape, \
+         patch.object(pipeline._ranker, 'evaluate_global_relevance', new_callable=AsyncMock) as mock_rel:
         
+        mock_rel.return_value = RelevanceEvaluation(score=8, is_breaking=False, reason="Mock relevant", passed=True)
+        mock_scrape.return_value = None
         mock_tr_title.return_value = "لێکۆڵینەوەیەکی زانستی نوێ بڵاوکرایەوە"
         mock_tr_summary.return_value = "زانایان دۆزینەوەیەکی گرنگیان لە بواری گەردوونناسیدا کرد."
 
@@ -99,7 +113,11 @@ async def test_acceptance_criteria_3_normal_article_published_immediately(temp_d
             original_url="https://bbc.com/science/space-discovery-test",
             canonical_url="https://bbc.com/science/space-discovery-test",
             original_title="New Scientific Research Breakthrough in Deep Space Astronomy",
-            original_summary="Scientists at university laboratories have discovered evidence of water on distant planets.",
+            original_summary=(
+                "Astronomers at university research laboratories have detected clear atmospheric biosignatures on distant exoplanets. "
+                "The findings, published in leading astrophysics journals, indicate water vapor and molecular oxygen in the habitable zone, "
+                "offering unprecedented insights into planetary evolution beyond our solar system."
+            ),
             source_name="BBC",
             category="Science & Research",
             publication_date=datetime.now(timezone.utc).isoformat(),
@@ -168,9 +186,14 @@ async def test_acceptance_criteria_15_long_running_simulation_no_duplicates(temp
     metrics = Metrics()
     pipeline = ArticlePipeline(temp_db, publisher, health, metrics)
 
+    from core.importance_ranker import RelevanceEvaluation
     with patch.object(pipeline._translator, 'translate_title', new_callable=AsyncMock) as mock_tr_title, \
-         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary:
+         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary, \
+         patch.object(pipeline._extractor, 'fetch_full_article_text', new_callable=AsyncMock) as mock_scrape, \
+         patch.object(pipeline._ranker, 'evaluate_global_relevance', new_callable=AsyncMock) as mock_rel:
         
+        mock_rel.return_value = RelevanceEvaluation(score=8, is_breaking=False, reason="Mock relevant", passed=True)
+        mock_scrape.return_value = None
         mock_tr_title.side_effect = lambda t: f"وەرگێڕدراو بۆ کوردی: {t}"
         mock_tr_summary.side_effect = lambda s: f"پوختەی بابەت بە کوردی: {s}"
 
@@ -194,7 +217,11 @@ async def test_acceptance_criteria_15_long_running_simulation_no_duplicates(temp
                 original_url=url,
                 canonical_url=url,
                 original_title=title,
-                original_summary=f"In-depth international reporting on {title} with comprehensive analysis.",
+                original_summary=(
+                    f"Comprehensive international news dispatch covering {title} with detailed contextual analysis and eyewitness accounts. "
+                    "Regional correspondents report significant geopolitical ramifications across neighboring countries and global energy markets, "
+                    "as multinational delegations convene emergency sessions to formulate unified bilateral policies."
+                ),
                 source_name="Reuters",
                 category=category,
                 publication_date=datetime.now(timezone.utc).isoformat(),

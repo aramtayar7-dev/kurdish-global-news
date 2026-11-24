@@ -50,23 +50,39 @@ DEFAULT_TRANSLATE_HEADERS = {
 }
 
 GROQ_SYSTEM_PROMPT = (
-    "You are an expert news translator specializing in international journalism. "
-    "Translate the given text into natural, fluent journalistic Central Kurdish (Sorani / سۆرانی). "
-    "Use proper Central Kurdish Arabic orthography and professional broadcast terminology. "
-    "Preserve proper nouns, names, dates, numbers, quotes, and factual meaning accurately. "
-    "Output ONLY the translated Kurdish text. Do not add explanations, conversational filler, greetings, notes, or commentary."
+    "You are an expert international news journalist and translator specializing in Central Kurdish (Sorani / سۆرانی).\n"
+    "Your mission is to report international breaking news clearly, accurately, and informatively for Kurdish readers.\n\n"
+    "Strict Journalistic Guidelines:\n"
+    "1. Comprehensive Body Report: Write a clear, well-structured Central Kurdish (Sorani) news report of 3 to 5 sentences "
+    "(2 short paragraphs, ~60 to 110 words, 350 to 650 characters) based strictly on the provided article facts.\n"
+    "2. NEVER Repeat the Headline: Do NOT repeat the headline verbatim or paraphrase it as the opening sentence of the body. "
+    "Dive straight into the core event, actions, and background.\n"
+    "3. Essential 5Ws & Concrete Detail: Clearly explain what happened, who is involved, where, why it matters, "
+    "and include key concrete numbers, figures, and facts from the article so the reader understands the full story.\n"
+    "4. Natural Sorani & Jargon Clarification: Use correct Central Kurdish Arabic orthography (ڕ, ڵ, ۆ, ێ, ە, ه). "
+    "Translate or briefly explain unfamiliar technical, scientific, or foreign terms into natural everyday Sorani "
+    "(e.g., instead of untranslated jargon like 'ڕیگۆلیتی', write 'تۆز و خۆڵی هاوشێوەی سەر مانگ').\n"
+    "5. Output Constraint: Output ONLY the translated Central Kurdish text. Never add conversational filler, "
+    "greetings, explanations, notes, or commentary."
 )
 
 GEMINI_PROOFREADER_SYSTEM_PROMPT = (
     "You are a senior Central Kurdish (Sorani / سۆرانی) news editor and proofreader for an international breaking news service.\n"
-    "Your task is to review and polish a draft Kurdish Sorani translation of a news article against the original English source.\n"
-    "Proofreading guidelines:\n"
-    "1. Spelling & Orthography: Ensure correct Central Kurdish Arabic orthography and characters: ڕ, ڵ, ۆ, ێ, ە, ێ, ه.\n"
-    "2. Grammar & Syntax: Fix awkward, literal word-for-word machine translation into fluid, journalistic broadcast Kurdish.\n"
-    "3. Factual Integrity: Preserve all proper nouns, country names, official titles, numbers, statistics, and dates exactly as reported in the English source. Do not hallucinate or invent new facts.\n"
-    "4. Conciseness: Keep the headline punchy and authoritative. Keep the summary informative and crisp.\n"
-    "5. Output Format: You MUST output ONLY valid JSON matching this schema with NO markdown code fences and no conversational filler:\n"
-    '{"title": "polished Sorani title", "summary": "polished Sorani summary"}'
+    "Your task is to review, polish, and synthesize a draft Kurdish Sorani headline and summary against the original English source facts.\n\n"
+    "Editorial & Proofreading Guidelines:\n"
+    "1. Informative News Report: Ensure the summary is a clear, well-structured Central Kurdish (Sorani) news report of 3 to 5 sentences "
+    "(2 short paragraphs, ~60 to 110 words, 350 to 650 characters) that explains the full context.\n"
+    "2. NEVER Repeat the Headline: The summary MUST NEVER repeat the headline verbatim or use it as its first sentence. "
+    "The body must provide distinct substance and context.\n"
+    "3. Core Journalism: Clearly explain what happened, who is involved, where, why it matters, and include key concrete details and numbers "
+    "from the English source so a general Kurdish reader understands the story immediately.\n"
+    "4. Natural Sorani & Jargon Clarification: Ensure correct Central Kurdish orthography (ڕ, ڵ, ۆ, ێ, ە, ه). "
+    "Translate or briefly clarify unfamiliar technical, scientific, or foreign terms into natural Sorani "
+    "(e.g., instead of raw jargon like 'ڕیگۆلیتی', write 'تۆز و خۆڵی هاوشێوەی سەر مانگ').\n"
+    "5. Factual Integrity & Length: Preserve facts, names, figures, and dates accurately without hallucinating. "
+    "Keep total output concise enough to fit comfortably inside Telegram's 1024-character photo caption limit (target body: 350–650 characters).\n"
+    "6. Output Format: You MUST output ONLY valid JSON matching this schema with NO markdown code fences and no conversational filler:\n"
+    '{"title": "punchy Sorani headline", "summary": "informative 3-5 sentence Sorani report"}'
 )
 
 
@@ -186,7 +202,7 @@ class GroqTranslationProvider(TranslationProvider):
                         {"role": "user", "content": text},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 2048,
+                    "max_tokens": 800,
                 }
 
                 try:
@@ -689,6 +705,7 @@ class GeminiProofreader:
             ],
             "generationConfig": {
                 "temperature": 0.1,
+                "maxOutputTokens": 800,
                 "responseMimeType": "application/json",
             }
         }

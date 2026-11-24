@@ -22,6 +22,17 @@ MIGRATIONS: list[tuple[int, str, str]] = [
     (3, "Add country and region columns if missing", """
         ALTER TABLE articles ADD COLUMN country TEXT DEFAULT '';
     """),
+    (4, "Add skipped_urls table for persisting low-relevance URL hashes", """
+        CREATE TABLE IF NOT EXISTS skipped_urls (
+            url_hash TEXT PRIMARY KEY,
+            canonical_url TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            score REAL DEFAULT 0.0,
+            reason TEXT DEFAULT '',
+            skipped_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_skipped_urls_canonical ON skipped_urls(canonical_url);
+    """),
 ]
 
 

@@ -13,7 +13,7 @@ import logging
 from typing import Optional
 
 import httpx
-from telegram import Bot
+from telegram import Bot, LinkPreviewOptions
 from telegram.request import HTTPXRequest
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TelegramError, TimedOut, NetworkError, BadRequest
@@ -147,7 +147,7 @@ class TelegramPublisher:
                 chat_id=self._channel_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=False,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
             if message:
                 logger.info("Published text-only: msg_id=%d, title='%s'",

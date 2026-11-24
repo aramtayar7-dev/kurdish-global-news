@@ -68,6 +68,11 @@ class ArticlePipeline:
         """Set whether cold start protection is active."""
         self._cold_start = enabled
 
+    async def cleanup(self) -> None:
+        """Clean up pipeline resources (ranker and translator sessions)."""
+        await self._ranker.cleanup()
+        await self._translator.cleanup()
+
     async def _check_cold_start(self) -> bool:
         """Check if cold start protection is active."""
         if self._cold_start is None:
@@ -157,14 +162,77 @@ class ArticlePipeline:
                 else:
                     logger.info("Article %d is a meaningful update to existing event.", article_id)
 
-            # ── Step 4: Translate to Kurdish Sorani & Gemini Proofread ──
+            # ── Step 4: Global Importance & Relevance Gatekeeper (LLM Check) ──
+            relevance = await self._ranker.evaluate_global_relevance(article)
+            if not relevance.passed:
+                reason_text = relevance.reason or "Below global relevance threshold"
+                await self._db.update_article_status(
+                    article_id, ArticleStatus.SKIPPED,
+                    error_message=f"SKIPPED [Low Global Relevance {relevance.score}/10]: {reason_text}",
+                    importance_score=relevance.score / 10.0,
+                    priority=Priority.LOW,
+                )
+                await self._db.mark_url_skipped(
+                    article.canonical_url or article.original_url,
+                    title=article.original_title,
+                    score=float(relevance.score),
+                    reason=reason_text,
+                )
+                logger.info(
+                    "SKIPPED [Low Global Relevance %d/10]: %s — %s",
+                    relevance.score,
+                    article.original_title[:100],
+                    reason_text,
+                )
+                self._metrics.increment("articles_low_global_relevance")
+                return False
+
+            if relevance.is_breaking and not relevance.used_fallback:
+                priority = Priority.CRITICAL
+                article.priority = Priority.CRITICAL
+
+            # ── Step 5: Extract full article text & verify depth ──
+            # Asynchronously fetch full webpage text from URL; fall back to RSS description
+            full_text = await self._extractor.fetch_full_article_text(article.original_url)
+            if full_text and len(full_text) >= 160:
+                article_content = full_text[:3000]
+                article.original_summary = article_content
+                logger.info(
+                    "Extracted %d chars of full article text from %s",
+                    len(article_content),
+                    article.original_url[:70],
+                )
+            else:
+                # Fallback to RSS description / existing summary
+                fallback = (article.original_summary or "").strip()
+                insufficient, reason = ArticleExtractor.is_insufficient_detail(
+                    article.original_title,
+                    fallback,
+                    min_len=160,
+                    max_similarity=70.0,
+                )
+                if insufficient:
+                    await self._db.update_article_status(
+                        article_id, ArticleStatus.FAILED,
+                        error_message=f"SKIPPED: insufficient article detail ({reason})",
+                        importance_score=score, priority=priority,
+                    )
+                    logger.info(
+                        "[FILTERED] SKIPPED: insufficient article detail for article %d ('%s'): %s",
+                        article_id, article.original_title[:80], reason,
+                    )
+                    self._metrics.increment("articles_insufficient_detail")
+                    return False
+                article_content = fallback[:3000]
+
+            # ── Step 5: Translate to Kurdish Sorani & Gemini Proofread ──
             await self._db.update_article_status(article_id, ArticleStatus.TRANSLATING)
             try:
                 with Timer(self._metrics, "translation_time"):
                     article.translated_title, article.translated_summary = (
                         await self._translator.translate_article(
                             title=article.original_title,
-                            summary=article.original_summary or "",
+                            summary=article_content,
                         )
                     )
 
@@ -190,11 +258,12 @@ class ArticlePipeline:
                 logger.warning("Translation failed for article %d: %s", article_id, str(e)[:200])
                 return False
 
-            # ── Step 5: Update article with all computed fields ──
+            # ── Step 6: Update article with all computed fields ──
             await self._db.update_article_status(
                 article_id, ArticleStatus.READY_TO_PUBLISH,
                 translated_title=article.translated_title,
                 translated_summary=article.translated_summary,
+                original_summary=article.original_summary,
                 importance_score=score,
                 priority=priority,
             )

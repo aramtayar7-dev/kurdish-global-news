@@ -212,6 +212,13 @@ class NewsEngine:
             except Exception as e:
                 logger.warning("Source cleanup error (%s): %s", source.name, str(e)[:100])
 
+        # Cleanup pipeline (ranker & translator HTTP sessions)
+        if self._pipeline:
+            try:
+                await self._pipeline.cleanup()
+            except Exception as e:
+                logger.warning("Pipeline cleanup error: %s", str(e)[:100])
+
         # Cleanup publisher
         await self._publisher.cleanup()
 
@@ -380,6 +387,11 @@ class NewsEngine:
 
                 # Quick pre-filter: skip obviously bad articles
                 if not article.canonical_url or not article.original_title:
+                    continue
+
+                # Skip URLs already rejected for low global relevance in previous runs
+                if await self._db.is_url_skipped(article.canonical_url):
+                    logger.debug("Skipping previously rejected URL: %s", article.canonical_url[:80])
                     continue
 
                 # Try inserting (will fail silently for duplicates due to UNIQUE constraint)

@@ -16,7 +16,24 @@ from sources.base import RawArticle
 from storage.models import Article
 from config import SOURCE_CREDIBILITY, NEWS_CATEGORIES
 
+import aiohttp
+from bs4 import BeautifulSoup
+from rapidfuzz import fuzz
+
 logger = logging.getLogger("processing.extractor")
+
+SCRAPING_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+}
 
 # Country detection from domains / keywords
 COUNTRY_DOMAINS: dict[str, str] = {
@@ -113,3 +130,113 @@ class ArticleExtractor:
             if key in name or name in key:
                 return score
         return SOURCE_CREDIBILITY.get("default", 0.5)
+
+    async def fetch_full_article_text(self, url: str) -> Optional[str]:
+        """
+        Asynchronously fetch the full webpage HTML from url using aiohttp
+        and extract the main article paragraphs using beautifulsoup4.
+        Returns up to the first ~3,000 characters of clean article text,
+        or None if scraping failed or returned empty content.
+        """
+        if not url or not url.startswith(("http://", "https://")):
+            return None
+
+        timeout = aiohttp.ClientTimeout(total=10.0)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=SCRAPING_HEADERS) as session:
+                async with session.get(url, allow_redirects=True) as response:
+                    if response.status != 200:
+                        logger.warning("Scraping %s returned HTTP %d", url[:80], response.status)
+                        return None
+
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    if content_type and "text/html" not in content_type and "application/xhtml" not in content_type:
+                        logger.warning("Scraping %s non-HTML content type: %s", url[:80], content_type)
+                        return None
+
+                    html = await response.text(errors="replace")
+        except Exception as e:
+            logger.warning("Scraping failed for %s: %s", url[:80], str(e)[:150])
+            return None
+
+        return self.extract_article_body_from_html(html)
+
+    def extract_article_body_from_html(self, html: str) -> Optional[str]:
+        """Extract clean article paragraphs from raw HTML (up to ~3,000 chars)."""
+        if not html or not html.strip():
+            return None
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Strip non-content and layout elements
+            for tag in soup([
+                "script", "style", "nav", "header", "footer", "aside",
+                "noscript", "form", "svg", "button", "figure", "figcaption", "iframe"
+            ]):
+                tag.decompose()
+
+            # Find main article container or paragraphs
+            container = soup.find("article") or soup.find("main")
+            if not container:
+                container = soup.find(class_=re.compile(
+                    r"article[-_]?(body|content|text)|story[-_]?content|post[-_]?content",
+                    re.I,
+                ))
+            if not container:
+                container = soup.body
+
+            if not container:
+                return None
+
+            paragraphs: list[str] = []
+            for p in container.find_all("p"):
+                text = p.get_text(strip=True)
+                if len(text) < 35:
+                    continue
+                lower_text = text.lower()
+                if any(bp in lower_text for bp in [
+                    "cookie", "subscribe", "newsletter", "sign up", "terms of service",
+                    "privacy policy", "all rights reserved", "advertisement", "copyright",
+                    "follow us on", "read more:", "photo by", "getty images"
+                ]):
+                    continue
+                paragraphs.append(text)
+
+            if not paragraphs:
+                return None
+
+            combined = "\n\n".join(paragraphs).strip()
+            cleaned = combined[:3000].strip()
+            return cleaned if len(cleaned) >= 100 else None
+
+        except Exception as e:
+            logger.warning("HTML parsing error: %s", e)
+            return None
+
+    @staticmethod
+    def is_insufficient_detail(
+        title: str,
+        text: str,
+        min_len: int = 160,
+        max_similarity: float = 70.0,
+    ) -> tuple[bool, str]:
+        """
+        Check if article text is insufficient for publication:
+        - Text is very thin (< min_len characters), or
+        - Text is > max_similarity% similar to the headline (repeat of headline).
+        Returns (is_insufficient, reason).
+        """
+        clean_text = (text or "").strip()
+        if len(clean_text) < min_len:
+            return True, f"Text too thin ({len(clean_text)} chars < {min_len} min limit)"
+
+        clean_title = (title or "").strip()
+        if clean_title:
+            ratio = fuzz.ratio(clean_title.lower(), clean_text.lower())
+            token_sort = fuzz.token_sort_ratio(clean_title.lower(), clean_text.lower())
+            max_sim = max(ratio, token_sort)
+            if max_sim > max_similarity:
+                return True, f"Text is {max_sim:.1f}% similar to title (headline repetition)"
+
+        return False, ""

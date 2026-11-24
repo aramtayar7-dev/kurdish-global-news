@@ -57,6 +57,7 @@ MAX_CONCURRENT_ARTICLES: int = _int(os.getenv("MAX_CONCURRENT_ARTICLES"), 3)
 # ═══════════════════════════════════════════════════
 MIN_IMPORTANCE_SCORE: float = _float(os.getenv("MIN_IMPORTANCE_SCORE"), 0.4)
 MIN_SOURCE_CREDIBILITY: float = _float(os.getenv("MIN_SOURCE_CREDIBILITY"), 0.3)
+MIN_GLOBAL_RELEVANCE_SCORE: int = _int(os.getenv("MIN_GLOBAL_RELEVANCE_SCORE"), 7)
 
 # ═══════════════════════════════════════════════════
 # Feature Toggles
@@ -300,6 +301,7 @@ class ArticleStatus:
     FAILED = "FAILED"
     RETRY_PENDING = "RETRY_PENDING"
     REJECTED_DUPLICATE = "REJECTED_DUPLICATE"
+    SKIPPED = "SKIPPED"
 
 
 # ═══════════════════════════════════════════════════
