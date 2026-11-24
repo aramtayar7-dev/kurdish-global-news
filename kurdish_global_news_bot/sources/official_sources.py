@@ -23,27 +23,27 @@ OFFICIAL_FEEDS: list[dict[str, str]] = [
     {
         "name": "UN News",
         "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
-        "category": "International Organizations",
+        "category": "politics_world",
     },
     {
         "name": "WHO News",
         "url": "https://www.who.int/rss-feeds/news-english.xml",
-        "category": "Health & Medical",
+        "category": "politics_world",
     },
     {
         "name": "NATO News",
         "url": "https://www.nato.int/cps/en/natolive/news.xml",
-        "category": "Military & Defense",
+        "category": "military_conflict",
     },
     {
         "name": "EU News",
         "url": "https://ec.europa.eu/commission/presscorner/api/rss",
-        "category": "International Politics",
+        "category": "politics_world",
     },
     {
         "name": "IAEA News",
         "url": "https://www.iaea.org/feeds/topnews",
-        "category": "Energy, Oil & Gas",
+        "category": "economy_markets",
     },
 ]
 

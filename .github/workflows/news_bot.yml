@@ -38,6 +38,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r kurdish_global_news_bot/requirements.txt
 
+      - name: Install RTL Text Libraries for Pillow
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfribidi0 libharfbuzz0b libraqm0
+
       - name: Prefer IPv4 for Telegram API
         run: |
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
@@ -48,9 +53,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ENABLE_GEMINI_PROOFREAD: 'true'
           ENABLE_LOCAL_LLM: 'false'
           AUTO_PUBLISH: 'true'
           MAX_ARTICLE_AGE_MINUTES: '60'

@@ -190,10 +190,17 @@ class ArticlePipeline:
             if relevance.is_breaking and not relevance.used_fallback:
                 priority = Priority.CRITICAL
                 article.priority = Priority.CRITICAL
+            if not relevance.used_fallback:
+                article.category = relevance.category
+                if article.category == "kurdistan" and article.priority == Priority.NORMAL:
+                    priority = Priority.HIGH
+                    article.priority = Priority.HIGH
 
-            # ── Step 5: Extract full article text & verify depth ──
-            # Asynchronously fetch full webpage text from URL; fall back to RSS description
-            full_text = await self._extractor.fetch_full_article_text(article.original_url)
+            # ── Step 5: Extract full article text & og:image, verify depth ──
+            full_text, og_image = await self._extractor.fetch_article_content_and_image(article.original_url)
+            if not article.image_url and og_image:
+                article.image_url = og_image
+
             if full_text and len(full_text) >= 160:
                 article_content = full_text[:3000]
                 article.original_summary = article_content
@@ -264,6 +271,8 @@ class ArticlePipeline:
                 translated_title=article.translated_title,
                 translated_summary=article.translated_summary,
                 original_summary=article.original_summary,
+                category=article.category,
+                image_url=article.image_url,
                 importance_score=score,
                 priority=priority,
             )

@@ -43,15 +43,16 @@ async def test_acceptance_criteria_2_breaking_article_published_immediately(temp
 
     # Mock external network dependencies in unit test
     from core.importance_ranker import RelevanceEvaluation
-    with patch.object(pipeline._translator, 'translate_title', new_callable=AsyncMock) as mock_tr_title, \
-         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary, \
-         patch.object(pipeline._extractor, 'fetch_full_article_text', new_callable=AsyncMock) as mock_scrape, \
+    with patch.object(pipeline._translator, 'translate_article', new_callable=AsyncMock) as mock_tr_article, \
+         patch.object(pipeline._extractor, 'fetch_article_content_and_image', new_callable=AsyncMock) as mock_scrape, \
          patch.object(pipeline._ranker, 'evaluate_global_relevance', new_callable=AsyncMock) as mock_rel:
         
-        mock_rel.return_value = RelevanceEvaluation(score=9, is_breaking=True, reason="Mock breaking", passed=True)
-        mock_scrape.return_value = None
-        mock_tr_title.return_value = "هێرشی بەپەلە لە پایتەخت ئەنجامدرا"
-        mock_tr_summary.return_value = "بەپێی هەواڵە بەپەلەکان ڕووداوێکی گەورە ڕوویدا."
+        mock_rel.return_value = RelevanceEvaluation(score=9, is_breaking=True, category="politics_world", reason="Mock breaking", passed=True)
+        mock_scrape.return_value = (None, None)
+        mock_tr_article.return_value = (
+            "هێرشی بەپەلە لە پایتەخت ئەنجامدرا",
+            "بەپێی هەواڵە بەپەلەکان ڕووداوێکی گەورە ڕوویدا.",
+        )
 
         breaking_article = Article(
             original_url="https://reuters.com/world/breaking-news-urgent-1",
@@ -99,15 +100,16 @@ async def test_acceptance_criteria_3_normal_article_published_immediately(temp_d
     pipeline = ArticlePipeline(temp_db, publisher, health, metrics)
 
     from core.importance_ranker import RelevanceEvaluation
-    with patch.object(pipeline._translator, 'translate_title', new_callable=AsyncMock) as mock_tr_title, \
-         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary, \
-         patch.object(pipeline._extractor, 'fetch_full_article_text', new_callable=AsyncMock) as mock_scrape, \
+    with patch.object(pipeline._translator, 'translate_article', new_callable=AsyncMock) as mock_tr_article, \
+         patch.object(pipeline._extractor, 'fetch_article_content_and_image', new_callable=AsyncMock) as mock_scrape, \
          patch.object(pipeline._ranker, 'evaluate_global_relevance', new_callable=AsyncMock) as mock_rel:
         
-        mock_rel.return_value = RelevanceEvaluation(score=8, is_breaking=False, reason="Mock relevant", passed=True)
-        mock_scrape.return_value = None
-        mock_tr_title.return_value = "لێکۆڵینەوەیەکی زانستی نوێ بڵاوکرایەوە"
-        mock_tr_summary.return_value = "زانایان دۆزینەوەیەکی گرنگیان لە بواری گەردوونناسیدا کرد."
+        mock_rel.return_value = RelevanceEvaluation(score=8, is_breaking=False, category="science_space", reason="Mock relevant", passed=True)
+        mock_scrape.return_value = (None, None)
+        mock_tr_article.return_value = (
+            "لێکۆڵینەوەیەکی زانستی نوێ بڵاوکرایەوە",
+            "زانایان دۆزینەوەیەکی گرنگیان لە بواری گەردوونناسیدا کرد.",
+        )
 
         normal_article = Article(
             original_url="https://bbc.com/science/space-discovery-test",
@@ -187,15 +189,13 @@ async def test_acceptance_criteria_15_long_running_simulation_no_duplicates(temp
     pipeline = ArticlePipeline(temp_db, publisher, health, metrics)
 
     from core.importance_ranker import RelevanceEvaluation
-    with patch.object(pipeline._translator, 'translate_title', new_callable=AsyncMock) as mock_tr_title, \
-         patch.object(pipeline._translator, 'translate_summary', new_callable=AsyncMock) as mock_tr_summary, \
-         patch.object(pipeline._extractor, 'fetch_full_article_text', new_callable=AsyncMock) as mock_scrape, \
+    with patch.object(pipeline._translator, 'translate_article', new_callable=AsyncMock) as mock_tr_article, \
+         patch.object(pipeline._extractor, 'fetch_article_content_and_image', new_callable=AsyncMock) as mock_scrape, \
          patch.object(pipeline._ranker, 'evaluate_global_relevance', new_callable=AsyncMock) as mock_rel:
         
-        mock_rel.return_value = RelevanceEvaluation(score=8, is_breaking=False, reason="Mock relevant", passed=True)
-        mock_scrape.return_value = None
-        mock_tr_title.side_effect = lambda t: f"وەرگێڕدراو بۆ کوردی: {t}"
-        mock_tr_summary.side_effect = lambda s: f"پوختەی بابەت بە کوردی: {s}"
+        mock_rel.return_value = RelevanceEvaluation(score=8, is_breaking=False, category="politics_world", reason="Mock relevant", passed=True)
+        mock_scrape.return_value = (None, None)
+        mock_tr_article.side_effect = lambda title, summary="": (f"وەرگێڕدراو بۆ کوردی: {title}", f"پوختەی بابەت بە کوردی: {summary}")
 
         distinct_topics = [
             ("Global Economy Summit Concludes in Geneva with New Trade Accords", "https://example.com/world/economy-summit-geneva", "Global Economy & Financial Markets"),

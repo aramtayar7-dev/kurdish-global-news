@@ -107,9 +107,15 @@ class TestFeedAndKeywordDistributions:
         assert len(secondary_queries) == 4
         assert len(primary_queries) / len(source._queries) == 0.60
         for q in primary_queries:
-            assert any(term in q for term in ("war", "military", "leader", "Security Council", "NATO", "ceasefire"))
+            assert any(
+                term in q
+                for term in (
+                    "Kurdistan", "Rojava", "Diyarbakir", "Rojhelat",
+                    "war", "military", "leader", "Security Council", "NATO", "ceasefire",
+                )
+            )
         for q in secondary_queries:
-            assert any(term in q for term in ("intelligence", "cyber", "economy", "disaster"))
+            assert any(term in q for term in ("intelligence", "cyber", "economy", "science", "disaster"))
 
 
 class TestImportanceRankerBoosts:

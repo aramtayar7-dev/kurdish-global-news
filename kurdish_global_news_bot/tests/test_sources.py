@@ -148,6 +148,25 @@ class TestOfficialSources:
         assert source.source_type == "official"
 
 
+class TestKurdistanRegionalSource:
+    """Verify news feed coverage across all four parts of Kurdistan."""
+
+    def test_four_parts_of_kurdistan_covered(self):
+        from sources.kurdistan_source import KURDISTAN_FEEDS, KurdistanNewsSource
+
+        source = KurdistanNewsSource()
+        assert source.name == "KurdistanRegions"
+        assert source.enabled is True
+
+        regions = {feed["region"] for feed in KURDISTAN_FEEDS}
+        assert "South Kurdistan" in regions
+        assert "West Kurdistan" in regions
+        assert "North Kurdistan" in regions
+        assert "East Kurdistan" in regions
+        assert all(feed["category"] == "kurdistan" for feed in KURDISTAN_FEEDS)
+
+
+
 class TestSourceIsolation:
     """TEST 8: Verify that one source failure doesn't stop others."""
 

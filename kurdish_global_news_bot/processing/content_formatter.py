@@ -1,8 +1,8 @@
 """
 Kurdish Global News Bot — Content Formatter
 
-Formats translated articles for Telegram publication with proper
-Kurdish RTL-friendly formatting.
+Formats translated articles for Telegram publication with accurate Kurdish
+category labels, emojis, RTL-friendly layout, and clean sentence-boundary trimming.
 """
 
 from __future__ import annotations
@@ -12,37 +12,59 @@ import logging
 import re
 from typing import Optional
 
+from config import CATEGORY_EMOJIS, CATEGORY_META
+from processing.translator import trim_at_sentence_boundary
 from storage.models import Article
-from config import CATEGORY_EMOJIS
 
 logger = logging.getLogger("processing.formatter")
 
-# Central Kurdish (Sorani) translations for news categories
+# Central Kurdish (Sorani) category labels covering the 7 canonical keys + legacy aliases
 CATEGORY_LABELS_KURDISH: dict[str, str] = {
-    "Wars & Armed Conflicts": "شەڕ و پێکدادانی چەکداری",
-    "Military & Defense": "سەربازی و بەرگری",
-    "World Leaders & Governments": "سەرکردە و حکومەتەکان",
-    "Diplomacy & International Relations": "دیپلۆماسی و پەیوەندییە نێودەوڵەتییەکان",
-    "International Politics": "سیاسەتی نێودەوڵەتی",
-    "Global Economy & Financial Markets": "ئابووریی جیهانی و بازاڕەکان",
+    # Canonical 7 categories
+    "kurdistan": "کوردستان",
+    "military_conflict": "شەڕ و سەربازی",
+    "politics_world": "سیاسەت و جیهان",
+    "economy_markets": "ئابووری و بازاڕ",
+    "ai_tech": "تەکنەلۆژیا و زیرەکیی دەستکرد",
+    "cybersecurity": "ئاسایشی سایبەری",
+    "science_space": "زانست و بۆشایی ئاسمان",
+    # Legacy aliases
+    "Wars & Armed Conflicts": "شەڕ و سەربازی",
+    "Military & Defense": "شەڕ و سەربازی",
+    "World Leaders & Governments": "سیاسەت و جیهان",
+    "Diplomacy & International Relations": "سیاسەت و جیهان",
+    "International Politics": "سیاسەت و جیهان",
+    "Global Economy & Financial Markets": "ئابووری و بازاڕ",
+    "Energy, Oil & Gas": "ئابووری و بازاڕ",
+    "Business & Corporate": "ئابووری و بازاڕ",
     "AI & Technology": "تەکنەلۆژیا و زیرەکیی دەستکرد",
     "AI & Tech": "تەکنەلۆژیا و زیرەکیی دەستکرد",
-    "Science & Research": "زانست و توێژینەوە",
+    "Cybersecurity": "ئاسایشی سایبەری",
+    "Science & Research": "زانست و بۆشایی ئاسمان",
     "Science & Space": "زانست و بۆشایی ئاسمان",
     "Space & Astronomy": "زانست و بۆشایی ئاسمان",
-    "Cybersecurity": "ئاسایشی سایبەری",
-    "Health & Medical": "تەندروستی و پزیشکی",
-    "Climate & Environment": "کەشوهەوا و ژینگە",
-    "Natural Disasters & Emergencies": "کارەساتی سروشتی و فریاگوزاری",
-    "Energy, Oil & Gas": "وزە، نەوت و گاز",
-    "International Organizations": "ڕێکخراوە نێودەوڵەتییەکان",
-    "Human Rights & Humanitarian": "مافی مرۆڤ و کاروباری مرۆیی",
-    "Criminal Investigations & Security": "لێکۆڵینەوەی تاوان و ئاسایش",
-    "International Sports": "وەرزشی نێودەوڵەتی",
-    "Business & Corporate": "کاروبار و کۆمپانیاکان",
-    "World News": "هەواڵی جیهانی",
-    "Other Significant Events": "هەواڵی جیهانی",
+    "Health & Medical": "سیاسەت و جیهان",
+    "Climate & Environment": "سیاسەت و جیهان",
+    "Natural Disasters & Emergencies": "سیاسەت و جیهان",
+    "International Organizations": "سیاسەت و جیهان",
+    "Human Rights & Humanitarian": "سیاسەت و جیهان",
+    "Criminal Investigations & Security": "شەڕ و سەربازی",
+    "International Sports": "سیاسەت و جیهان",
+    "World News": "سیاسەت و جیهان",
+    "Other Significant Events": "سیاسەت و جیهان",
 }
+
+
+def resolve_category_display(category: Optional[str]) -> tuple[str, str]:
+    """Return (kurdish_label, emoji) for any canonical or legacy category string."""
+    if category and category in CATEGORY_META:
+        meta = CATEGORY_META[category]
+        return meta["label"], meta["emoji"]
+    if category:
+        label = CATEGORY_LABELS_KURDISH.get(category) or CATEGORY_LABELS_KURDISH.get(category.strip(), "سیاسەت و جیهان")
+        emoji = CATEGORY_EMOJIS.get(category, "🌍")
+        return label, emoji
+    return "سیاسەت و جیهان", "🌍"
 
 
 class ContentFormatter:
@@ -50,48 +72,30 @@ class ContentFormatter:
 
     def format_telegram_message(self, article: Article) -> str:
         """
-        Format an article as a Telegram HTML message.
-
-        Structure:
-        1. Category emoji + Sorani headline
-        2. Concise Sorani summary
-        3. Category tag
-        4. Source name
-        5. Publication date (if available)
-        6. Original article URL
+        Format an article as a Telegram HTML text message.
         """
         parts: list[str] = []
 
-        # 1. Headline
-        emoji = CATEGORY_EMOJIS.get(article.category, "📰")
+        kurdish_cat, emoji = resolve_category_display(article.category)
         headline = self._escape_html(article.translated_title or article.original_title)
         parts.append(f"{emoji} <b>{headline}</b>")
 
-        # 2. Summary
         summary = article.translated_summary or article.original_summary
         if summary:
-            summary = self._escape_html(self._truncate_summary(summary, max_len=600))
-            parts.append(f"\n{summary}")
+            trimmed = self._truncate_summary(summary, max_len=650)
+            parts.append(f"\n{self._escape_html(trimmed)}")
 
-        # 3. Separator and metadata
         parts.append("\n━━━━━━━━━━━━━━━")
-
-        # 4. Category
-        raw_cat = article.category or "Other Significant Events"
-        kurdish_cat = CATEGORY_LABELS_KURDISH.get(raw_cat, raw_cat)
         parts.append(f"📂 {self._escape_html(kurdish_cat)}")
 
-        # 5. Source
         if article.source_name:
             parts.append(f"📡 {self._escape_html(article.source_name)}")
 
-        # 6. Date
         if article.publication_date:
             date_str = self._format_date(article.publication_date)
             if date_str:
                 parts.append(f"🕐 {date_str}")
 
-        # 7. Original link
         if article.original_url:
             safe_url = self._escape_html(article.original_url)
             parts.append(f'\n🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
@@ -100,39 +104,50 @@ class ContentFormatter:
 
     def format_caption(self, article: Article) -> str:
         """
-        Format a shorter caption for image posts.
-        Telegram captions have a 1024 character limit.
+        Format a photo caption guaranteed to fit within Telegram's 1024-character limit
+        without cutting mid-sentence (`...`) or truncating footer tags.
         """
-        parts: list[str] = []
-
-        emoji = CATEGORY_EMOJIS.get(article.category, "📰")
+        kurdish_cat, emoji = resolve_category_display(article.category)
         headline = self._escape_html(article.translated_title or article.original_title)
-        parts.append(f"{emoji} <b>{headline}</b>")
+        header = f"{emoji} <b>{headline}</b>"
 
-        summary = article.translated_summary or article.original_summary
-        if summary:
-            # Shorter summary for captions (fits comfortably in 1024 char limit)
-            summary = self._escape_html(self._truncate_summary(summary, max_len=650))
-            parts.append(f"\n{summary}")
-
-        parts.append("\n━━━━━━━━━━━━━━━")
-
-        raw_cat = article.category or "Other Significant Events"
-        kurdish_cat = CATEGORY_LABELS_KURDISH.get(raw_cat, raw_cat)
-        parts.append(f"📂 {self._escape_html(kurdish_cat)}")
-
+        footer_parts = [
+            "\n━━━━━━━━━━━━━━━",
+            f"📂 {self._escape_html(kurdish_cat)}",
+        ]
         if article.source_name:
-            parts.append(f"📡 {self._escape_html(article.source_name)}")
-
+            footer_parts.append(f"📡 {self._escape_html(article.source_name)}")
         if article.original_url:
             safe_url = self._escape_html(article.original_url)
-            parts.append(f'🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
+            footer_parts.append(f'🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
+        footer = "\n".join(footer_parts)
 
-        result = "\n".join(parts)
+        summary = (article.translated_summary or article.original_summary or "").strip()
+        if not summary:
+            caption = f"{header}\n{footer}"
+            return caption if len(caption) <= 1024 else f"{header[:900]}</b>\n{footer}"[:1024]
 
-        # Enforce Telegram caption limit
+        # Compute exact budget for the summary inside Telegram's 1024-char caption limit
+        fixed_overhead = len(header) + len(footer) + 4  # spacing newlines
+        max_summary_budget = min(650, max(120, 1024 - fixed_overhead))
+
+        candidate_summary = self._truncate_summary(summary, max_len=max_summary_budget)
+        escaped_summary = self._escape_html(candidate_summary)
+        result = f"{header}\n\n{escaped_summary}\n{footer}"
+
+        # Iteratively step down by sentence boundary if HTML escaping expanded past 1024 chars
+        while len(result) > 1024 and max_summary_budget > 80:
+            max_summary_budget -= 60
+            candidate_summary = self._truncate_summary(summary, max_len=max_summary_budget)
+            escaped_summary = self._escape_html(candidate_summary)
+            result = f"{header}\n\n{escaped_summary}\n{footer}"
+
         if len(result) > 1024:
-            result = result[:1020] + "..."
+            # Drop optional summary cleanly rather than breaking HTML anchor or cutting mid-sentence
+            minimal = f"{header}\n{footer}"
+            if len(minimal) <= 1024:
+                return minimal
+            return f"<b>{headline[:200]}</b>\n{footer}"[:1024]
 
         return result
 
@@ -142,27 +157,9 @@ class ContentFormatter:
         return html.escape(text, quote=False)
 
     @staticmethod
-    def _truncate_summary(text: str, max_len: int = 600) -> str:
-        """Truncate summary at a sentence boundary."""
-        if len(text) <= max_len:
-            return text
-
-        truncated = text[:max_len]
-        # Try to cut at a sentence boundary
-        last_period = truncated.rfind(".")
-        last_question = truncated.rfind("؟")  # Kurdish question mark
-        last_excl = truncated.rfind("!")
-
-        cut_point = max(last_period, last_question, last_excl)
-        if cut_point > max_len // 2:
-            return truncated[:cut_point + 1]
-
-        # Fall back to word boundary
-        last_space = truncated.rfind(" ")
-        if last_space > max_len // 2:
-            return truncated[:last_space] + "..."
-
-        return truncated + "..."
+    def _truncate_summary(text: str, max_len: int = 650) -> str:
+        """Trim summary cleanly at a full sentence boundary (., ؟, !) with no mid-sentence ellipsis."""
+        return trim_at_sentence_boundary(text, max_len=max_len)
 
     @staticmethod
     def _format_date(date_str: str) -> str:
@@ -176,5 +173,4 @@ class ContentFormatter:
                 return dt.strftime("%Y-%m-%d %H:%M UTC")
         except Exception:
             pass
-        # Return raw date if parsing fails
         return date_str[:20] if len(date_str) > 20 else date_str

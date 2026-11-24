@@ -32,20 +32,20 @@ class GDELTSource(BaseSource):
         self._session: Optional[aiohttp.ClientSession] = None
         self._query_index = 0
         self._request_delay = request_delay
-        # 60/40 weighted queries: 60% Primary (Wars, Defense, World Leaders), 40% Secondary (AI, Cyber, Economy, Disasters)
+        # 60/40 weighted queries covering Kurdistan + Global Primary (60%) & Secondary (40%)
         self._queries = [
-            # Primary Focus (~60%)
-            "war armed conflict combat",
-            "military defense airstrike missile",
-            "world leaders president prime minister",
-            "UN Security Council resolution",
-            "NATO military alliance geopolitics",
-            "ceasefire peace negotiation conflict",
-            # Secondary Focus (~40%)
-            "artificial intelligence AI machine learning",
+            # Primary Focus (~60%: Kurdistan 4 parts, Wars, Defense, World Leaders)
+            "Kurdistan Erbil Sulaymaniyah Kirkuk",
+            "Rojava Qamishli SDF Kurdish Syria",
+            "Diyarbakir Amed Rojhelat Sanandaj Kurdish",
+            "war armed conflict airstrike missile",
+            "world leaders president prime minister UN NATO",
+            "ceasefire geopolitical sanctions conflict",
+            # Secondary Focus (~40%: AI, Cyber, Economy, Science)
+            "artificial intelligence AI model breakthrough",
             "cyberattack cybersecurity ransomware breach",
-            "global economy inflation recession financial",
-            "natural disaster emergency earthquake tsunami",
+            "global economy inflation financial crisis",
+            "science space exploration natural disaster",
         ]
 
     async def initialize(self) -> None:

@@ -24,6 +24,7 @@ from sources.duckduckgo_source import DuckDuckGoSource
 from sources.rss_source import RSSSource
 from sources.gdelt_source import GDELTSource
 from sources.official_sources import OfficialSourcesAdapter
+from sources.kurdistan_source import KurdistanNewsSource
 from processing.extractor import ArticleExtractor
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
@@ -286,6 +287,10 @@ class NewsEngine:
         official = OfficialSourcesAdapter()
         await official.initialize()
         self._sources.append(official)
+
+        kurdistan = KurdistanNewsSource()
+        await kurdistan.initialize()
+        self._sources.append(kurdistan)
 
         # Register sources in database
         for source in self._sources:

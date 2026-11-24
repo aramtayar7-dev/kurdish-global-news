@@ -1,38 +1,42 @@
 """
 Kurdish Global News Bot — Telegram Publisher
 
-Publishes translated articles to a Telegram channel with images
-and handles rate limiting and delivery confirmation.
+Publishes Gemini-translated Kurdish news articles with branded 1280x720 news
+graphic cards via send_photo, clean sentence-boundary caption trimming,
+IPv4-hardened HTTPXRequest, and temporary card file cleanup.
 """
 
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
+from pathlib import Path
 from typing import Optional
 
 import httpx
 from telegram import Bot, LinkPreviewOptions
-from telegram.request import HTTPXRequest
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter, TelegramError, TimedOut, NetworkError, BadRequest
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.request import HTTPXRequest
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, ENABLE_IMAGES
-from storage.models import Article
+from config import ENABLE_IMAGES, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
+from processing.card_generator import NewsCardGenerator
 from processing.content_formatter import ContentFormatter
+from processing.translator import trim_at_sentence_boundary
+from storage.models import Article
 from tg_bot.image_handler import ImageHandler
 
 logger = logging.getLogger("tg_bot.publisher")
 
 
 class TelegramPublisher:
-    """Publishes news articles to a Telegram channel."""
+    """Publishes news articles with branded graphic cards to a Telegram channel."""
 
     def __init__(self) -> None:
         self._bot: Optional[Bot] = None
         self._formatter = ContentFormatter()
         self._image_handler = ImageHandler()
+        self._card_generator = NewsCardGenerator()
         self._channel_id = TELEGRAM_CHANNEL_ID
 
     async def initialize(self) -> None:
@@ -84,59 +88,75 @@ class TelegramPublisher:
         if self._bot:
             await self._bot.shutdown()
 
+    @staticmethod
+    def _trim_caption_at_sentence(caption: str, max_len: int = 1024) -> str:
+        """Ensure caption never exceeds Telegram's limit or breaks mid-sentence."""
+        if len(caption) <= max_len:
+            return caption
+        return trim_at_sentence_boundary(caption, max_len=max_len)
+
     async def publish_article(self, article: Article) -> Optional[int]:
         """
-        Publish an article to the Telegram channel.
-
-        Returns the Telegram message_id on success, or None on failure.
-        Does NOT wait for a batch or hourly schedule — publishes immediately.
+        Publish an article immediately using an auto-generated branded 1280x720 card.
+        Falls back cleanly to text-only if card photo upload fails.
         """
         if not self._bot:
             raise RuntimeError("Publisher not initialized. Call initialize() first.")
 
-        # Try with image first (if enabled and available)
-        if ENABLE_IMAGES and article.image_url:
-            message_id = await self._publish_with_image(article)
+        if ENABLE_IMAGES:
+            message_id = await self._publish_with_card(article)
             if message_id is not None:
                 return message_id
-            # Fall back to text-only if image fails
-            logger.info("Image publish failed, falling back to text-only.")
+            logger.info("Card photo publish failed, falling back to text-only.")
 
-        # Text-only publish
         return await self._publish_text_only(article)
 
-    async def _publish_with_image(self, article: Article) -> Optional[int]:
-        """Publish an article with an image."""
+    async def _publish_with_card(self, article: Article) -> Optional[int]:
+        """Generate branded 1280x720 news card, send via send_photo, and clean up temp file."""
         assert self._bot is not None
 
-        image_data = await self._image_handler.download_image(article.image_url)
-        if not image_data:
-            return None
+        image_bytes: Optional[bytes] = None
+        if article.image_url:
+            image_bytes = await self._image_handler.download_image(article.image_url)
 
-        caption = self._formatter.format_caption(article)
+        caption = self._trim_caption_at_sentence(self._formatter.format_caption(article))
+        card_path: Optional[Path] = None
 
         try:
-            message = await self._send_with_retry(
-                self._bot.send_photo,
-                chat_id=self._channel_id,
-                photo=io.BytesIO(image_data),
-                caption=caption,
-                parse_mode=ParseMode.HTML,
+            card_path = await self._card_generator.generate_card_file(
+                article, image_bytes=image_bytes
             )
+            with open(card_path, "rb") as photo_file:
+                message = await self._send_with_retry(
+                    self._bot.send_photo,
+                    chat_id=self._channel_id,
+                    photo=photo_file,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
             if message:
-                logger.info("Published with image: msg_id=%d, title='%s'",
-                            message.message_id, article.original_title[:60])
+                logger.info(
+                    "Published branded card: msg_id=%d, category=%s, title='%s'",
+                    message.message_id,
+                    article.category,
+                    article.original_title[:60],
+                )
                 return message.message_id
         except BadRequest as e:
-            # Image might be invalid for Telegram
-            logger.warning("Telegram rejected image: %s", str(e)[:200])
+            logger.warning("Telegram rejected branded card: %s", str(e)[:200])
         except Exception as e:
-            logger.error("Image publish error: %s", str(e)[:200])
+            logger.error("Card publish error: %s", str(e)[:200])
+        finally:
+            if card_path is not None:
+                try:
+                    card_path.unlink(missing_ok=True)
+                except Exception as cleanup_err:
+                    logger.debug("Temp card cleanup failed (%s): %s", card_path, cleanup_err)
 
         return None
 
     async def _publish_text_only(self, article: Article) -> Optional[int]:
-        """Publish a text-only article."""
+        """Publish a text-only article with web page preview disabled."""
         assert self._bot is not None
 
         text = self._formatter.format_telegram_message(article)
@@ -150,8 +170,11 @@ class TelegramPublisher:
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
             if message:
-                logger.info("Published text-only: msg_id=%d, title='%s'",
-                            message.message_id, article.original_title[:60])
+                logger.info(
+                    "Published text-only: msg_id=%d, title='%s'",
+                    message.message_id,
+                    article.original_title[:60],
+                )
                 return message.message_id
         except Exception as e:
             logger.error("Text publish error: %s", str(e)[:200])
@@ -174,16 +197,22 @@ class TelegramPublisher:
                 await asyncio.sleep(wait_time)
             except NetworkError as e:
                 wait_time = 10 * (attempt + 1)
-                logger.warning("Telegram network error: %s. Retrying in %ds.",
-                               str(e)[:100], wait_time)
+                logger.warning(
+                    "Telegram network error: %s. Retrying in %ds.",
+                    str(e)[:100],
+                    wait_time,
+                )
                 await asyncio.sleep(wait_time)
             except BadRequest as e:
-                # Don't retry bad requests (message format errors)
                 logger.error("Telegram BadRequest: %s", str(e)[:200])
                 raise
             except TelegramError as e:
-                logger.error("Telegram error (attempt %d/%d): %s",
-                             attempt + 1, max_retries, str(e)[:200])
+                logger.error(
+                    "Telegram error (attempt %d/%d): %s",
+                    attempt + 1,
+                    max_retries,
+                    str(e)[:200],
+                )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(5 * (attempt + 1))
 

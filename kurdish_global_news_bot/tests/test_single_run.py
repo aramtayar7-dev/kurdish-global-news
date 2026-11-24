@@ -112,18 +112,18 @@ def test_github_actions_workflow_configuration():
     assert "bot-db-" in content
 
     # Execution & Directory
+    assert "libfribidi0 libharfbuzz0b libraqm0" in content
     assert "Prefer IPv4 for Telegram API" in content
     assert "net.ipv6.conf.all.disable_ipv6=1" in content
     assert "net.ipv6.conf.default.disable_ipv6=1" in content
     assert "working-directory: kurdish_global_news_bot" in content
     assert "python main.py --once" in content
 
-    # Environment variables & secrets
+    # Environment variables & secrets (Groq stripped, Gemini primary)
     assert "TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}" in content
     assert "TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}" in content
-    assert "GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}" in content
+    assert "GROQ_API_KEY" not in content
     assert "GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}" in content
-    assert "ENABLE_GEMINI_PROOFREAD: 'true'" in content
     assert "ENABLE_LOCAL_LLM: 'false'" in content
     assert "AUTO_PUBLISH: 'true'" in content
     assert "MAX_ARTICLE_AGE_MINUTES: '60'" in content

@@ -75,17 +75,17 @@ ENABLE_LOCAL_LLM: bool = _bool(os.getenv("ENABLE_LOCAL_LLM"), False)
 PORT: int = _int(os.getenv("PORT"), 10000)
 
 # ═══════════════════════════════════════════════════
-# Translation / Groq LLM
-# ═══════════════════════════════════════════════════
-GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
-
-# ═══════════════════════════════════════════════════
-# Gemini AI Proofreading & Quality Check (Stage 4)
+# Gemini AI Engine (Primary Classification, Translation & Summarization)
 # ═══════════════════════════════════════════════════
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
 ENABLE_GEMINI_PROOFREAD: bool = _bool(os.getenv("ENABLE_GEMINI_PROOFREAD"), True)
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+
+# Branding & Card Generation
+CHANNEL_HANDLE: str = os.getenv("CHANNEL_HANDLE", "@KurdishGlobalNews").strip() or "@KurdishGlobalNews"
+ASSETS_DIR: Path = _PROJECT_ROOT / "assets"
+CARD_WIDTH: int = 1280
+CARD_HEIGHT: int = 720
 
 # ═══════════════════════════════════════════════════
 # Logging
@@ -130,9 +130,21 @@ BACKUP_DIR: str = str(_PROJECT_ROOT / "backups")
 BACKUP_INTERVAL_HOURS: int = _int(os.getenv("BACKUP_INTERVAL_HOURS"), 6)
 
 # ═══════════════════════════════════════════════════
-# News Categories
+# Canonical News Categories & Metadata
 # ═══════════════════════════════════════════════════
-NEWS_CATEGORIES: list[str] = [
+CATEGORY_META: dict[str, dict[str, str]] = {
+    "kurdistan": {"label": "کوردستان", "emoji": "☀️"},
+    "military_conflict": {"label": "شەڕ و سەربازی", "emoji": "⚔️"},
+    "politics_world": {"label": "سیاسەت و جیهان", "emoji": "🌍"},
+    "economy_markets": {"label": "ئابووری و بازاڕ", "emoji": "📈"},
+    "ai_tech": {"label": "تەکنەلۆژیا و زیرەکیی دەستکرد", "emoji": "🤖"},
+    "cybersecurity": {"label": "ئاسایشی سایبەری", "emoji": "🛡️"},
+    "science_space": {"label": "زانست و بۆشایی ئاسمان", "emoji": "🚀"},
+}
+
+CANONICAL_CATEGORIES: tuple[str, ...] = tuple(CATEGORY_META.keys())
+
+NEWS_CATEGORIES: list[str] = list(CANONICAL_CATEGORIES) + [
     "International Politics",
     "World Leaders & Governments",
     "Wars & Armed Conflicts",
@@ -157,6 +169,9 @@ NEWS_CATEGORIES: list[str] = [
 
 # Primary category focus (~60% target)
 PRIMARY_CATEGORIES: set[str] = {
+    "kurdistan",
+    "military_conflict",
+    "politics_world",
     "Wars & Armed Conflicts",
     "Military & Defense",
     "World Leaders & Governments",
@@ -171,7 +186,7 @@ SECONDARY_CATEGORIES: set[str] = {
 
 
 def is_primary_category(category: str | None) -> bool:
-    """Return True if category belongs to Primary Focus (War, Military, World Leaders, Geopolitics)."""
+    """Return True if category belongs to Primary Focus (Kurdistan, War, Military, World Politics)."""
     if not category:
         return False
     return category in PRIMARY_CATEGORIES
@@ -182,58 +197,58 @@ def is_primary_category(category: str | None) -> bool:
 # Weighted 60% Primary Focus / 40% Secondary Focus
 # ═══════════════════════════════════════════════════
 SEARCH_KEYWORDS: list[str] = [
-    # ── Primary Focus (~60%): Wars, Military, World Leaders, Geopolitics ──
+    # ── Primary Focus (~60%): Kurdistan (4 Parts), Wars, Military, Geopolitics ──
+    "Kurdistan Erbil Sulaymaniyah Kirkuk",
+    "Rojava Qamishli Kobani SDF Syria",
+    "Diyarbakir Amed Van Kurdish Turkey",
+    "Rojhelat Sanandaj Mahabad Kermanshah Iran",
     "war armed conflict combat",
     "military defense airstrike missile",
     "world leaders president prime minister",
     "UN Security Council resolution",
     "NATO military alliance summit",
     "geopolitical crisis escalation conflict",
-    "frontline casualties military operation",
-    "defense missile nuclear deterrent",
-    "government leader summit diplomacy",
     "international sanctions crisis",
     "ceasefire peace negotiations treaty",
-    "state leaders bilateral meeting crisis",
-    # ── Secondary Focus (~40%): AI, Cyber, Economy, Disasters, Science ──
+    # ── Secondary Focus (~40%): AI, Cyber, Economy, Science ──
     "artificial intelligence AI model breakthrough",
     "cybersecurity major cyberattack ransomware breach",
     "zero-day exploit cyber espionage hacking",
     "global economy inflation financial crisis",
-    "major earthquake natural disaster tsunami",
+    "stock market semiconductors Nvidia tech earnings",
     "science space mission exploration NASA",
     "global energy oil gas supply crisis",
-    "global health disease outbreak WHO",
+    "major earthquake natural disaster emergency",
 ]
 
 # ═══════════════════════════════════════════════════
-# RSS Feeds
+# RSS Feeds (Global Sources — general feeds avoid hardcoded war labels)
 # Weighted ~60% Primary Focus / ~40% Secondary Focus
 # ═══════════════════════════════════════════════════
 RSS_FEEDS: list[dict[str, str]] = [
-    # ── Primary Focus Feeds (~60%): Wars, Military, World Leaders, Geopolitics ──
-    {"name": "Reuters World", "url": "https://feeds.reuters.com/Reuters/worldNews", "category": "International Politics"},
-    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "category": "International Politics"},
-    {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "category": "Wars & Armed Conflicts"},
-    {"name": "AP News", "url": "https://rsshub.app/apnews/topics/apf-topnews", "category": "International Politics"},
-    {"name": "France24 EN", "url": "https://www.france24.com/en/rss", "category": "International Politics"},
-    {"name": "DW News", "url": "https://rss.dw.com/rdf/rss-en-all", "category": "International Politics"},
-    {"name": "The Guardian World", "url": "https://www.theguardian.com/world/rss", "category": "International Politics"},
-    {"name": "NPR News", "url": "https://feeds.npr.org/1001/rss.xml", "category": "International Politics"},
-    {"name": "UN News", "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml", "category": "Diplomacy & International Relations"},
-    {"name": "Defense News Global", "url": "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/", "category": "Military & Defense"},
-    {"name": "Military Times", "url": "https://www.militarytimes.com/arc/outboundfeeds/rss/category/news/", "category": "Military & Defense"},
-    {"name": "GDELT Events", "url": "http://data.gdeltproject.org/gdeltv2/lastupdate.txt", "category": "Wars & Armed Conflicts"},
+    # ── Primary Focus Feeds (~60%): Politics, Diplomacy, Defense ──
+    {"name": "Reuters World", "url": "https://feeds.reuters.com/Reuters/worldNews", "category": "politics_world"},
+    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "category": "politics_world"},
+    {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "category": "politics_world"},
+    {"name": "AP News", "url": "https://rsshub.app/apnews/topics/apf-topnews", "category": "politics_world"},
+    {"name": "France24 EN", "url": "https://www.france24.com/en/rss", "category": "politics_world"},
+    {"name": "DW News", "url": "https://rss.dw.com/rdf/rss-en-all", "category": "politics_world"},
+    {"name": "The Guardian World", "url": "https://www.theguardian.com/world/rss", "category": "politics_world"},
+    {"name": "NPR News", "url": "https://feeds.npr.org/1001/rss.xml", "category": "politics_world"},
+    {"name": "UN News", "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml", "category": "politics_world"},
+    {"name": "Defense News Global", "url": "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/", "category": "military_conflict"},
+    {"name": "Military Times", "url": "https://www.militarytimes.com/arc/outboundfeeds/rss/category/news/", "category": "military_conflict"},
+    {"name": "GDELT Events", "url": "http://data.gdeltproject.org/gdeltv2/lastupdate.txt", "category": "military_conflict"},
 
-    # ── Secondary Focus Feeds (~40%): AI, Cyber, Economy, Disasters, Science ──
-    {"name": "Reuters Technology", "url": "https://feeds.reuters.com/reuters/technologyNews", "category": "AI & Technology"},
-    {"name": "BBC Technology", "url": "https://feeds.bbci.co.uk/news/technology/rss.xml", "category": "AI & Technology"},
-    {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "category": "Cybersecurity"},
-    {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "category": "Cybersecurity"},
-    {"name": "Reuters Business", "url": "https://feeds.reuters.com/reuters/businessNews", "category": "Global Economy & Financial Markets"},
-    {"name": "CNBC World", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362", "category": "Global Economy & Financial Markets"},
-    {"name": "Reuters Science", "url": "https://feeds.reuters.com/reuters/scienceNews", "category": "Science & Research"},
-    {"name": "Space.com", "url": "https://www.space.com/feeds/all", "category": "Space & Astronomy"},
+    # ── Secondary Focus Feeds (~40%): AI, Cyber, Economy, Science ──
+    {"name": "Reuters Technology", "url": "https://feeds.reuters.com/reuters/technologyNews", "category": "ai_tech"},
+    {"name": "BBC Technology", "url": "https://feeds.bbci.co.uk/news/technology/rss.xml", "category": "ai_tech"},
+    {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "category": "cybersecurity"},
+    {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "category": "cybersecurity"},
+    {"name": "Reuters Business", "url": "https://feeds.reuters.com/reuters/businessNews", "category": "economy_markets"},
+    {"name": "CNBC World", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362", "category": "economy_markets"},
+    {"name": "Reuters Science", "url": "https://feeds.reuters.com/reuters/scienceNews", "category": "science_space"},
+    {"name": "Space.com", "url": "https://www.space.com/feeds/all", "category": "science_space"},
 ]
 
 # ═══════════════════════════════════════════════════
@@ -258,6 +273,17 @@ SOURCE_CREDIBILITY: dict[str, float] = {
     "space.com": 0.80,
     "un news": 0.90,
     "who": 0.92,
+    "kurdistan24": 0.86,
+    "rudaw": 0.86,
+    "pukmedia": 0.78,
+    "north press agency": 0.82,
+    "rojava information center": 0.82,
+    "bianet": 0.78,
+    "khrn": 0.82,
+    "defense news": 0.84,
+    "the hacker news": 0.84,
+    "bleepingcomputer": 0.84,
+    "google news": 0.78,
     "default": 0.50,
 }
 
@@ -265,26 +291,35 @@ SOURCE_CREDIBILITY: dict[str, float] = {
 # Category-to-emoji mapping for Telegram posts
 # ═══════════════════════════════════════════════════
 CATEGORY_EMOJIS: dict[str, str] = {
+    # Canonical 7 categories
+    "kurdistan": "☀️",
+    "military_conflict": "⚔️",
+    "politics_world": "🌍",
+    "economy_markets": "📈",
+    "ai_tech": "🤖",
+    "cybersecurity": "🛡️",
+    "science_space": "🚀",
+    # Legacy fallbacks
     "International Politics": "🌍",
-    "World Leaders & Governments": "🏛️",
+    "World Leaders & Governments": "🌍",
     "Wars & Armed Conflicts": "⚔️",
-    "Military & Defense": "🛡️",
-    "Diplomacy & International Relations": "🤝",
-    "Global Economy & Financial Markets": "📊",
+    "Military & Defense": "⚔️",
+    "Diplomacy & International Relations": "🌍",
+    "Global Economy & Financial Markets": "📈",
     "AI & Technology": "🤖",
-    "Science & Research": "🔬",
-    "Health & Medical": "🏥",
-    "Climate & Environment": "🌿",
-    "Natural Disasters & Emergencies": "🚨",
-    "Energy, Oil & Gas": "⛽",
-    "Cybersecurity": "🔒",
-    "International Organizations": "🏢",
-    "Human Rights & Humanitarian": "✊",
-    "Criminal Investigations & Security": "🔍",
+    "Science & Research": "🚀",
+    "Health & Medical": "🌍",
+    "Climate & Environment": "🌍",
+    "Natural Disasters & Emergencies": "🌍",
+    "Energy, Oil & Gas": "📈",
+    "Cybersecurity": "🛡️",
+    "International Organizations": "🌍",
+    "Human Rights & Humanitarian": "🌍",
+    "Criminal Investigations & Security": "⚔️",
     "Space & Astronomy": "🚀",
-    "International Sports": "🏆",
-    "Business & Corporate": "💼",
-    "Other Significant Events": "📰",
+    "International Sports": "🌍",
+    "Business & Corporate": "📈",
+    "Other Significant Events": "🌍",
 }
 
 # ═══════════════════════════════════════════════════

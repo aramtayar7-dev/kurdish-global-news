@@ -10,7 +10,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from sources.base import RawArticle
 from storage.models import Article
@@ -48,27 +48,41 @@ COUNTRY_DOMAINS: dict[str, str] = {
     ".ua": "Ukraine", ".pk": "Pakistan",
 }
 
-# Category keywords for classification
+# Category keywords for fallback classification onto the 7 canonical categories
 CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "Wars & Armed Conflicts": ["war", "attack", "airstrike", "bombing", "offensive", "ceasefire", "battle", "troops", "killed", "casualties"],
-    "Military & Defense": ["military", "army", "navy", "missile", "weapon", "defense", "pentagon", "drone", "nuclear weapon"],
-    "International Politics": ["president", "prime minister", "parliament", "election", "government", "sanctions", "summit", "referendum", "legislation"],
-    "Diplomacy & International Relations": ["diplomat", "embassy", "treaty", "negotiation", "UN", "bilateral", "alliance", "accord"],
-    "Global Economy & Financial Markets": ["economy", "stock market", "gdp", "inflation", "recession", "trade", "tariff", "bank", "federal reserve", "interest rate"],
-    "AI & Technology": ["artificial intelligence", "ai", "chatgpt", "machine learning", "startup", "tech", "silicon valley", "chip", "semiconductor"],
-    "Science & Research": ["research", "study", "scientist", "discovery", "journal", "university", "experiment", "breakthrough"],
-    "Health & Medical": ["health", "vaccine", "disease", "pandemic", "who", "hospital", "drug", "medical", "cancer", "virus"],
-    "Climate & Environment": ["climate", "carbon", "emissions", "global warming", "renewable", "pollution", "environment", "deforestation"],
-    "Natural Disasters & Emergencies": ["earthquake", "hurricane", "flood", "tornado", "tsunami", "wildfire", "eruption", "emergency", "disaster"],
-    "Energy, Oil & Gas": ["oil", "gas", "opec", "energy", "petroleum", "pipeline", "solar", "wind power", "nuclear energy"],
-    "Cybersecurity": ["hack", "cyber", "breach", "ransomware", "data leak", "malware", "cybersecurity", "phishing"],
-    "International Organizations": ["united nations", "un", "nato", "eu", "who", "imf", "world bank", "iaea", "g7", "g20"],
-    "Human Rights & Humanitarian": ["human rights", "refugee", "humanitarian", "asylum", "persecution", "genocide", "discrimination"],
-    "Criminal Investigations & Security": ["arrest", "investigation", "crime", "terror", "fbi", "interpol", "smuggling", "cartel"],
-    "Space & Astronomy": ["space", "nasa", "spacex", "satellite", "asteroid", "mars", "moon", "orbit", "astronaut", "telescope"],
-    "International Sports": ["olympics", "world cup", "fifa", "champion", "tournament", "medal", "athletics"],
-    "Business & Corporate": ["merger", "acquisition", "ceo", "ipo", "revenue", "profit", "layoff", "startup"],
-    "World Leaders & Governments": ["biden", "putin", "xi jinping", "macron", "modi", "erdogan", "zelensky", "leader"],
+    "kurdistan": [
+        "kurdistan", "kurdish", "erbil", "hewler", "sulaymaniyah", "duhok", "kirkuk",
+        "rojava", "qamishli", "kobani", "hasakah", "sdf", "peshmerga", "krg",
+        "diyarbakir", "amed", "van ", "bakur", "rojhelat", "sanandaj", "mahabad",
+        "urmia", "kermanshah", "هەولێر", "سلێمانی", "کەرکوک", "کوردستان", "ڕۆژئاوا", "دهۆک",
+    ],
+    "military_conflict": [
+        "war", "attack", "airstrike", "bombing", "offensive", "ceasefire", "battle",
+        "troops", "killed", "casualties", "military", "army", "navy", "missile",
+        "weapon", "defense", "pentagon", "drone", "nuclear weapon",
+    ],
+    "economy_markets": [
+        "economy", "stock market", "gdp", "inflation", "recession", "trade", "tariff",
+        "bank", "federal reserve", "interest rate", "oil", "gas", "opec", "energy",
+        "nvidia", "earnings", "ipo", "revenue", "profit",
+    ],
+    "ai_tech": [
+        "artificial intelligence", "ai", "chatgpt", "openai", "anthropic", "gemini",
+        "llm", "machine learning", "tech", "silicon valley", "semiconductor", "chip",
+    ],
+    "cybersecurity": [
+        "hack", "cyber", "breach", "ransomware", "data leak", "malware",
+        "cybersecurity", "phishing", "zero-day", "vulnerability",
+    ],
+    "science_space": [
+        "space", "nasa", "spacex", "satellite", "asteroid", "mars", "moon", "orbit",
+        "astronaut", "telescope", "research", "study", "scientist", "discovery",
+    ],
+    "politics_world": [
+        "president", "prime minister", "parliament", "election", "government",
+        "sanctions", "summit", "referendum", "legislation", "diplomat", "embassy",
+        "treaty", "negotiation", "united nations", "nato", "eu",
+    ],
 }
 
 
@@ -88,6 +102,7 @@ class ArticleExtractor:
         article.image_url = raw.image_url.strip()
         article.discovered_at = datetime.now(timezone.utc).isoformat()
         article.country = raw.country or self._detect_country(raw.url)
+        article.region = raw.region.strip() if raw.region else ""
         article.category = raw.category or self._classify_category(raw.title, raw.summary)
 
         # Compute deduplication hashes
@@ -109,9 +124,9 @@ class ArticleExtractor:
         return ""
 
     def _classify_category(self, title: str, summary: str) -> str:
-        """Classify article into a category based on keyword matching."""
+        """Classify article into one of the canonical categories based on keyword matching."""
         text = f"{title} {summary}".lower()
-        best_category = "Other Significant Events"
+        best_category = "politics_world"
         best_score = 0
 
         for category, keywords in CATEGORY_KEYWORDS.items():
@@ -138,28 +153,69 @@ class ArticleExtractor:
         Returns up to the first ~3,000 characters of clean article text,
         or None if scraping failed or returned empty content.
         """
+        text, _ = await self.fetch_article_content_and_image(url)
+        return text
+
+    async def fetch_article_content_and_image(self, url: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Asynchronously fetch the webpage HTML from url and extract BOTH:
+        1. Main article body text (up to ~3,000 chars)
+        2. Representative article image URL (og:image / twitter:image)
+        """
         if not url or not url.startswith(("http://", "https://")):
-            return None
+            return None, None
 
         timeout = aiohttp.ClientTimeout(total=10.0)
+        final_url = url
         try:
             async with aiohttp.ClientSession(timeout=timeout, headers=SCRAPING_HEADERS) as session:
                 async with session.get(url, allow_redirects=True) as response:
                     if response.status != 200:
                         logger.warning("Scraping %s returned HTTP %d", url[:80], response.status)
-                        return None
+                        return None, None
 
+                    final_url = str(response.url)
                     content_type = response.headers.get("Content-Type", "").lower()
                     if content_type and "text/html" not in content_type and "application/xhtml" not in content_type:
                         logger.warning("Scraping %s non-HTML content type: %s", url[:80], content_type)
-                        return None
+                        return None, None
 
                     html = await response.text(errors="replace")
         except Exception as e:
             logger.warning("Scraping failed for %s: %s", url[:80], str(e)[:150])
+            return None, None
+
+        body = self.extract_article_body_from_html(html)
+        og_image = self.extract_og_image_from_html(html, base_url=final_url)
+        return body, og_image
+
+    @staticmethod
+    def extract_og_image_from_html(html: str, base_url: str = "") -> Optional[str]:
+        """Extract og:image or twitter:image URL from article HTML."""
+        if not html or not html.strip():
             return None
 
-        return self.extract_article_body_from_html(html)
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            meta_selectors = [
+                {"property": "og:image"},
+                {"property": "og:image:secure_url"},
+                {"name": "twitter:image"},
+                {"name": "twitter:image:src"},
+            ]
+            for attrs in meta_selectors:
+                tag = soup.find("meta", attrs=attrs)
+                if tag and tag.get("content"):
+                    raw_img = str(tag["content"]).strip()
+                    if not raw_img:
+                        continue
+                    resolved = urljoin(base_url, raw_img) if base_url else raw_img
+                    if resolved.startswith(("http://", "https://")):
+                        return resolved
+        except Exception as e:
+            logger.debug("og:image extraction failed: %s", e)
+
+        return None
 
     def extract_article_body_from_html(self, html: str) -> Optional[str]:
         """Extract clean article paragraphs from raw HTML (up to ~3,000 chars)."""

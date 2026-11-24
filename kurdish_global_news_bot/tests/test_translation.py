@@ -1,485 +1,265 @@
-"""Tests for the 3-tier translation engine, fallback providers, and Gemini proofreader."""
+"""Tests for Gemini-first single-pass translation, native Kurdish rewrite, and Google Translate ckb fallback."""
 
-import asyncio
 import json
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
+
 from processing.translator import (
     TranslationEngine,
+    GeminiTranslationProvider,
     GoogleTranslateProvider,
-    GroqTranslationProvider,
-    DuckDuckGoAIProvider,
-    GeminiProofreader,
     TranslationError,
+    is_kurdish_sorani,
+    normalize_sorani_chars,
+    trim_at_sentence_boundary,
     _split_text,
     GOOGLE_TRANSLATE_ENDPOINT,
-    GROQ_API_ENDPOINT,
-    DUCKDUCKGO_CHAT_ENDPOINT,
-    DUCKDUCKGO_STATUS_ENDPOINT,
-    GEMINI_API_BASE_URL,
+    GEMINI_TRANSLATION_SYSTEM_PROMPT,
+    GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT,
 )
 
 
-class TestGroqTranslationProvider:
-    """Test the Groq LLM translation provider with multi-key rotation."""
+class _MockResponseContext:
+    def __init__(self, response):
+        self._response = response
 
-    def test_provider_name_and_model(self):
-        provider = GroqTranslationProvider(api_key="test_key", model="llama-3.3-70b-versatile")
-        assert provider.name == "Groq"
-        assert provider.model == "llama-3.3-70b-versatile"
-        assert provider.api_keys == ["test_key"]
-        assert provider.current_key == "test_key"
+    async def __aenter__(self):
+        return self._response
 
-    def test_multi_key_parsing(self):
-        provider = GroqTranslationProvider(api_key="key1, key2 ,  key3  ")
-        assert provider.api_keys == ["key1", "key2", "key3"]
-        assert provider.current_key == "key1"
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
-    @pytest.mark.asyncio
-    async def test_translate_empty_string(self):
-        provider = GroqTranslationProvider(api_key="test_key")
-        result = await provider.translate("")
-        assert result == ""
 
-    @pytest.mark.asyncio
-    async def test_translate_missing_api_key_raises(self):
-        provider = GroqTranslationProvider(api_key="")
-        with pytest.raises(TranslationError, match="GROQ_API_KEY"):
-            await provider.translate("Some text")
+class TestGeminiTranslationProvider:
+    """Test Tier 1 Gemini single-pass translation & Kurdish rewriting."""
+
+    def test_provider_properties(self):
+        provider = GeminiTranslationProvider(api_key="gem_k1, gem_k2", model="gemini-2.5-flash")
+        assert provider.name == "Gemini"
+        assert provider.model == "gemini-2.5-flash"
+        assert provider.api_keys == ["gem_k1", "gem_k2"]
+        assert provider.current_key == "gem_k1"
+        assert provider.has_keys is True
 
     @pytest.mark.asyncio
-    async def test_translate_success(self):
-        """Verify endpoint, payload with llama-3.3-70b-versatile, headers, and parsing."""
-        provider = GroqTranslationProvider(
-            api_key="gsk_test123",
-            model="llama-3.3-70b-versatile",
-            delay=0.0,
+    async def test_single_pass_translation_success(self):
+        provider = GeminiTranslationProvider(api_key="gem_test_123", base_backoff=0.0)
+        payload_data = {
+            "title": "ڕێککەوتنی نوێی بازرگانی لە جنێڤ واژۆکرا",
+            "summary": (
+                "نوێنەرانی بیست و پێنج وڵات دوای سێ ڕۆژ لە دانوستان گەیشتنە ڕێککەوتنێکی گشتگیر. "
+                "بڕیارەکە کەمکردنەوەی باجی گومرگی بە ڕێژەی لە سەدا ١٥ لەخۆدەگرێت. "
+                "ئەم هەنگاوە دەبێتە هۆی بووژانەوەی ئابووریی نێودەوڵەتی."
+            ),
+        }
+        mock_resp = AsyncMock(
+            status=200,
+            json=AsyncMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": json.dumps(payload_data)}]}}]
+            }),
         )
-
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "سەرکردەکانی جیهان بۆ تاوتوێکردنی ئاگربەستی بەپەلە کۆدەبنەوە.",
-                    }
-                }
-            ]
-        })
-
         mock_session = MagicMock()
-        mock_session.post.return_value.__aenter__.return_value = mock_response
+        mock_session.post = MagicMock(return_value=_MockResponseContext(mock_resp))
 
-        with patch.object(provider, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-            result = await provider.translate("Global leaders gather to discuss emergency ceasefire.")
-            assert result == "سەرکردەکانی جیهان بۆ تاوتوێکردنی ئاگربەستی بەپەلە کۆدەبنەوە."
+        with patch.object(provider._client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            title, summary = await provider.translate_article(
+                title="New Trade Agreement Signed in Geneva",
+                summary="Officials from 25 countries agreed on new tariff reductions of 15 percent after three days of talks.",
+            )
 
-            mock_session.post.assert_called_once()
-            call_args, call_kwargs = mock_session.post.call_args
-            assert call_args[0] == GROQ_API_ENDPOINT
-            assert call_kwargs["headers"]["Authorization"] == "Bearer gsk_test123"
-            assert call_kwargs["json"]["model"] == "llama-3.3-70b-versatile"
-            messages = call_kwargs["json"]["messages"]
-            assert len(messages) == 2
-            assert "Central Kurdish" in messages[0]["content"] or "Sorani" in messages[0]["content"]
-            assert messages[1]["content"] == "Global leaders gather to discuss emergency ceasefire."
+        assert title == payload_data["title"]
+        assert summary == payload_data["summary"]
+        mock_session.post.assert_called_once()
+        call_args, call_kwargs = mock_session.post.call_args
+        assert "gemini-2.5-flash" in call_args[0]
+        assert call_kwargs["headers"]["x-goog-api-key"] == "gem_test_123"
+        assert call_kwargs["json"]["generationConfig"]["maxOutputTokens"] == 800
+        assert call_kwargs["json"]["systemInstruction"]["parts"][0]["text"] == GEMINI_TRANSLATION_SYSTEM_PROMPT
 
     @pytest.mark.asyncio
-    async def test_key_rotation_on_rate_limit_429(self):
-        """When key 1 returns 429, key 2 is automatically rotated to and succeeds."""
-        provider = GroqTranslationProvider(
-            api_key="gsk_key1, gsk_key2",
-            delay=0.0,
+    async def test_native_kurdish_article_uses_rewrite_prompt(self):
+        """Articles already in Sorani Kurdish skip English-to-Kurdish translation and use editorial rewrite."""
+        provider = GeminiTranslationProvider(api_key="gem_test_123", base_backoff=0.0)
+        mock_resp = AsyncMock(
+            status=200,
+            json=AsyncMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": json.dumps({
+                    "title": "هەولێر و بەغدا لەسەر هەناردەکردنی نەوت کۆدەبنەوە",
+                    "summary": "شاندێکی باڵای هەرێمی کوردستان گەیشتە بەغدا بۆ گفتوگۆکردن لەسەر دۆسیەی وزە. کۆبوونەوەکە بە ئامادەبوونی وەزیرانی پەیوەندیدار بەڕێوەدەچێت. بڕیارە ڕێککەوتنی کۆتایی لە چەند ڕۆژی داهاتوودا واژۆ بکرێت.",
+                })}]}}]
+            }),
         )
-
-        mock_resp_429 = AsyncMock()
-        mock_resp_429.status = 429
-        mock_resp_429.text = AsyncMock(return_value="Rate limit exceeded")
-
-        mock_resp_200 = AsyncMock()
-        mock_resp_200.status = 200
-        mock_resp_200.json = AsyncMock(return_value={
-            "choices": [{"message": {"content": "وەرگێڕان بە سەرکەوتوویی تەواو بوو"}}]
-        })
-
-        # Sequence of responses: first 429, then 200
         mock_session = MagicMock()
-        mock_session.post.return_value.__aenter__.side_effect = [mock_resp_429, mock_resp_200]
+        mock_session.post = MagicMock(return_value=_MockResponseContext(mock_resp))
 
-        with patch.object(provider, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-            result = await provider.translate("Text to translate")
-            assert result == "وەرگێڕان بە سەرکەوتوویی تەواو بوو"
-            assert mock_session.post.call_count == 2
-            # Second call used key 2
-            second_call_headers = mock_session.post.call_args_list[1][1]["headers"]
-            assert second_call_headers["Authorization"] == "Bearer gsk_key2"
+        with patch.object(provider._client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            title, summary = await provider.translate_article(
+                title="شاندی هەرێمی کوردستان بۆ پرسی نەوت سەردانی بەغدا دەکات",
+                summary="شاندێکی حکومەتی هەرێم بە مەبەستی چارەسەرکردنی کێشەکانی هەناردەی نەوت گەیشتە بەغدا.",
+            )
+
+        assert "هەولێر" in title
+        sent_system_prompt = mock_session.post.call_args[1]["json"]["systemInstruction"]["parts"][0]["text"]
+        assert sent_system_prompt == GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT
 
     @pytest.mark.asyncio
-    async def test_all_keys_exhausted_raises_translation_error(self):
-        provider = GroqTranslationProvider(
-            api_key="key1, key2",
-            delay=0.0,
+    async def test_key_rotation_and_exponential_backoff_on_429(self):
+        provider = GeminiTranslationProvider(api_key="gem_k1, gem_k2", base_backoff=0.05)
+
+        resp_429 = AsyncMock(status=429, text=AsyncMock(return_value="Quota exceeded"))
+        resp_200 = AsyncMock(
+            status=200,
+            json=AsyncMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": '{"title": "سەردێر", "summary": "پوختەی هەواڵ."}'}]}}]
+            }),
         )
-
-        mock_resp_429 = AsyncMock()
-        mock_resp_429.status = 429
-        mock_resp_429.text = AsyncMock(return_value="Quota exhausted")
-
         mock_session = MagicMock()
-        mock_session.post.return_value.__aenter__.return_value = mock_resp_429
+        mock_session.post = MagicMock(side_effect=[
+            _MockResponseContext(resp_429),
+            _MockResponseContext(resp_429),
+            _MockResponseContext(resp_200),
+        ])
 
-        with patch.object(provider, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-            with pytest.raises(TranslationError, match="exhausted or rate-limited"):
-                await provider.translate("Text")
+        with patch.object(provider._client, "_get_session", new_callable=AsyncMock, return_value=mock_session), \
+             patch("processing.gemini_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            title, summary = await provider.translate_article("English Title", "English Body text.")
 
-
-class TestDuckDuckGoAIProvider:
-    """Test Tier 2 DuckDuckGo AI Chat translation provider."""
-
-    def test_provider_name_and_model(self):
-        provider = DuckDuckGoAIProvider(model="gpt-4o-mini", delay=0.0)
-        assert provider.name == "DuckDuckGoAI"
-        assert provider.model == "gpt-4o-mini"
+        assert title == "سەردێر"
+        assert summary == "پوختەی هەواڵ."
+        assert mock_session.post.call_count == 3
+        # Key rotation happened before exponential backoff on 2nd 429
+        assert mock_session.post.call_args_list[0][1]["headers"]["x-goog-api-key"] == "gem_k1"
+        assert mock_session.post.call_args_list[1][1]["headers"]["x-goog-api-key"] == "gem_k2"
+        mock_sleep.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_translate_empty_string(self):
-        provider = DuckDuckGoAIProvider(delay=0.0)
-        res = await provider.translate("")
-        assert res == ""
-
-    @pytest.mark.asyncio
-    async def test_translate_success_via_stream(self):
-        provider = DuckDuckGoAIProvider(delay=0.0)
-
-        mock_session = MagicMock()
-        # Mock _fetch_vqd
-        with patch.object(provider, "_fetch_vqd", new_callable=AsyncMock, return_value="test_vqd_123"), \
-             patch.object(provider, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-
-            mock_response = AsyncMock()
-            mock_response.status = 200
-
-            async def _fake_content():
-                yield b'data: {"message": "\xd8\xb3\xda\xb5\xd8\xa7\xd9\x88 "}\n'
-                yield b'data: {"message": "\xd8\xac\xdb\x8c\xd9\x87\xd8\xa7\xd9\x86"}\n'
-                yield b'data: [DONE]\n'
-
-            mock_response.content = _fake_content()
-            mock_session.post.return_value.__aenter__.return_value = mock_response
-
-            res = await provider.translate("Hello world")
-            assert "سڵاو" in res
-            assert "جیهان" in res
-
-    @pytest.mark.asyncio
-    async def test_translate_raises_on_418_challenge(self):
-        """When DDG returns 418 challenge, it raises TranslationError cleanly for Tier 3."""
-        provider = DuckDuckGoAIProvider(delay=0.0)
-        mock_session = MagicMock()
-
-        with patch.object(provider, "_fetch_vqd", new_callable=AsyncMock, return_value="test_vqd"), \
-             patch.object(provider, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-
-            mock_response = AsyncMock()
-            mock_response.status = 418
-            mock_response.text = AsyncMock(return_value='{"action":"error","status":418}')
-            mock_session.post.return_value.__aenter__.return_value = mock_response
-
-            with pytest.raises(TranslationError, match="418"):
-                await provider.translate("Breaking news")
+    async def test_missing_key_raises_translation_error(self):
+        provider = GeminiTranslationProvider(api_key="")
+        with pytest.raises(TranslationError, match="GEMINI_API_KEY"):
+            await provider.translate_article("Title", "Body")
 
 
-class TestGoogleTranslateProvider:
-    """Test Tier 3 Google Translate ckb safety net provider."""
+class TestGoogleTranslateFallback:
+    """Test lightweight Google Translate ckb fallback provider."""
 
     def test_provider_name(self):
         provider = GoogleTranslateProvider()
         assert provider.name == "GoogleTranslate"
 
-    @patch("processing.translator.GoogleTranslateProvider.translate")
-    @pytest.mark.asyncio
-    async def test_translate_basic(self, mock_translate):
-        """TEST 11: Translation produces Sorani Kurdish text."""
-        mock_translate.return_value = "هەواڵی گرنگ لە جیهان"
-        provider = GoogleTranslateProvider()
-        result = await provider.translate("Important world news", target_lang="ckb")
-        assert result == "هەواڵی گرنگ لە جیهان"
-
     @pytest.mark.asyncio
     async def test_translate_empty_string(self):
         provider = GoogleTranslateProvider()
-        result = await provider.translate("")
-        assert result == ""
+        assert await provider.translate("") == ""
 
     @pytest.mark.asyncio
-    async def test_translate_chunk_calls_endpoint(self):
-        """Verify endpoint, query params with ckb, and headers."""
+    async def test_translate_chunk_calls_ckb_endpoint(self):
         provider = GoogleTranslateProvider(delay=0.0)
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.json = AsyncMock(return_value=[
-            [["سڵاو جیهان", "Hello world", None, None]]
-        ])
-
+        mock_response = AsyncMock(
+            status=200,
+            json=AsyncMock(return_value=[[["سڵاو جیهان", "Hello world", None, None]]]),
+        )
         mock_session = MagicMock()
         mock_session.get.return_value.__aenter__.return_value = mock_response
 
         with patch.object(provider, "_get_session", new_callable=AsyncMock, return_value=mock_session):
             res = await provider._translate_chunk("Hello world", source_lang="auto", target_lang="ckb")
-            assert res == "سڵاو جیهان"
-            mock_session.get.assert_called_once()
-            call_args, call_kwargs = mock_session.get.call_args
-            assert call_args[0] == GOOGLE_TRANSLATE_ENDPOINT
-            params = call_kwargs["params"]
-            assert params["client"] == "gtx"
-            assert params["sl"] == "auto"
-            assert params["tl"] == "ckb"
-            assert params["dt"] == "t"
-            assert params["q"] == "Hello world"
-            assert "User-Agent" in call_kwargs["headers"]
+
+        assert res == "سڵاو جیهان"
+        call_args, call_kwargs = mock_session.get.call_args
+        assert call_args[0] == GOOGLE_TRANSLATE_ENDPOINT
+        assert call_kwargs["params"]["tl"] == "ckb"
 
 
-class TestGeminiProofreader:
-    """Test Stage 4 Gemini Pre-Publish Proofreader & Editor."""
+class TestTranslationEngineNoGroq:
+    """Test Gemini-first TranslationEngine without Groq."""
 
-    def test_gemini_init_and_properties(self):
-        proofreader = GeminiProofreader(api_key="gem_key1, gem_key2", model="gemini-2.5-flash", enabled=True)
-        assert proofreader.model == "gemini-2.5-flash"
-        assert proofreader.api_keys == ["gem_key1", "gem_key2"]
-        assert proofreader.is_enabled is True
+    def test_providers_no_groq(self):
+        engine_with_gem = TranslationEngine(gemini_api_key="gem_abc")
+        names = [p.name for p in engine_with_gem.providers]
+        assert names == ["Gemini", "GoogleTranslate"]
+        assert "Groq" not in names
+
+        engine_no_key = TranslationEngine(gemini_api_key="")
+        assert [p.name for p in engine_no_key.providers] == ["GoogleTranslate"]
 
     @pytest.mark.asyncio
-    async def test_proofread_success_polishing(self):
-        proofreader = GeminiProofreader(api_key="gem_key1")
-        mock_session = MagicMock()
+    async def test_gemini_single_pass_avoids_redundant_calls(self):
+        engine = TranslationEngine(gemini_api_key="gem_abc")
+        with patch.object(
+            engine._gemini_provider,
+            "translate_article",
+            new_callable=AsyncMock,
+            return_value=("سەردێری کوردی", "ڕستەی یەکەم. ڕستەی دووەم. ڕستەی سێیەم."),
+        ) as mock_gem, patch.object(
+            engine._google_fallback,
+            "translate",
+            new_callable=AsyncMock,
+        ) as mock_google:
+            title, summary = await engine.translate_article("Eng Title", "Eng Summary")
 
-        polished_data = {
-            "title": "سەرۆکی ئەمریکا بەیاننامەیەکی بەپەلەی بڵاوکردەوە",
-            "summary": "لە کۆبوونەوەکەدا باس لە بارودۆخی ناوچەکە کرا.",
-        }
+        assert title == "سەردێری کوردی"
+        assert "ڕستەی سێیەم." in summary
+        mock_gem.assert_awaited_once()
+        mock_google.assert_not_called()
 
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {"text": json.dumps(polished_data)}
-                        ]
-                    }
-                }
-            ]
-        })
-        mock_session.post.return_value.__aenter__.return_value = mock_response
+    @pytest.mark.asyncio
+    async def test_google_fallback_used_only_when_all_gemini_keys_fail(self):
+        engine = TranslationEngine(gemini_api_key="gem_abc", delay=0.0)
+        with patch.object(
+            engine._gemini_provider,
+            "translate_article",
+            new_callable=AsyncMock,
+            side_effect=TranslationError("All Gemini keys exhausted"),
+        ), patch.object(
+            engine._google_fallback,
+            "translate",
+            new_callable=AsyncMock,
+            side_effect=["سەردێری گووگڵ", "پوختەی گووگڵ بە تەواوی."],
+        ) as mock_google:
+            title, summary = await engine.translate_article("Eng Title", "Eng Summary")
 
-        with patch.object(proofreader, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-            title, summary = await proofreader.proofread(
-                original_title="US President issued an urgent statement",
-                draft_title="سەرۆک ئەمریکا بەیاننامە بەپەلە بڵاوکردەوە",
-                original_summary="In the meeting, the regional situation was discussed.",
-                draft_summary="لە کۆبوونەوە بارودۆخ ناوچە باس کرا.",
+        assert title == "سەردێری گووگڵ"
+        assert summary == "پوختەی گووگڵ بە تەواوی."
+        assert mock_google.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_native_kurdish_fallback_skips_google_translate(self):
+        engine = TranslationEngine(gemini_api_key="", delay=0.0)
+        with patch.object(engine._google_fallback, "translate", new_callable=AsyncMock) as mock_google:
+            title, summary = await engine.translate_article(
+                title="ئاسایشی هەولێر بەیاننامەیەکی بڵاوکردەوە",
+                summary="بەرپرسانی ئەمنی هەولێر زانیاری نوێیان لەسەر پاراستنی ئارامیی شارەکە خستە ڕوو.",
             )
-            assert title == polished_data["title"]
-            assert summary == polished_data["summary"]
-            mock_session.post.assert_called_once()
-            call_args, call_kwargs = mock_session.post.call_args
-            assert "gemini-2.5-flash" in call_args[0]
-            assert call_kwargs["headers"]["x-goog-api-key"] == "gem_key1"
+        assert "ئاسایشی هەولێر" in title
+        assert "پاراستنی ئارامیی" in summary
+        mock_google.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_proofread_multi_key_rotation_on_429(self):
-        proofreader = GeminiProofreader(api_key="gem_key1, gem_key2")
-        mock_session = MagicMock()
-
-        mock_resp_429 = AsyncMock()
-        mock_resp_429.status = 429
-        mock_resp_429.text = AsyncMock(return_value="Resource exhausted: quota exceeded")
-
-        mock_resp_200 = AsyncMock()
-        mock_resp_200.status = 200
-        mock_resp_200.json = AsyncMock(return_value={
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {"text": json.dumps({"title": "سەردێری چاککراو", "summary": "پوختەی چاککراو"})}
-                        ]
-                    }
-                }
-            ]
-        })
-
-        mock_session.post.return_value.__aenter__.side_effect = [mock_resp_429, mock_resp_200]
-
-        with patch.object(proofreader, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-            title, summary = await proofreader.proofread(
-                original_title="Original",
-                draft_title="سەردێر",
-                original_summary="Summary",
-                draft_summary="پوختە",
-            )
-            assert title == "سەردێری چاککراو"
-            assert mock_session.post.call_count == 2
-            # Key 2 was used on retry
-            second_key = mock_session.post.call_args_list[1][1]["headers"]["x-goog-api-key"]
-            assert second_key == "gem_key2"
-
-    @pytest.mark.asyncio
-    async def test_proofread_failsafe_when_disabled(self):
-        proofreader = GeminiProofreader(api_key="gem_key1", enabled=False)
-        title, summary = await proofreader.proofread(
-            original_title="English title",
-            draft_title="سەردێری ڕەشنووس",
-            original_summary="English summary",
-            draft_summary="پوختەی ڕەشنووس",
-        )
-        assert title == "سەردێری ڕەشنووس"
-        assert summary == "پوختەی ڕەشنووس"
-
-    @pytest.mark.asyncio
-    async def test_proofread_failsafe_when_no_api_key(self):
-        proofreader = GeminiProofreader(api_key="")
-        title, summary = await proofreader.proofread(
-            original_title="English title",
-            draft_title="سەردێری ڕەشنووس",
-        )
-        assert title == "سەردێری ڕەشنووس"
-
-    @pytest.mark.asyncio
-    async def test_proofread_failsafe_on_invalid_json(self):
-        """When Gemini returns non-JSON text, fail-safe returns draft without raising."""
-        proofreader = GeminiProofreader(api_key="gem_key1")
-        mock_session = MagicMock()
-
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [{"text": "Sorry, I cannot format this as JSON."}]
-                    }
-                }
-            ]
-        })
-        mock_session.post.return_value.__aenter__.return_value = mock_response
-
-        with patch.object(proofreader, "_get_session", new_callable=AsyncMock, return_value=mock_session):
-            title, summary = await proofreader.proofread(
-                original_title="Original",
-                draft_title="سەردێری ڕەشنووس",
-                original_summary="Summary",
-                draft_summary="پوختە",
-            )
-            assert title == "سەردێری ڕەشنووس"
-            assert summary == "پوختە"
+    async def test_validate_translation(self):
+        engine = TranslationEngine(gemini_api_key="")
+        assert await engine.validate_translation("هەواڵی گرنگ لە کوردستان", "Important news") is True
+        assert await engine.validate_translation("", "Important news") is False
 
 
-class TestTranslationEngine:
-    """Test the translation engine with 3-tier fallback and Gemini proofreading."""
+class TestKurdishUtilitiesAndSplitter:
+    """Test Sorani detection, normalization, and clean sentence-boundary trimming."""
 
-    def test_setup_providers_with_groq_key(self):
-        engine = TranslationEngine(groq_api_key="gsk_test123")
-        assert len(engine.providers) == 3
-        assert engine.providers[0].name == "Groq"
-        assert engine.providers[1].name == "DuckDuckGoAI"
-        assert engine.providers[2].name == "GoogleTranslate"
+    def test_is_kurdish_sorani(self):
+        assert is_kurdish_sorani("هەولێر پایتەختی هەرێمی کوردستانە") is True
+        assert is_kurdish_sorani("US Secretary of State meets Iraqi officials in Baghdad") is False
 
-    def test_setup_providers_without_groq_key(self):
-        engine = TranslationEngine(groq_api_key="")
-        assert len(engine.providers) == 2
-        assert engine.providers[0].name == "DuckDuckGoAI"
-        assert engine.providers[1].name == "GoogleTranslate"
+    def test_normalize_sorani_chars(self):
+        assert normalize_sorani_chars("كوردستاني باشوور") == "کوردستانی باشوور"
 
-    @pytest.mark.asyncio
-    async def test_fallback_chain_groq_fails_ddg_succeeds(self):
-        engine = TranslationEngine(groq_api_key="gsk_test123")
-        groq_prov = engine.providers[0]
-        ddg_prov = engine.providers[1]
+    def test_trim_at_sentence_boundary_no_ellipsis(self):
+        text = "ڕستەی یەکەم تەواو بوو. ڕستەی دووەمیش لێرەدایە. ڕستەی سێیەم درێژە و لە سنووری دیاریکراو تێپەڕی دەکات بۆ تاقیکردنەوە."
+        trimmed = trim_at_sentence_boundary(text, max_len=65)
+        assert "..." not in trimmed
+        assert trimmed.endswith(".")
+        assert len(trimmed) <= 65
 
-        with patch.object(groq_prov, "translate", new_callable=AsyncMock, side_effect=TranslationError("Groq 429")), \
-             patch.object(ddg_prov, "translate", new_callable=AsyncMock, return_value="وەرگێڕانی دەکدەکگۆ"):
-            result = await engine._translate_with_fallback("Test text", target_lang="ckb")
-            assert result == "وەرگێڕانی دەکدەکگۆ"
-
-    @pytest.mark.asyncio
-    async def test_fallback_chain_groq_and_ddg_fail_google_succeeds(self):
-        engine = TranslationEngine(groq_api_key="gsk_test123")
-        groq_prov = engine.providers[0]
-        ddg_prov = engine.providers[1]
-        google_prov = engine.providers[2]
-
-        with patch.object(groq_prov, "translate", new_callable=AsyncMock, side_effect=TranslationError("Groq 429")), \
-             patch.object(ddg_prov, "translate", new_callable=AsyncMock, side_effect=TranslationError("DDG 418 Challenge")), \
-             patch.object(google_prov, "translate", new_callable=AsyncMock, return_value="وەرگێڕانی گووگڵ"):
-            result = await engine._translate_with_fallback("Test text", target_lang="ckb")
-            assert result == "وەرگێڕانی گووگڵ"
-
-    @pytest.mark.asyncio
-    async def test_translate_article_runs_gemini_proofreading(self):
-        """Verify translate_article translates draft and passes to Gemini proofreading."""
-        engine = TranslationEngine(groq_api_key="", enable_gemini_proofread=True)
-
-        with patch.object(engine, "translate_title", new_callable=AsyncMock, return_value="سەردێری خاو"), \
-             patch.object(engine, "translate_summary", new_callable=AsyncMock, return_value="پوختەی خاو"), \
-             patch.object(engine._proofreader, "proofread", new_callable=AsyncMock, return_value=("سەردێری پوختەکراو", "پوختەی پوختەکراو")) as mock_proof:
-
-            final_title, final_summary = await engine.translate_article(
-                title="English Title",
-                summary="English Summary",
-            )
-            assert final_title == "سەردێری پوختەکراو"
-            assert final_summary == "پوختەی پوختەکراو"
-            mock_proof.assert_awaited_once_with(
-                original_title="English Title",
-                draft_title="سەردێری خاو",
-                original_summary="English Summary",
-                draft_summary="پوختەی خاو",
-            )
-
-    @pytest.mark.asyncio
-    async def test_validate_translation_valid(self):
-        engine = TranslationEngine()
-        is_valid = await engine.validate_translation(
-            "هەواڵی گرنگ لە جیهان",
-            "Important world news",
-        )
-        assert is_valid is True
-
-    @pytest.mark.asyncio
-    async def test_validate_translation_empty(self):
-        engine = TranslationEngine()
-        is_valid = await engine.validate_translation("", "Some original text")
-        assert is_valid is False
-
-    @pytest.mark.asyncio
-    async def test_translation_failure_raises(self):
-        engine = TranslationEngine(groq_api_key="")
-        for p in engine.providers:
-            p.translate = AsyncMock(side_effect=TranslationError("Fail"))
-
-        with pytest.raises(TranslationError, match="All translation providers failed"):
-            await engine._translate_with_fallback("Text", target_lang="ckb")
-
-
-class TestTextSplitter:
-    """Test the text splitting utility."""
-
-    def test_short_text_no_split(self):
-        result = _split_text("Short text.", max_len=4500)
-        assert len(result) == 1
-        assert result[0] == "Short text."
-
-    def test_long_text_splits(self):
+    def test_text_splitter(self):
         text = ". ".join([f"Sentence {i}" for i in range(200)])
-        result = _split_text(text, max_len=100)
-        assert len(result) > 1
-        for chunk in result:
-            assert len(chunk) <= 200
-
-    def test_empty_text(self):
-        result = _split_text("", max_len=4500)
-        assert result == [""]
+        chunks = _split_text(text, max_len=100)
+        assert len(chunks) > 1
+        assert _split_text("", max_len=4500) == [""]
