@@ -100,6 +100,13 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "- \"science_space\": Space missions, astronomy, NASA/SpaceX, scientific breakthroughs, major medical discoveries.\n\n"
     "IMPORTANT Categorization Accuracy:\n"
     "- Classify strictly by the article's actual subject, NOT the publisher name (e.g., Nvidia stock news from Al Jazeera is \"economy_markets\" or \"ai_tech\", NOT \"military_conflict\"; UK royal news is \"politics_world\", NOT \"military_conflict\").\n\n"
+    "STRICT Breaking News Rule (`is_breaking`):\n"
+    "- Set \"is_breaking\": true ONLY for sudden, unfolding, emergency, high-impact events happening right now (and ONLY when score >= 9): "
+    "active military strikes, explosions, missile/drone attacks, assassinations, sudden declarations of war or ceasefires, major earthquakes/natural disasters, "
+    "emergency government or court decrees taking immediate effect, or major critical-infrastructure cyberattacks.\n"
+    "- Explicitly set \"is_breaking\": false for ALL routine political statements, interviews, speeches, party-leader commentary, diplomatic meetings, "
+    "opinions, analyses, forecasts, routine economic updates, or reactions — EVEN IF the article is high-priority Kurdistan news with score 8 or 9.\n"
+    "- High importance alone does NOT make an article breaking news.\n\n"
     "Scoring Criteria (1 to 10):\n"
     "- 8 to 10 (HIGH PASS): Any significant political, security, economic, or human-rights development in ANY of the 4 parts of Kurdistan "
     "(MUST get score >= 8 and category=\"kurdistan\"); OR major wars, military escalations, world leader summits, global economy/sanctions, major AI/tech releases, and high-impact cyberattacks.\n"
@@ -149,6 +156,17 @@ def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
     return "politics_world"
 
 
+def is_strict_breaking(article: Article) -> bool:
+    """
+    Enforce the strict breaking-news gate: return True ONLY when BOTH
+    `article.is_breaking` is True AND `article.importance_score >= 9.0`.
+    """
+    return bool(
+        getattr(article, "is_breaking", False)
+        and float(getattr(article, "importance_score", 0.0) or 0.0) >= 9.0
+    )
+
+
 class ImportanceRanker:
     """Scores and classifies article importance using Gemini AI + rule-based scoring."""
 
@@ -180,18 +198,41 @@ class ImportanceRanker:
         self, article: Article, err_reason: str
     ) -> RelevanceEvaluation:
         """Fail-open safely using rule-based importance scoring when Gemini classifier errors out."""
-        rule_score, priority = self.score_article(article)
+        rule_score, _ = self.score_article(article)
         credibility = ArticleExtractor.get_source_credibility(article.source_name)
         passed = self.is_eligible(rule_score, credibility)
         scaled_score = max(1, min(10, round(rule_score * 10)))
         text_hint = f"{article.original_title} {article.original_summary} {article.region}"
         cat = normalize_category(article.category, text_hint=text_hint)
-        if cat == "kurdistan":
+        if cat == "kurdistan" or KURDISTAN_PATTERN.search(text_hint):
+            cat = "kurdistan"
             scaled_score = max(8, scaled_score)
             passed = True
+
+        # Never let Kurdistan focus boost or Priority.CRITICAL flip is_breaking to True.
+        # Only mark breaking on genuine sudden-emergency keywords without statement/interview markers.
+        lower_text = f"{article.original_title} {article.original_summary}".lower()
+        non_breaking_markers = (
+            "interview", "statement", "speech", "remarks", "commentary",
+            "analysis", "opinion", "forecast", "says ", "said ", "urges ",
+            "stresses ", "welcomes ", "meeting", "talks", "conference",
+        )
+        emergency_hits = sum(
+            1 for kw in (
+                "airstrike", "missile strike", "explosion", "assassination",
+                "declared war", "ceasefire agreement", "earthquake magnitude",
+                "invasion", "coup", "emergency declared",
+            )
+            if kw in lower_text
+        )
+        is_breaking = bool(
+            emergency_hits >= 1
+            and scaled_score >= 9
+            and not any(m in lower_text for m in non_breaking_markers)
+        )
         return RelevanceEvaluation(
             score=scaled_score,
-            is_breaking=(priority == Priority.CRITICAL),
+            is_breaking=is_breaking,
             category=cat,
             reason=f"Rule-based fallback ({err_reason}; rule_score={rule_score:.2f})",
             passed=passed,
@@ -234,14 +275,18 @@ class ImportanceRanker:
                 raise GeminiAPIError("Missing 'score' field in Gemini classifier response.")
 
             score = max(1, min(10, int(round(float(data["score"])))))
-            is_breaking = bool(data.get("is_breaking", False))
+            raw_is_breaking = bool(data.get("is_breaking", False))
             raw_category = str(data.get("category", "")).strip()
             text_hint = f"{article.original_title} {snippet} {article.region}"
             category = normalize_category(raw_category, text_hint=text_hint)
 
             # Enforce high priority if Gemini classified as Kurdistan (all 4 parts)
+            # Note: this NEVER flips is_breaking to True.
             if category == "kurdistan" and score < 8:
                 score = 8
+
+            # Strict breaking gate: only True if Gemini returned True AND score >= 9
+            is_breaking = bool(raw_is_breaking and score >= 9)
 
             reason = str(data.get("reason", "")).strip() or "Classified by Gemini relevance gatekeeper"
             return RelevanceEvaluation(

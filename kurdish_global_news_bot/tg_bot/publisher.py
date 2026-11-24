@@ -25,6 +25,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
 )
+from core.importance_ranker import is_strict_breaking
 from processing.card_generator import NewsCardGenerator
 from processing.content_formatter import ContentFormatter
 from processing.translator import trim_at_sentence_boundary
@@ -120,7 +121,8 @@ class TelegramPublisher:
         """Generate branded 1280x720 news card, send via send_photo, and clean up temp file."""
         assert self._bot is not None
 
-        breaking = bool(getattr(article, "is_breaking", False))
+        breaking = is_strict_breaking(article)
+        article.is_breaking = breaking
         disable_notification = not breaking
 
         image_bytes: Optional[bytes] = None
@@ -132,7 +134,7 @@ class TelegramPublisher:
 
         try:
             card_path = await self._card_generator.generate_card_file(
-                article, image_bytes=image_bytes
+                article, image_bytes=image_bytes, is_breaking=breaking
             )
             with open(card_path, "rb") as photo_file:
                 message = await self._send_with_retry(
@@ -170,7 +172,8 @@ class TelegramPublisher:
         """Publish a text-only article with web page preview disabled."""
         assert self._bot is not None
 
-        breaking = bool(getattr(article, "is_breaking", False))
+        breaking = is_strict_breaking(article)
+        article.is_breaking = breaking
         disable_notification = not breaking
         text = self._formatter.format_telegram_message(article)
 

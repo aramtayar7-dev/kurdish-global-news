@@ -74,6 +74,7 @@ def _make_article(
     translated_title: str = "",
     translated_summary: str = "",
     is_breaking: bool = False,
+    importance_score: float = 0.0,
     published_at: str | None = None,
     status: str = ArticleStatus.DISCOVERED,
 ) -> Article:
@@ -91,6 +92,7 @@ def _make_article(
         translated_summary=translated_summary,
         source_name="Reuters",
         category=category,
+        importance_score=importance_score,
         publication_date=datetime.now(timezone.utc).isoformat(),
         published_at=published_at,
         status=status,
@@ -141,22 +143,26 @@ class TestBreakingNotificationsAndBadge:
             translated_title="هێزە جیهانییەکان کۆبوونەوەی بەپەلە ئەنجام دەدەن",
             translated_summary="لە کۆبوونەوەیەکدا بەرپرسانی باڵا تاوتوێی دۆخی ئاسایشی ناوچەکەیان کرد.",
             is_breaking=False,
+            importance_score=8.0,
         )
         breaking_art = _make_article(
             translated_title="هێزە جیهانییەکان کۆبوونەوەی بەپەلە ئەنجام دەدەن",
             translated_summary="لە کۆبوونەوەیەکدا بەرپرسانی باڵا تاوتوێی دۆخی ئاسایشی ناوچەکەیان کرد.",
             is_breaking=True,
+            importance_score=9.0,
             url="https://reuters.com/world/brk",
         )
 
         with patch("tg_bot.publisher.ENABLE_IMAGES", True):
             await publisher.publish_article(normal_art)
+            assert publisher._card_generator.generate_card_file.call_args.kwargs["is_breaking"] is False
             normal_photo_kwargs = mock_bot.send_photo.call_args.kwargs
             assert normal_photo_kwargs["disable_notification"] is True
             assert "🔴 بەپەلە | " not in normal_photo_kwargs["caption"]
 
             fake_card.write_bytes(b"\xff\xd8\xff\xe0dummy")
             await publisher.publish_article(breaking_art)
+            assert publisher._card_generator.generate_card_file.call_args.kwargs["is_breaking"] is True
             brk_photo_kwargs = mock_bot.send_photo.call_args.kwargs
             assert brk_photo_kwargs["disable_notification"] is False
             assert brk_photo_kwargs["caption"].startswith("🌍 <b>🔴 بەپەلە | ")
@@ -169,6 +175,57 @@ class TestBreakingNotificationsAndBadge:
             await publisher.publish_article(breaking_art)
             assert mock_bot.send_message.call_args.kwargs["disable_notification"] is False
             assert "🔴 بەپەلە | " in mock_bot.send_message.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_kurdistan_interview_high_score_never_breaks_in_publisher(self, tmp_path):
+        """High-priority Kurdistan statement/interview (score>=8, is_breaking=False) and sub-9 raw flag stay silent."""
+        publisher = TelegramPublisher()
+        mock_bot = MagicMock()
+        mock_bot.send_photo = AsyncMock(return_value=MagicMock(message_id=505))
+        publisher._bot = mock_bot
+        publisher._channel_id = "@KurdishGlobalNews"
+        publisher._image_handler = MagicMock()
+        publisher._image_handler.download_image = AsyncMock(return_value=None)
+
+        fake_card = tmp_path / "kurd_card.jpg"
+        fake_card.write_bytes(b"\xff\xd8\xff\xe0dummy")
+        publisher._card_generator = MagicMock()
+        publisher._card_generator.generate_card_file = AsyncMock(return_value=fake_card)
+
+        kurd_interview = _make_article(
+            title="Kurdistan Leader Discusses Regional Ties in Television Interview",
+            category="kurdistan",
+            translated_title="سەرکردەیەکی کوردستان لە چاوپێکەوتنێکدا باسی پەیوەندییەکان دەکات",
+            translated_summary="لە چاوپێکەوتنێکی تەلەفزیۆنیدا سەرکردەیەکی هەرێمی کوردستان تیشکی خستە سەر دۆخی سیاسی.",
+            is_breaking=False,
+            importance_score=9.0,
+            url="https://rudaw.net/kurdistan/interview-1",
+        )
+        # Even if upstream erroneously passed is_breaking=True on importance_score=8.5, publisher blocks it
+        sub9_flagged = _make_article(
+            title="Spokesperson Issues Statement on Tariff Talks",
+            category="kurdistan",
+            translated_title="وتەبێژ ڕاگەیەندراوێکی بڵاوکردەوە",
+            translated_summary="لە ڕاگەیەندراوێکدا وتەبێژ جەختی لە گفتوگۆکان کردەوە.",
+            is_breaking=True,
+            importance_score=8.5,
+            url="https://rudaw.net/kurdistan/statement-8",
+        )
+
+        with patch("tg_bot.publisher.ENABLE_IMAGES", True):
+            await publisher.publish_article(kurd_interview)
+            assert publisher._card_generator.generate_card_file.call_args.kwargs["is_breaking"] is False
+            kw1 = mock_bot.send_photo.call_args.kwargs
+            assert kw1["disable_notification"] is True
+            assert "🔴 بەپەلە | " not in kw1["caption"]
+
+            fake_card.write_bytes(b"\xff\xd8\xff\xe0dummy")
+            await publisher.publish_article(sub9_flagged)
+            assert sub9_flagged.is_breaking is False
+            assert publisher._card_generator.generate_card_file.call_args.kwargs["is_breaking"] is False
+            kw2 = mock_bot.send_photo.call_args.kwargs
+            assert kw2["disable_notification"] is True
+            assert "🔴 بەپەلە | " not in kw2["caption"]
 
     @pytest.mark.asyncio
     async def test_daily_digest_respects_notify_config(self, tmp_path):

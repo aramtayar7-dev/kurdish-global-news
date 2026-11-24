@@ -112,8 +112,8 @@ class TestNewsCardGenerator:
         created_paths: list[Path] = []
         original_gen_file = publisher._card_generator.generate_card_file
 
-        async def tracked_gen_file(article, image_bytes=None):
-            p = await original_gen_file(article, image_bytes=image_bytes)
+        async def tracked_gen_file(article, image_bytes=None, is_breaking=None):
+            p = await original_gen_file(article, image_bytes=image_bytes, is_breaking=is_breaking)
             created_paths.append(p)
             assert p.exists()
             return p

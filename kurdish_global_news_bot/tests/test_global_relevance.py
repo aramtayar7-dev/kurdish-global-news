@@ -186,7 +186,7 @@ class TestGeminiRelevanceAndCategoryClassifier:
             status=200,
             json=AsyncMock(return_value={
                 "candidates": [{"content": {"parts": [{"text": json.dumps({
-                    "score": 8, "is_breaking": True, "category": "military_conflict",
+                    "score": 9, "is_breaking": True, "category": "military_conflict",
                     "reason": "Regional airstrikes escalation."
                 })}]}}]
             }),
@@ -217,6 +217,46 @@ class TestGeminiRelevanceAndCategoryClassifier:
         assert fallback_res.used_fallback is True
         assert fallback_res.passed is True
         assert "Rule-based fallback" in fallback_res.reason
+
+    @pytest.mark.asyncio
+    async def test_kurdistan_boost_and_interviews_never_flip_breaking_true(self):
+        """High-priority Kurdistan political statements/interviews must never become breaking."""
+        ranker = ImportanceRanker(api_key="gem_test_key", min_relevance_score=7, base_backoff=0.0)
+
+        # Prompt explicitly distinguishes high importance from breaking news
+        assert "is_breaking" in GLOBAL_RELEVANCE_SYSTEM_PROMPT
+        assert "interviews" in GLOBAL_RELEVANCE_SYSTEM_PROMPT.lower()
+        assert "political statements" in GLOBAL_RELEVANCE_SYSTEM_PROMPT.lower()
+
+        # Case 1: Score bumped to 8 for Kurdistan + model erroneously said is_breaking=True on score=8
+        session_score8 = _make_gemini_session(
+            200,
+            json_payload={
+                "score": 8,
+                "is_breaking": True,
+                "category": "kurdistan",
+                "reason": "High-priority Kurdistan parliamentary remarks.",
+            },
+        )
+        ranker._gemini._get_session = AsyncMock(return_value=session_score8)
+        interview = Article_factory(
+            title="KRG Official Gives Extensive TV Interview on Erbil Budget Talks",
+            summary="Senior party leader spoke in a broadcast interview outlining negotiation priorities.",
+            source_name="Rudaw",
+            region="South Kurdistan",
+        )
+        res_gemini = await ranker.evaluate_global_relevance(interview)
+        assert res_gemini.score == 8
+        assert res_gemini.passed is True
+        assert res_gemini.is_breaking is False
+
+        # Case 2: Fallback without API key must NOT flip is_breaking due to Kurdistan boost
+        ranker_no_key = ImportanceRanker(api_key="", min_relevance_score=7)
+        res_fallback = await ranker_no_key.evaluate_global_relevance(interview)
+        assert res_fallback.used_fallback is True
+        assert res_fallback.category == "kurdistan"
+        assert res_fallback.score >= 8
+        assert res_fallback.is_breaking is False
 
 
 class TestPipelineAndSkippedUrlPersistence:

@@ -190,15 +190,28 @@ class ArticlePipeline:
                 self._metrics.increment("articles_low_global_relevance")
                 return False
 
-            article.is_breaking = bool(relevance.is_breaking and relevance.score >= 9)
+            # Strict breaking gate: only breaking when BOTH is_breaking is True AND score >= 9.0
+            if not relevance.used_fallback:
+                article.importance_score = float(relevance.score)
+                article.category = relevance.category
+            else:
+                article.importance_score = float(relevance.score)
+            article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
+
             if article.is_breaking and not relevance.used_fallback:
                 priority = Priority.CRITICAL
                 article.priority = Priority.CRITICAL
-            if not relevance.used_fallback:
-                article.category = relevance.category
-                if article.category == "kurdistan" and article.priority == Priority.NORMAL:
+            elif not relevance.used_fallback and article.category == "kurdistan":
+                if article.priority == Priority.CRITICAL:
+                    # Demote accidental keyword/boost CRITICAL on non-breaking Kurdistan news
                     priority = Priority.HIGH
                     article.priority = Priority.HIGH
+                elif article.priority == Priority.NORMAL:
+                    priority = Priority.HIGH
+                    article.priority = Priority.HIGH
+            elif not article.is_breaking and article.priority == Priority.CRITICAL and not relevance.used_fallback:
+                priority = Priority.HIGH
+                article.priority = Priority.HIGH
 
             # ── Step 4.5: Cross-Source Semantic Event Deduplication (After Classification, Before Scrape/Translate) ──
             dedup_res = await self._semantic_dedup.check_duplicate(article)
@@ -304,7 +317,7 @@ class ArticlePipeline:
                 original_summary=article.original_summary,
                 category=article.category,
                 image_url=article.image_url,
-                importance_score=score,
+                importance_score=article.importance_score,
                 priority=priority,
             )
 

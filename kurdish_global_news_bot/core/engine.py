@@ -17,6 +17,7 @@ from typing import Optional
 from storage import create_database, get_kurdistan_date_str
 from storage.migrations import run_migrations
 from core.scheduler import DiscoveryScheduler
+from core.importance_ranker import is_strict_breaking
 from core.pipeline import ArticlePipeline
 from core.recovery import RecoveryManager
 from sources.base import BaseSource, RawArticle
@@ -466,6 +467,7 @@ class NewsEngine:
 
         from config import is_primary_category
         for held in held_articles:
+            held.is_breaking = is_strict_breaking(held)
             publish_now, reason = await self._pipeline.should_publish_now(held)
             if publish_now:
                 category_group = "PRIMARY" if is_primary_category(held.category) else "SECONDARY"
