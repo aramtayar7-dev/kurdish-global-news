@@ -181,6 +181,71 @@ class TelegramPublisher:
 
         return None
 
+    async def publish_daily_digest(
+        self,
+        digest_text: str,
+        card_path: Path,
+        header_caption: str = "",
+    ) -> Optional[int]:
+        """
+        Publish the nightly Kurdish news digest cover card and roundup text:
+        - If digest_text <= 1024 chars: send photo with digest_text as caption.
+        - If digest_text > 1024 chars: send photo with short header caption,
+          followed immediately by the full digest text (web preview disabled).
+        Always cleans up temporary card_path afterward.
+        """
+        if not self._bot:
+            raise RuntimeError("Publisher not initialized. Call initialize() first.")
+
+        try:
+            if len(digest_text) <= 1024:
+                with open(card_path, "rb") as photo_file:
+                    message = await self._send_with_retry(
+                        self._bot.send_photo,
+                        chat_id=self._channel_id,
+                        photo=photo_file,
+                        caption=digest_text,
+                        parse_mode=ParseMode.HTML,
+                    )
+                if message:
+                    logger.info("Published nightly digest card + caption: msg_id=%d", message.message_id)
+                    return message.message_id
+                return None
+
+            # > 1024 chars: photo with concise header + full text follow-up
+            short_caption = (
+                header_caption.strip()
+                or "<b>🌙 پوختەی گرنگترین هەواڵەکانی ئەمڕۆ</b>\n📡 @KurdishGlobalNews"
+            )[:1024]
+            with open(card_path, "rb") as photo_file:
+                photo_msg = await self._send_with_retry(
+                    self._bot.send_photo,
+                    chat_id=self._channel_id,
+                    photo=photo_file,
+                    caption=short_caption,
+                    parse_mode=ParseMode.HTML,
+                )
+
+            text_msg = await self._send_with_retry(
+                self._bot.send_message,
+                chat_id=self._channel_id,
+                text=digest_text,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+            if text_msg:
+                logger.info("Published nightly digest card + full text follow-up: msg_id=%d", text_msg.message_id)
+                return text_msg.message_id
+            return photo_msg.message_id if photo_msg else None
+        except Exception as e:
+            logger.error("Daily digest publish error: %s", str(e)[:200])
+            return None
+        finally:
+            try:
+                card_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
     async def _send_with_retry(self, method, max_retries: int = 3, **kwargs) -> Optional[object]:
         """Send a Telegram message with retry and rate-limit handling."""
         for attempt in range(max_retries):

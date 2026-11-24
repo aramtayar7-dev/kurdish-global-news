@@ -6,8 +6,9 @@ Discovers news every 60 seconds and publishes eligible stories IMMEDIATELY.
 Runs an embedded lightweight async health-check web server for Render / cloud deployment.
 
 Usage:
-    python main.py          # Continuous monitoring loop + health-check web server
-    python main.py --once   # Execute a single discovery & publishing cycle, then exit cleanly
+    python main.py                  # Continuous monitoring loop + health-check web server
+    python main.py --once           # Execute a single discovery & publishing cycle, then exit cleanly
+    python main.py --daily-digest   # Generate and publish tonight's 24h Kurdish digest, then exit
 """
 
 from __future__ import annotations
@@ -33,6 +34,16 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Execute a single discovery and publishing cycle, then exit cleanly.",
     )
+    parser.add_argument(
+        "--daily-digest",
+        action="store_true",
+        help="Generate and publish the nightly 24h Kurdish news digest, then exit cleanly.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force publishing the nightly digest even if today's digest was already sent.",
+    )
     return parser.parse_args(args)
 
 
@@ -57,7 +68,6 @@ async def run_bot_with_web_server() -> None:
     logger = logging.getLogger("main")
     port = int(os.getenv("PORT", "10000"))
 
-    # 1. Start embedded web server on 0.0.0.0:PORT
     app = create_health_app()
     runner = web.AppRunner(app)
     await runner.setup()
@@ -65,7 +75,6 @@ async def run_bot_with_web_server() -> None:
     await site.start()
     logger.info("Embedded health server started on http://0.0.0.0:%d (/ and /health)", port)
 
-    # 2. Run news bot engine
     from core.engine import NewsEngine
     engine = NewsEngine()
 
@@ -83,21 +92,32 @@ async def run_single_cycle() -> None:
     await engine.run_once()
 
 
+async def run_daily_digest(force: bool = False) -> None:
+    """Generate and publish the nightly Kurdish news digest."""
+    from core.engine import NewsEngine
+    engine = NewsEngine()
+    await engine.run_daily_digest(force=force)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Application entry point."""
     args = parse_args(argv)
 
-    # Initialize logging first
     from monitoring.logger import setup_logging
     logger = setup_logging()
 
-    mode_label = "Single-Run Mode (--once)" if args.once else "Continuous Mode"
+    if args.daily_digest:
+        mode_label = "Nightly Digest Mode (--daily-digest)"
+    elif args.once:
+        mode_label = "Single-Run Mode (--once)"
+    else:
+        mode_label = "Continuous Mode"
+
     logger.info("=" * 60)
     logger.info("  Kurdish Global News Bot — Starting [%s]", mode_label)
     logger.info("  Autonomous International News Platform")
     logger.info("=" * 60)
 
-    # Validate configuration
     errors = validate_config()
     if errors:
         for error in errors:
@@ -107,19 +127,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         sys.exit(1)
 
-    # Run with Windows-compatible event loop if on Windows
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     try:
+        if args.daily_digest:
+            logger.info("Running nightly digest mode (force=%s)...", args.force)
+            asyncio.run(run_daily_digest(force=args.force))
+            logger.info("Nightly digest run finished cleanly. Exiting with code 0.")
+            return 0
         if args.once:
             logger.info("Running single discovery and publishing cycle...")
             asyncio.run(run_single_cycle())
             logger.info("Single cycle completed successfully. Exiting with code 0.")
             return 0
-        else:
-            asyncio.run(run_bot_with_web_server())
-            return 0
+        asyncio.run(run_bot_with_web_server())
+        return 0
     except KeyboardInterrupt:
         logger.info("Shutdown requested by user.")
         return 0

@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from storage.database import Database
+from storage.database import Database, get_kurdistan_date_str
 from storage.migrations import run_migrations
 from core.scheduler import DiscoveryScheduler
 from core.pipeline import ArticlePipeline
@@ -26,11 +26,13 @@ from sources.gdelt_source import GDELTSource
 from sources.official_sources import OfficialSourcesAdapter
 from sources.kurdistan_source import KurdistanNewsSource
 from processing.extractor import ArticleExtractor
+from processing.card_generator import NewsCardGenerator
+from processing.digest_generator import DIGEST_HEADER_PREFIX, DailyDigestGenerator
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics, Timer
 from config import (
-    ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT,
+    ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, CHANNEL_HANDLE,
     MAX_CONCURRENT_SOURCES, ArticleStatus, BACKUP_INTERVAL_HOURS,
     MAX_ARTICLE_AGE_MINUTES,
 )
@@ -57,6 +59,8 @@ class NewsEngine:
         self._extractor = ArticleExtractor()
         self._pipeline: Optional[ArticlePipeline] = None
         self._recovery: Optional[RecoveryManager] = None
+        self._digest_generator: Optional[DailyDigestGenerator] = None
+        self._card_generator: Optional[NewsCardGenerator] = None
         self._sources: list[BaseSource] = []
         self._running = False
         self._source_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SOURCES)
@@ -188,6 +192,104 @@ class NewsEngine:
             # 8. Clean shutdown & close DB
             await self.stop()
             logger.info("Single run completed cleanly.")
+
+    async def run_daily_digest(self, force: bool = False) -> bool:
+        """
+        Execute the Automated Nightly Kurdish News Digest:
+          1. Fetch top 10 published articles from last 24h (Kurdistan prioritized)
+          2. Check duplicate digest lock for today's Kurdistan date (UTC+3) unless force=True
+          3. Skip cleanly if < 3 articles exist in the last 24h
+          4. Generate Gemini Sorani roundup & 1280x720 nightly cover card
+          5. Publish to Telegram, mark digest date in SQLite, clean up temp card & close DB
+        Returns True if digest was published, False if skipped or failed.
+        """
+        logger.info("╔══════════════════════════════════════════╗")
+        logger.info("║  Kurdish Global News — Nightly Digest    ║")
+        logger.info("╚══════════════════════════════════════════╝")
+
+        await self._db.connect()
+        await run_migrations(self._db.conn)
+
+        digest_gen = self._digest_generator or DailyDigestGenerator()
+        card_gen = self._card_generator or NewsCardGenerator()
+        card_path = None
+
+        try:
+            digest_date = get_kurdistan_date_str()
+            if not force and await self._db.is_digest_published_for_date(digest_date):
+                logger.info(
+                    "SKIPPED: Daily digest for %s already published (pass --force to re-publish).",
+                    digest_date,
+                )
+                return False
+
+            candidates = await self._db.get_published_articles_last_24h(limit=10)
+            if len(candidates) < 3:
+                logger.info(
+                    "SKIPPED: fewer than 3 articles in the last 24h (found %d).",
+                    len(candidates),
+                )
+                return False
+
+            digest = await digest_gen.generate_digest(candidates, digest_date=digest_date)
+            if not digest:
+                return False
+
+            await self._publisher.initialize()
+            channel_ok = await self._publisher.test_connection()
+            if not channel_ok:
+                raise RuntimeError("Telegram channel not accessible.")
+
+            card_path = await card_gen.generate_digest_card(
+                date_label=digest.date_label,
+                story_count=digest.story_count,
+            )
+            header_caption = (
+                f"<b>{DIGEST_HEADER_PREFIX}</b>\n"
+                f"📅 {digest.date_label}\n"
+                f"📡 {CHANNEL_HANDLE}"
+            )
+            msg_id = await self._publisher.publish_daily_digest(
+                digest_text=digest.digest_text,
+                card_path=card_path,
+                header_caption=header_caption,
+            )
+            if msg_id is None:
+                logger.error("Nightly digest publishing returned no Telegram message_id.")
+                return False
+
+            await self._db.mark_digest_published(
+                digest_date=digest.date_str,
+                story_count=digest.story_count,
+                digest_text=digest.digest_text,
+                telegram_message_id=msg_id,
+            )
+            logger.info(
+                "Nightly digest published cleanly for %s (%d stories, msg_id=%d).",
+                digest.date_str,
+                digest.story_count,
+                msg_id,
+            )
+            return True
+        finally:
+            if card_path is not None:
+                try:
+                    card_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            try:
+                await digest_gen.cleanup()
+            except Exception:
+                pass
+            try:
+                await self._publisher.cleanup()
+            except Exception:
+                pass
+            try:
+                await self._db.backup()
+            except Exception:
+                pass
+            await self._db.close()
 
     async def stop(self) -> None:
         """Gracefully shut down all components."""

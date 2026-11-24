@@ -418,6 +418,18 @@ class NewsCardGenerator:
         """Asynchronously generate a 1280x720 news graphic card as JPEG bytes."""
         return await asyncio.to_thread(self.render_card_sync, article, image_bytes)
 
+    @staticmethod
+    async def _write_temp_jpeg(card_bytes: bytes, prefix: str) -> Path:
+        """Persist card JPEG bytes cleanly into a temporary file."""
+        def _write_temp() -> Path:
+            with tempfile.NamedTemporaryFile(
+                prefix=prefix, suffix=".jpg", delete=False
+            ) as tmp:
+                tmp.write(card_bytes)
+                return Path(tmp.name)
+
+        return await asyncio.to_thread(_write_temp)
+
     async def generate_card_file(
         self,
         article: Article,
@@ -425,12 +437,115 @@ class NewsCardGenerator:
     ) -> Path:
         """Asynchronously generate a temporary JPEG card file and return its Path."""
         card_bytes = await self.generate_card_bytes(article, image_bytes=image_bytes)
+        return await self._write_temp_jpeg(card_bytes, prefix="kgn_card_")
 
-        def _write_temp() -> Path:
-            with tempfile.NamedTemporaryFile(
-                prefix="kgn_card_", suffix=".jpg", delete=False
-            ) as tmp:
-                tmp.write(card_bytes)
-                return Path(tmp.name)
+    def render_digest_card_sync(self, date_label: str, story_count: int) -> bytes:
+        """
+        Synchronously render the 1280x720 nightly digest broadcast cover card
+        (dark navy/crimson/gold theme, transparent circular logo, bold Sorani RTL title & subtitle).
+        """
+        canvas = Image.new("RGBA", (CARD_WIDTH, CARD_HEIGHT), (8, 13, 28, 255))
+        draw = ImageDraw.Draw(canvas)
+        rtl_kw = self._rtl_kwargs()
 
-        return await asyncio.to_thread(_write_temp)
+        # Deep navy vertical gradient
+        for y in range(CARD_HEIGHT):
+            t = y / CARD_HEIGHT
+            r = int(7 + (17 - 7) * t)
+            g = int(12 + (24 - 12) * t)
+            b = int(28 + (52 - 28) * t)
+            draw.line([(0, y), (CARD_WIDTH, y)], fill=(r, g, b, 255))
+
+        # Geometric crimson & gold broadcast layer
+        overlay = Image.new("RGBA", (CARD_WIDTH, CARD_HEIGHT), (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(overlay)
+        odraw.polygon(
+            [(0, 0), (540, 0), (220, CARD_HEIGHT), (0, CARD_HEIGHT)],
+            fill=(153, 27, 27, 70),
+        )
+        odraw.polygon(
+            [(940, 0), (CARD_WIDTH, 0), (CARD_WIDTH, 420)],
+            fill=(217, 119, 6, 42),
+        )
+        # Subtle grid lines
+        for gx in range(0, CARD_WIDTH, 80):
+            odraw.line([(gx, 0), (gx, CARD_HEIGHT)], fill=(255, 255, 255, 8), width=1)
+        for gy in range(0, CARD_HEIGHT, 80):
+            odraw.line([(0, gy), (CARD_WIDTH, gy)], fill=(255, 255, 255, 8), width=1)
+
+        # Top crimson + gold accent frame lines
+        odraw.rectangle([(0, 0), (CARD_WIDTH, 6)], fill=(220, 38, 38, 255))
+        odraw.rectangle([(0, 6), (CARD_WIDTH, 9)], fill=(234, 179, 8, 220))
+        odraw.rectangle([(0, CARD_HEIGHT - 5), (CARD_WIDTH, CARD_HEIGHT)], fill=(217, 119, 6, 235))
+
+        canvas = Image.alpha_composite(canvas, overlay)
+
+        # Clean alpha-composited circular channel logo at top-right (zero white box)
+        self._draw_logo_or_badge(canvas)
+
+        draw = ImageDraw.Draw(canvas)
+        right_edge = CARD_WIDTH - MARGIN_X
+
+        # Nightly edition pill badge (gold background)
+        badge_text = "وەشانی شەوانە"
+        badge_font = self._load_font(26)
+        bw, bh = self._measure_text(draw, badge_text, badge_font)
+        pill_pad_x = 24
+        pill_h = 46
+        pill_w = bw + (pill_pad_x * 2)
+        pill_y = 260
+        draw.rounded_rectangle(
+            [(right_edge - pill_w, pill_y), (right_edge, pill_y + pill_h)],
+            radius=12,
+            fill=(217, 119, 6, 250),
+        )
+        draw.text(
+            (right_edge - pill_pad_x - bw, pill_y + (pill_h - bh) // 2 - 4),
+            badge_text,
+            font=badge_font,
+            fill=(255, 255, 255, 255),
+            **rtl_kw,
+        )
+
+        # Main RTL title: پوختەی هەواڵەکانی ئەمڕۆ
+        main_title = "پوختەی هەواڵەکانی ئەمڕۆ"
+        title_font = self._load_font(62)
+        tw, th = self._measure_text(draw, main_title, title_font)
+        if tw > CONTENT_MAX_WIDTH:
+            title_font = self._load_font(52)
+            tw, th = self._measure_text(draw, main_title, title_font)
+        title_y = pill_y + pill_h + 28
+        title_x = max(MARGIN_X, right_edge - tw)
+        draw.text((title_x + 3, title_y + 3), main_title, font=title_font, fill=(0, 0, 0, 190), **rtl_kw)
+        draw.text((title_x, title_y), main_title, font=title_font, fill=(255, 255, 255, 255), **rtl_kw)
+
+        # Subtitle: Kurdish date + story count
+        subtitle = f"{date_label}  •  گرنگترین {story_count} هەواڵی ڕۆژ"
+        sub_font = self._load_font(32)
+        sw, _ = self._measure_text(draw, subtitle, sub_font)
+        if sw > CONTENT_MAX_WIDTH:
+            sub_font = self._load_font(26)
+            sw, _ = self._measure_text(draw, subtitle, sub_font)
+        sub_y = title_y + th + 32
+        sub_x = max(MARGIN_X, right_edge - sw)
+        draw.text((sub_x, sub_y), subtitle, font=sub_font, fill=(253, 224, 71, 245), **rtl_kw)
+
+        # Divider + bottom-left branding @KurdishGlobalNews
+        footer_y = CARD_HEIGHT - 54
+        draw.line([(MARGIN_X, footer_y - 14), (right_edge, footer_y - 14)], fill=(255, 255, 255, 45), width=1)
+        wm_font = self._load_font(24)
+        draw.text((MARGIN_X, footer_y), self._channel_handle, font=wm_font, fill=(226, 232, 240, 225))
+
+        rgb = canvas.convert("RGB")
+        buf = io.BytesIO()
+        rgb.save(buf, format="JPEG", quality=92, optimize=True)
+        return buf.getvalue()
+
+    async def generate_digest_card_bytes(self, date_label: str, story_count: int) -> bytes:
+        """Asynchronously render the 1280x720 nightly digest cover card as JPEG bytes."""
+        return await asyncio.to_thread(self.render_digest_card_sync, date_label, story_count)
+
+    async def generate_digest_card(self, date_label: str, story_count: int) -> Path:
+        """Asynchronously generate a temporary JPEG nightly digest cover card file and return its Path."""
+        card_bytes = await self.generate_digest_card_bytes(date_label, story_count)
+        return await self._write_temp_jpeg(card_bytes, prefix="kgn_digest_")

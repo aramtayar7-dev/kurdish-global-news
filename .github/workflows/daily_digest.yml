@@ -1,0 +1,68 @@
+name: Nightly Kurdish News Digest
+
+on:
+  schedule:
+    # Runs nightly at 21:30 Erbil/Kurdistan time (UTC+3 = 18:30 UTC)
+    - cron: '30 18 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force re-publish digest even if already published today'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: news-bot-run
+  cancel-in-progress: false
+
+jobs:
+  daily-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'kurdish_global_news_bot/requirements.txt'
+
+      - name: Restore or Cache SQLite Database
+        uses: actions/cache@v4
+        with:
+          path: kurdish_global_news_bot/data
+          key: bot-db-${{ github.run_id }}
+          restore-keys: |
+            bot-db-
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r kurdish_global_news_bot/requirements.txt
+
+      - name: Install RTL Text Libraries for Pillow
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfribidi0 libharfbuzz0b libraqm0
+
+      - name: Prefer IPv4 for Telegram API
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+
+      - name: Run Nightly Kurdish Digest
+        working-directory: kurdish_global_news_bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ENABLE_LOCAL_LLM: 'false'
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            python main.py --daily-digest --force
+          else
+            python main.py --daily-digest
+          fi

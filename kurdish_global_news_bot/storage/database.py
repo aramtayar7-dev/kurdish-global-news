@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +20,15 @@ from config import DATABASE_PATH, BACKUP_DIR
 from storage.models import Article, Source, Event
 
 logger = logging.getLogger("database")
+KURDISTAN_TZ = timezone(timedelta(hours=3))
+
+
+def get_kurdistan_date_str(dt: Optional[datetime] = None) -> str:
+    """Return current local date string YYYY-MM-DD in Kurdistan time (UTC+3)."""
+    ref = dt or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return ref.astimezone(KURDISTAN_TZ).strftime("%Y-%m-%d")
 
 
 class Database:
@@ -127,6 +136,14 @@ class Database:
                 score REAL DEFAULT 0.0,
                 reason TEXT DEFAULT '',
                 skipped_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_digests (
+                digest_date TEXT PRIMARY KEY,
+                story_count INTEGER DEFAULT 0,
+                digest_text TEXT DEFAULT '',
+                telegram_message_id INTEGER,
+                published_at TEXT NOT NULL
             );
 
             -- Indexes for performance
@@ -323,6 +340,71 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [self._row_to_article(row) for row in rows]
+
+    async def get_published_articles_last_24h(self, limit: int = 10) -> list[Article]:
+        """
+        Fetch published articles from the last 24 hours ordered by importance/relevance
+        score descending (prioritizing `kurdistan` + major global/military/tech stories).
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        async with self.conn.execute(
+            """SELECT * FROM articles WHERE status = 'PUBLISHED'
+               ORDER BY published_at DESC, id DESC LIMIT 150"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        from dateutil import parser as dateparser
+        recent_24h: list[Article] = []
+        for row in rows:
+            art = self._row_to_article(row)
+            ts_str = art.published_at or art.discovered_at
+            if not ts_str:
+                continue
+            try:
+                dt = dateparser.parse(ts_str)
+                if not dt:
+                    continue
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt >= cutoff:
+                    recent_24h.append(art)
+            except Exception:
+                continue
+
+        # Sort descending by Kurdistan priority + importance_score, then recency
+        def _sort_key(a: Article) -> tuple[float, int, float, str]:
+            is_kurd = 1 if (a.category or "").strip().lower() == "kurdistan" else 0
+            boosted = (a.importance_score or 0.0) + (0.20 if is_kurd else 0.0)
+            return (boosted, is_kurd, a.importance_score or 0.0, a.published_at or "")
+
+        recent_24h.sort(key=_sort_key, reverse=True)
+        return recent_24h[:limit]
+
+    async def is_digest_published_for_date(self, digest_date: str) -> bool:
+        """Return True if a daily digest has already been recorded for `digest_date` (YYYY-MM-DD)."""
+        async with self.conn.execute(
+            "SELECT 1 FROM daily_digests WHERE digest_date = ? LIMIT 1",
+            (digest_date,),
+        ) as cursor:
+            return (await cursor.fetchone()) is not None
+
+    async def mark_digest_published(
+        self,
+        digest_date: str,
+        story_count: int,
+        digest_text: str,
+        telegram_message_id: Optional[int] = None,
+    ) -> None:
+        """Record a sent daily digest in SQLite so the same day is never duplicated."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            await self.conn.execute(
+                """INSERT OR REPLACE INTO daily_digests
+                   (digest_date, story_count, digest_text, telegram_message_id, published_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (digest_date, story_count, digest_text, telegram_message_id, now),
+            )
+            await self.conn.commit()
 
     async def get_last_published_primary_time(
         self, primary_categories: set[str] | list[str]

@@ -33,6 +33,15 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         );
         CREATE INDEX IF NOT EXISTS idx_skipped_urls_canonical ON skipped_urls(canonical_url);
     """),
+    (5, "Add daily_digests table for duplicate nightly digest protection", """
+        CREATE TABLE IF NOT EXISTS daily_digests (
+            digest_date TEXT PRIMARY KEY,
+            story_count INTEGER DEFAULT 0,
+            digest_text TEXT DEFAULT '',
+            telegram_message_id INTEGER,
+            published_at TEXT NOT NULL
+        );
+    """),
 ]
 
 
