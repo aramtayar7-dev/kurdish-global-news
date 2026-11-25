@@ -20,6 +20,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from urllib.parse import urlparse
+
+import config
 from processing.extractor import ArticleExtractor
 from storage.models import Article
 from storage.utils import normalize_event_entities, normalize_event_key, unpack_event_metadata
@@ -54,9 +57,33 @@ _SOURCE_GROUP_MAP: dict[str, str] = {
     "k24": "kurdistan24",
     "nrt": "nrt",
     "nrt tv": "nrt",
-    # OSINT / Conflict
+    # OSINT / Conflict & X (Twitter) 16-Account Roster
     "liveuamap": "liveuamap",
     "clash report": "clashreport",
+    "clashreport": "clashreport",
+    "centcom": "centcom",
+    "basnews": "basnews",
+    "englishbasnews": "basnews",
+    "shafaq": "shafaq",
+    "shafaq news": "shafaq",
+    "shafaqnews": "shafaq",
+    "rawafid": "rawafid",
+    "rawafiid": "rawafid",
+    "aurora intel": "auroraintel",
+    "auroraintel": "auroraintel",
+    "osinttechnical": "osinttechnical",
+    "faytuks": "faytuks",
+    "faytuks news": "faytuks",
+    "intel crab": "intelcrab",
+    "intelcrab": "intelcrab",
+    "osintdefender": "osintdefender",
+    "sentdefender": "osintdefender",
+    "elint news": "elintnews",
+    "elintnews": "elintnews",
+    "rudawkurdish": "rudaw",
+    "rudawenglish": "rudaw",
+    "kurdistan24tv": "kurdistan24",
+    "kurdistan24_en": "kurdistan24",
     # Global Tier-1 wire services
     "reuters": "reuters",
     "reuters world": "reuters",
@@ -118,7 +145,7 @@ _SOURCE_GROUP_MAP: dict[str, str] = {
 
 # Source group → Tier mapping
 _GROUP_TIER_MAP: dict[str, int] = {
-    # Tier 1: Official wire/broadcast
+    # Tier 1: Official wire/broadcast & CENTCOM
     "reuters": TIER_1,
     "ap": TIER_1,
     "bbc": TIER_1,
@@ -136,12 +163,22 @@ _GROUP_TIER_MAP: dict[str, int] = {
     "nytimes": TIER_1,
     "washingtonpost": TIER_1,
     "bleepingcomputer": TIER_1,
+    "centcom": TIER_1,
     # Tier 2: Established Regional / Kurdish / OSINT
     "rudaw": TIER_2,
     "kurdistan24": TIER_2,
+    "basnews": TIER_2,
+    "shafaq": TIER_2,
     "nrt": TIER_2,
+    "rawafid": TIER_2,
+    "auroraintel": TIER_2,
     "liveuamap": TIER_2,
     "clashreport": TIER_2,
+    "osinttechnical": TIER_2,
+    "faytuks": TIER_2,
+    "intelcrab": TIER_2,
+    "osintdefender": TIER_2,
+    "elintnews": TIER_2,
     "defensenews": TIER_2,
     "militarytimes": TIER_2,
     "thehackernews": TIER_2,
@@ -156,7 +193,63 @@ _GROUP_TIER_MAP: dict[str, int] = {
     "googlenews": TIER_2,
     # Tier 3: Factional / Unverified
     "sabereen": TIER_3,
+    "x_unofficial": TIER_3,
 }
+
+
+_X_STATUS_HANDLE_RE = re.compile(r"^/([A-Za-z0-9_]+)/status/\d+", re.IGNORECASE)
+_X_HOSTS = {"x.com", "twitter.com", "mobile.x.com", "mobile.twitter.com", "fxtwitter.com", "vxtwitter.com"}
+
+
+def extract_x_handle_from_url(url: str) -> str:
+    """Extract lowercased X handle from `https://x.com/<handle>/status/<id>` URLs, else empty string."""
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url.strip())
+        host = (parsed.hostname or "").lower().lstrip("www.")
+        if host not in _X_HOSTS:
+            return ""
+        m = _X_STATUS_HANDLE_RE.match(parsed.path or "")
+        return m.group(1).lower() if m else ""
+    except Exception:
+        return ""
+
+
+def is_x_source_url(url: str) -> bool:
+    """Return True if URL belongs to X / Twitter or an X bridge."""
+    return bool(extract_x_handle_from_url(url)) or (
+        urlparse((url or "").strip()).hostname or ""
+    ).lower().lstrip("www.") in _X_HOSTS
+
+
+def get_x_account_meta(handle_or_source: str, url: str = "") -> Optional[dict[str, object]]:
+    """Lookup configured X account metadata by handle or URL."""
+    candidates = [extract_x_handle_from_url(url), (handle_or_source or "").strip().lstrip("@")]
+    cand_lower = {c.lower() for c in candidates if c}
+    for acc in getattr(config, "X_VIDEO_SOURCE_ACCOUNTS", []):
+        if str(acc.get("handle", "")).lower() in cand_lower:
+            return acc
+    return None
+
+
+def is_official_media_source(source_name: str, url: str = "") -> bool:
+    """
+    Return True ONLY for recognized official news channels / military commands
+    (e.g. CENTCOM, Rudaw, Kurdistan24, BasNews, Shafaq, Reuters, BBC).
+    Ordinary/personal/OSINT accounts (e.g. Rawafid, Clash Report, unknown users)
+    ALWAYS return False and trigger the strict NO-watermark gate.
+    """
+    acc = get_x_account_meta(source_name, url=url)
+    if acc is not None:
+        return bool(acc.get("is_official_media", False))
+    handle = extract_x_handle_from_url(url)
+    if handle:
+        # Unknown X handles discovered via fallback are NEVER official media
+        return False
+    grp = get_source_group(source_name)
+    official_groups = set(getattr(config, "OFFICIAL_MEDIA_SOURCE_GROUPS", set()))
+    return grp in official_groups
 
 
 def get_source_group(source_name: str) -> str:
@@ -340,21 +433,34 @@ def apply_verification_guard(
 ) -> Article:
     """
     Apply the single-source verification guard:
-      - Downgrade breaking status (and CRITICAL priority) for uncorroborated Tier-3 claims.
-      - Mark article transiently for attribution tagging (`_is_uncorroborated_tier3`).
+      - Downgrade breaking status (and CRITICAL priority) for uncorroborated Tier-3
+        or uncorroborated unofficial X eyewitness claims.
+      - Mark article transiently for attribution tagging
+        (`_is_uncorroborated_tier3` and `_is_uncorroborated_x_video`).
     Returns the (mutated) article.
     """
+    is_unofficial_x = (
+        is_x_source_url(getattr(article, "original_url", "") or "")
+        and not is_official_media_source(
+            getattr(article, "source_name", "") or "",
+            getattr(article, "original_url", "") or "",
+        )
+    )
+    is_uncorroborated_x = bool(is_unofficial_x and corroboration.corroboration_count <= 1)
+
     article._verification_checked = True  # type: ignore[attr-defined]
     article._corroboration_result = corroboration  # type: ignore[attr-defined]
     article._is_uncorroborated_tier3 = bool(corroboration.is_uncorroborated_tier3)  # type: ignore[attr-defined]
+    article._is_uncorroborated_x_video = bool(is_uncorroborated_x)  # type: ignore[attr-defined]
 
-    if corroboration.is_uncorroborated_tier3 and getattr(article, "is_breaking", False):
+    if (corroboration.is_uncorroborated_tier3 or is_uncorroborated_x) and getattr(article, "is_breaking", False):
         logger.info(
-            "Downgraded breaking alert: uncorroborated Tier-3 single-source claim from %s "
-            "(event_key=%s, corroboration_count=%d)",
+            "Downgraded breaking alert: uncorroborated single-source claim from %s "
+            "(event_key=%s, corroboration_count=%d, unofficial_x=%s)",
             article.source_name,
             getattr(article, "event_key", ""),
             corroboration.corroboration_count,
+            is_uncorroborated_x,
         )
         article.is_breaking = False
         if getattr(article, "priority", "") == "CRITICAL":

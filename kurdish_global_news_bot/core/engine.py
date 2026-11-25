@@ -39,6 +39,7 @@ from sources.gdelt_source import GDELTSource
 from sources.official_sources import OfficialSourcesAdapter
 from sources.kurdistan_source import KurdistanNewsSource
 from sources.telegram_source import TelegramSource
+from sources.x_video_source import XVideoSource
 from processing.deduplicator import OUTCOME_THREAD_UPDATE
 from processing.extractor import ArticleExtractor
 from processing.card_generator import NewsCardGenerator
@@ -466,6 +467,11 @@ class NewsEngine:
             telegram_src = TelegramSource()
             await telegram_src.initialize()
             self._sources.append(telegram_src)
+
+        if getattr(config, "ENABLE_X_VIDEO_SOURCE", True):
+            x_video_src = XVideoSource()
+            await x_video_src.initialize()
+            self._sources.append(x_video_src)
 
         # Register sources in database
         for source in self._sources:

@@ -22,10 +22,11 @@ from storage.models import Article
 
 logger = logging.getLogger("processing.formatter")
 
-# Attribution qualifier for uncorroborated Tier-3 single-source claims
+# Attribution qualifier for uncorroborated Tier-3 single-source claims & raw eyewitness X videos
 TIER3_ATTRIBUTION_PREFIX = "بەپێی ڕاپۆرتە سەرەتاییەکان، "
+X_EYEWITNESS_ATTRIBUTION_PREFIX = "بەپێی گرتە ڤیدیۆ بڵاوکراوەکان، "
 _ATTRIBUTION_PREFIXES = (
-    "بەپێی", "سەرچاوە", "میدیا", "لە ڕاپۆرتێکدا", "بەپێی ڕاپۆرتە",
+    "بەپێی", "سەرچاوە", "میدیا", "لە ڕاپۆرتێکدا", "بەپێی ڕاپۆرتە", "بەپێی گرتە",
 )
 
 # RSS/HTML footer boilerplate stripped before translation and after formatting
@@ -128,17 +129,27 @@ def prepend_tier3_attribution(translated_summary: str) -> str:
     Skips if the summary already starts with an attribution prefix.
     Returns the modified summary, guaranteed <= 1024 chars.
     """
+    return _prepend_attribution_with_prefix(translated_summary, TIER3_ATTRIBUTION_PREFIX)
+
+
+def prepend_x_video_attribution(translated_summary: str) -> str:
+    """
+    Prepend neutral Kurdish video-footage attribution (`بەپێی گرتە ڤیدیۆ بڵاوکراوەکان، `)
+    for uncorroborated X eyewitness/Tier-3 video claims.
+    """
+    return _prepend_attribution_with_prefix(translated_summary, X_EYEWITNESS_ATTRIBUTION_PREFIX)
+
+
+def _prepend_attribution_with_prefix(translated_summary: str, prefix_text: str) -> str:
     if not translated_summary or not translated_summary.strip():
         return translated_summary
 
     stripped = translated_summary.strip()
-    # Check if already attributed
     for prefix in _ATTRIBUTION_PREFIXES:
         if stripped.startswith(prefix):
             return translated_summary
 
-    result = TIER3_ATTRIBUTION_PREFIX + stripped
-    # Trim to <= 1024 chars if needed
+    result = prefix_text + stripped
     if len(result) > 1024:
         result = trim_at_sentence_boundary(result, max_len=1024)
     return result

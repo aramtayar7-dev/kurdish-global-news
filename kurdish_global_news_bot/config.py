@@ -44,9 +44,69 @@ NOTIFY_DAILY_DIGEST: bool = _bool(os.getenv("NOTIFY_DAILY_DIGEST"), False)
 # Inline Source URL Button UI
 ENABLE_INLINE_SOURCE_BUTTON: bool = _bool(os.getenv("ENABLE_INLINE_SOURCE_BUTTON"), True)
 ENABLE_TELEGRAM_SOURCE_LINK_BUTTON: bool = _bool(os.getenv("ENABLE_TELEGRAM_SOURCE_LINK_BUTTON"), False)
+ENABLE_X_SOURCE_LINK_BUTTON: bool = _bool(os.getenv("ENABLE_X_SOURCE_LINK_BUTTON"), False)
 INLINE_SOURCE_BUTTON_MAX_LABEL_LEN: int = max(
     16, _int(os.getenv("INLINE_SOURCE_BUTTON_MAX_LABEL_LEN"), 36)
 )
+
+# ═══════════════════════════════════════════════════
+# Free-Tier X (Twitter) Video Discovery & Watermark Policy
+# ═══════════════════════════════════════════════════
+ENABLE_X_VIDEO_SOURCE: bool = _bool(os.getenv("ENABLE_X_VIDEO_SOURCE"), True)
+X_MAX_VIDEO_AGE_HOURS: float = _float(os.getenv("X_MAX_VIDEO_AGE_HOURS"), 6.0)
+X_MIN_VIDEO_DURATION_SEC: int = _int(os.getenv("X_MIN_VIDEO_DURATION_SEC"), 4)
+X_MAX_VIDEO_DURATION_SEC: int = _int(os.getenv("X_MAX_VIDEO_DURATION_SEC"), 120)
+X_MIN_VIDEO_WIDTH: int = _int(os.getenv("X_MIN_VIDEO_WIDTH"), 480)
+X_MAX_VIDEOS_PER_CYCLE: int = max(1, _int(os.getenv("X_MAX_VIDEOS_PER_CYCLE"), 4))
+X_REQUIRE_CLEAN_NO_LOGO_FOR_UNOFFICIAL: bool = _bool(
+    os.getenv("X_REQUIRE_CLEAN_NO_LOGO_FOR_UNOFFICIAL"), True
+)
+X_ALLOW_OFFICIAL_MEDIA_LOGO: bool = _bool(os.getenv("X_ALLOW_OFFICIAL_MEDIA_LOGO"), True)
+
+X_NITTER_RSS_MIRRORS: list[str] = [
+    m.strip().rstrip("/")
+    for m in os.getenv(
+        "X_RSS_MIRRORS",
+        "https://xcancel.com,https://nitter.poast.org,https://nitter.privacyredirect.com",
+    ).split(",")
+    if m.strip()
+]
+
+OFFICIAL_MEDIA_SOURCE_GROUPS: set[str] = {
+    "reuters",
+    "ap",
+    "bbc",
+    "france24",
+    "dw",
+    "aljazeera",
+    "centcom",
+    "rudaw",
+    "kurdistan24",
+    "basnews",
+    "shafaq",
+    "nrt",
+}
+
+X_VIDEO_SOURCE_ACCOUNTS: list[dict[str, object]] = [
+    # Official Military & Recognized Official News Channels (is_official_media=True)
+    {"handle": "CENTCOM", "display_name": "CENTCOM", "region": "middle_east", "lang": "en", "credibility_tier": 1, "source_group": "centcom", "is_official_media": True},
+    {"handle": "Rudawkurdish", "display_name": "Rudaw", "region": "kurdistan_bashur", "lang": "ckb", "credibility_tier": 2, "source_group": "rudaw", "is_official_media": True},
+    {"handle": "RudawEnglish", "display_name": "Rudaw", "region": "kurdistan_bashur", "lang": "en", "credibility_tier": 2, "source_group": "rudaw", "is_official_media": True},
+    {"handle": "kurdistan24tv", "display_name": "Kurdistan24", "region": "kurdistan_bashur", "lang": "ckb", "credibility_tier": 2, "source_group": "kurdistan24", "is_official_media": True},
+    {"handle": "Kurdistan24_EN", "display_name": "Kurdistan24", "region": "kurdistan_bashur", "lang": "en", "credibility_tier": 2, "source_group": "kurdistan24", "is_official_media": True},
+    {"handle": "EnglishBasNews", "display_name": "BasNews", "region": "kurdistan_bashur", "lang": "en", "credibility_tier": 2, "source_group": "basnews", "is_official_media": True},
+    {"handle": "ShafaqNews", "display_name": "Shafaq News", "region": "kurdistan_bashur", "lang": "en", "credibility_tier": 2, "source_group": "shafaq", "is_official_media": True},
+    # Unofficial / Social / OSINT / Raw Eyewitness Accounts (is_official_media=False — strict NO-watermark gate)
+    {"handle": "Rawafiid", "display_name": "Rawafid", "region": "kurdistan_bashur", "lang": "ar", "credibility_tier": 2, "source_group": "rawafid", "is_official_media": False},
+    {"handle": "AuroraIntel", "display_name": "Aurora Intel", "region": "middle_east", "lang": "en", "credibility_tier": 2, "source_group": "auroraintel", "is_official_media": False},
+    {"handle": "ClashReport", "display_name": "Clash Report", "region": "middle_east", "lang": "en", "credibility_tier": 2, "source_group": "clashreport", "is_official_media": False},
+    {"handle": "Liveuamap", "display_name": "Liveuamap", "region": "global", "lang": "en", "credibility_tier": 2, "source_group": "liveuamap", "is_official_media": False},
+    {"handle": "OSINTtechnical", "display_name": "OSINTtechnical", "region": "global", "lang": "en", "credibility_tier": 2, "source_group": "osinttechnical", "is_official_media": False},
+    {"handle": "Faytuks", "display_name": "Faytuks News", "region": "global", "lang": "en", "credibility_tier": 2, "source_group": "faytuks", "is_official_media": False},
+    {"handle": "IntelCrab", "display_name": "Intel Crab", "region": "global", "lang": "en", "credibility_tier": 2, "source_group": "intelcrab", "is_official_media": False},
+    {"handle": "sentdefender", "display_name": "OSINTdefender", "region": "global", "lang": "en", "credibility_tier": 2, "source_group": "osintdefender", "is_official_media": False},
+    {"handle": "ELINTNews", "display_name": "ELINT News", "region": "middle_east", "lang": "en", "credibility_tier": 2, "source_group": "elintnews", "is_official_media": False},
+]
 
 # ═══════════════════════════════════════════════════
 # Private Admin Watchdog & Telemetry Alerts
@@ -380,6 +440,16 @@ SOURCE_CREDIBILITY: dict[str, float] = {
     "nrt tv": 0.84,
     "liveuamap": 0.80,
     "clash report": 0.78,
+    "centcom": 0.94,
+    "basnews": 0.82,
+    "shafaq news": 0.82,
+    "rawafid": 0.72,
+    "aurora intel": 0.80,
+    "osinttechnical": 0.80,
+    "faytuks news": 0.80,
+    "intel crab": 0.78,
+    "osintdefender": 0.78,
+    "elint news": 0.80,
     "pukmedia": 0.78,
     "north press agency": 0.82,
     "rojava information center": 0.82,

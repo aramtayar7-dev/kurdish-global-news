@@ -13,11 +13,13 @@ from urllib.parse import urlparse
 from typing import Optional
 
 from storage.models import Article
+import config
 from config import ENABLE_TELEGRAM, MAX_ARTICLE_AGE_HOURS, MAX_ARTICLE_AGE_MINUTES, TELEGRAM_SOURCE_CHANNELS
 
 logger = logging.getLogger("processing.validator")
 
 _TELEGRAM_POST_PATH_RE = re.compile(r"^/([A-Za-z0-9_]{3,})/(\d+)/?$")
+_X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]{1,30})/status/(\d+)/?$")
 
 # Domains to reject
 BLOCKED_DOMAINS: set[str] = {
@@ -82,9 +84,14 @@ class ArticleValidator:
                 if not is_recent:
                     return False, f"Cold start recency limit: {recency_reason}"
             elif self.max_age_hours is not None:
+                eff_max_hours = float(self.max_age_hours)
+                parsed_for_age = urlparse(article.original_url)
+                dom_for_age = (parsed_for_age.netloc or "").lower().split(":")[0]
+                if self._is_configured_x_status_url(dom_for_age, parsed_for_age.path):
+                    eff_max_hours = max(eff_max_hours, float(getattr(config, "X_MAX_VIDEO_AGE_HOURS", 6.0)))
                 is_recent, recency_reason = self.is_recent(
                     article.publication_date,
-                    max_age_hours=self.max_age_hours,
+                    max_age_hours=eff_max_hours,
                 )
                 if not is_recent:
                     return False, recency_reason
@@ -127,8 +134,10 @@ class ArticleValidator:
         # Remove port for comparison
         domain_no_port = domain.split(":")[0]
 
-        # Allow canonical public-channel post URLs configured for Telegram discovery
-        if not self._is_configured_telegram_post_url(domain_no_port, parsed.path):
+        # Allow canonical public-channel post URLs configured for Telegram or X discovery
+        if not self._is_configured_telegram_post_url(domain_no_port, parsed.path) and not self._is_configured_x_status_url(
+            domain_no_port, parsed.path
+        ):
             for blocked in BLOCKED_DOMAINS:
                 if domain_no_port == blocked or domain_no_port.endswith(f".{blocked}"):
                     return False, f"Blocked domain: {blocked}"
@@ -160,6 +169,25 @@ class ArticleValidator:
             if ch.get("username")
         }
         return username in allowed
+
+    @staticmethod
+    def _is_configured_x_status_url(domain_no_port: str, path: str) -> bool:
+        """Allow canonical `x.com/{configured_handle}/status/{id}` URLs when X video source is enabled."""
+        if not getattr(config, "ENABLE_X_VIDEO_SOURCE", True):
+            return False
+        dom = (domain_no_port or "").lower().removeprefix("www.")
+        if dom not in ("x.com", "twitter.com"):
+            return False
+        m = _X_STATUS_PATH_RE.match(path or "")
+        if not m:
+            return False
+        handle = m.group(1).lower()
+        allowed = {
+            str(acc.get("handle") or "").strip().lstrip("@").lower()
+            for acc in getattr(config, "X_VIDEO_SOURCE_ACCOUNTS", [])
+            if acc.get("handle")
+        }
+        return handle in allowed
 
     def is_quality_summary(self, summary: str) -> bool:
         """Check if a summary has sufficient quality for publishing."""

@@ -108,18 +108,22 @@ _CONCEPT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("loc:kirkuk", ("kirkuk", "کەرکوک", "كركوك")),
     ("loc:sulaymaniyah", ("sulaymaniyah", "slemani", "سلێمانی", "سلیمانیة")),
     ("loc:duhok", ("duhok", "دهۆک", "دهوك")),
-    ("loc:kurdistan", ("kurdistan", "krg", "peshmerga", "کوردستان", "پێشمەرگە", "کوردستانی")),
+    ("loc:kurdistan", ("kurdistan", "krg", "peshmerga", "کوردستان", "پێشمەرگە", "کوردستانی", "کردستان")),
     ("loc:baghdad_iraq", ("iraq", "iraqi", "baghdad", "anbar", "basra", "عێراق", "بەغدا", "العراق", "بغداد")),
     ("loc:iran", ("iran", "iranian", "tehran", "ئێران", "تاران", "إيران", "طهران")),
     ("loc:israel", ("israel", "israeli", "tel aviv", "idf", "ئیسرائیل", "إسرائيل", "اسرائيل")),
     ("loc:lebanon_beirut", ("beirut", "lebanon", "lebanese", "hezbollah", "بەیروت", "لوبنان", "بیروت", "بيروت", "لبنان", "اللبناني", "اللبنانية")),
     ("loc:gaza", ("gaza", "rafah", "hamas", "غەززە", "غزة", "رفح")),
-    ("loc:syria", ("syria", "syrian", "damascus", "qamishli", "سووریا", "سوریا", "دیمەشق", "سوريا", "دمشق")),
+    ("loc:syria", ("syria", "syrian", "damascus", "qamishli", "qamishlo", "rojava", "سووریا", "سوریا", "دیمەشق", "ڕۆژئاوا", "سوريا", "دمشق", "روجافا", "روج افا", "قامشلو", "القامشلي")),
     ("loc:turkey", ("turkey", "turkish", "ankara", "تورکیا", "ئەنقەرە", "تركيا", "أنقرة")),
     ("loc:usa", ("united states", "american", "pentagon", "washington", "white house", "ئەمریکا", "واشنتن", "الأمريكي", "أمريكا", "واشنطن")),
     ("loc:russia", ("russia", "russian", "moscow", "kremlin", "رووسیا", "مۆسکۆ", "روسيا", "موسكو")),
     ("loc:ukraine", ("ukraine", "ukrainian", "kyiv", "ئۆکرانیا", "کیێڤ", "أوكرانيا", "كييف")),
     ("loc:red_sea", ("red sea", "houthi", "bab el mandeb", "البحر الأحمر", "دەریای سوور")),
+    ("act:protest_rally", (
+        "protest", "protests", "protester", "protesters", "rally", "rallies", "demonstration", "demonstrations", "support",
+        "خۆپیشاندان", "گردبوونەوە", "پشتیوانی", "تظاهرات", "تظاهرة", "مظاهرات", "مظاهرة", "وقفة", "احتجاج", "احتجاجات", "مسيرة", "دعم", "دعما",
+    )),
     ("act:strike_explosion", (
         "bomb", "bombed", "bombing", "bombardment", "explosion", "explosions", "blast",
         "shelling", "strike", "strikes", "attack", "attacks", "targeted",
@@ -214,12 +218,6 @@ _ACUTE_EMERGENCY_HINTS_RE = re.compile(
     re.IGNORECASE,
 )
 
-_TOKEN_SYNONYM_MAP: dict[str, str] = {}
-for _concept_name, _forms in _CONCEPT_GROUPS:
-    for _form in _forms:
-        if " " not in _form:
-            _TOKEN_SYNONYM_MAP[_form] = _concept_name
-
 _ARABIC_DIACRITICS_RE = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]")
 _DIGIT_TRANSLATION = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
@@ -272,6 +270,15 @@ def normalize_arabic_kurdish_text(text: str) -> str:
     )
     cleaned = re.sub(r"[^\w\s\u0621-\u064A\u0671-\u06D5]", " ", t)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+_TOKEN_SYNONYM_MAP: dict[str, str] = {}
+for _concept_name, _forms in _CONCEPT_GROUPS:
+    for _form in _forms:
+        _norm_form = normalize_arabic_kurdish_text(_form)
+        for _key in (_form.lower(), _norm_form):
+            if _key and " " not in _key:
+                _TOKEN_SYNONYM_MAP[_key] = _concept_name
 
 
 def _normalize_unicode_text(text: str) -> str:

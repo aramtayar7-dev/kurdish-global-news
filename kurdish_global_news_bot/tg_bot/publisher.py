@@ -26,10 +26,17 @@ from config import (
     TELEGRAM_CHANNEL_ID,
 )
 from core.importance_ranker import is_strict_breaking
+from core.source_verifier import is_official_media_source, is_x_source_url
 from processing.card_generator import NewsCardGenerator
 from processing.content_formatter import ContentFormatter
 from processing.translator import is_valid_kurdish_sorani, trim_at_sentence_boundary
-from processing.video_processor import cleanup_video_file, download_and_brand_video
+from processing.video_processor import (
+    WatermarkRejectedError,
+    _WATERMARK_POLICY_CTX,
+    cleanup_video_file,
+    download_and_brand_video,
+)
+from processing.video_watermark_detector import has_image_corner_watermark
 from storage.models import Article
 from tg_bot.image_handler import ImageHandler
 from tg_bot.inline_buttons import build_source_button_markup
@@ -131,6 +138,12 @@ class TelegramPublisher:
             message_id = await self._publish_with_video(article)
             if message_id is not None:
                 return message_id
+            if getattr(article, "_watermark_rejected_reason", None):
+                logger.info(
+                    "Publish ABORTED (Watermark gate): %s — skipping card/text fallback.",
+                    getattr(article, "_watermark_rejected_reason", ""),
+                )
+                return None
             logger.info("Video publish/branding failed or unavailable, falling back to branded image card.")
 
         if ENABLE_IMAGES:
@@ -214,7 +227,31 @@ class TelegramPublisher:
         disable_notification = not breaking
         reply_root_id = getattr(article, "thread_root_message_id", None)
 
-        branded_video_path = await download_and_brand_video(article.video_url)
+        is_official = is_official_media_source(
+            getattr(article, "source_name", "") or "",
+            getattr(article, "original_url", "") or "",
+        )
+        is_x = is_x_source_url(getattr(article, "original_url", "") or "")
+        text_hint = (
+            f"{getattr(article, 'original_title', '') or ''} "
+            f"{getattr(article, 'original_summary', '') or ''} "
+            f"{getattr(article, 'original_url', '') or ''}"
+        )
+        ctx_token = _WATERMARK_POLICY_CTX.set(
+            {
+                "is_official_media": is_official,
+                "check_watermarks": bool(is_x or not is_official),
+                "text_hint": text_hint,
+            }
+        )
+        try:
+            branded_video_path = await download_and_brand_video(article.video_url)
+        except WatermarkRejectedError as exc:
+            article._watermark_rejected_reason = str(exc)  # type: ignore[attr-defined]
+            logger.info("Video rejected by watermark policy: %s", exc)
+            return None
+        finally:
+            _WATERMARK_POLICY_CTX.reset(ctx_token)
         if not branded_video_path:
             return None
 
@@ -270,6 +307,25 @@ class TelegramPublisher:
         image_bytes: Optional[bytes] = None
         if article.image_url:
             image_bytes = await self._image_handler.download_image(article.image_url)
+            if image_bytes is not None:
+                is_official_img = is_official_media_source(
+                    getattr(article, "source_name", "") or "",
+                    getattr(article, "original_url", "") or "",
+                )
+                if not is_official_img:
+                    img_hint = (
+                        f"{getattr(article, 'original_title', '') or ''} "
+                        f"{getattr(article, 'original_url', '') or ''}"
+                    )
+                    has_wm, wm_reason = has_image_corner_watermark(image_bytes, text_hint=img_hint)
+                    if has_wm:
+                        logger.info(
+                            "Stripping watermarked image (%s) from unofficial source '%s'; using clean background.",
+                            wm_reason,
+                            getattr(article, "source_name", "Unknown"),
+                        )
+                        image_bytes = None
+                        article.image_url = ""
 
         reply_markup = build_source_button_markup(article=article)
         caption = self._trim_caption_at_sentence(

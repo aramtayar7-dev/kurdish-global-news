@@ -39,7 +39,10 @@ from core.source_verifier import (
     apply_verification_guard,
     compute_corroboration,
     get_source_tier,
+    is_official_media_source,
+    is_x_source_url,
 )
+from core.x_context_enricher import enrich_x_article_context
 from processing.deduplicator import (
     OUTCOME_DUPLICATE,
     OUTCOME_NEW_STORY,
@@ -53,6 +56,7 @@ from processing.content_formatter import (
     ContentFormatter,
     normalize_neutral_terminology,
     prepend_tier3_attribution,
+    prepend_x_video_attribution,
     strip_rss_boilerplate,
 )
 from tg_bot.publisher import TelegramPublisher
@@ -470,10 +474,11 @@ class ArticlePipeline:
         if post_blocked:
             return await self._reject_blocked_topic(article, post_blocked)
 
-        # Single-source verification guard (blocks uncorroborated Tier-3 breaking alerts, ZERO API calls)
+        # Single-source verification guard (blocks uncorroborated Tier-3/X breaking alerts, ZERO API calls)
         if getattr(config, "ENABLE_SOURCE_VERIFICATION", True) and not getattr(article, "_verification_checked", False):
             recent_hist = await self._get_published_history()
-            combined_hist = list(extra_recent or []) + list(self._cycle_accepted_refs) + recent_hist
+            x_extra = list(getattr(article, "_x_context_corroborations", []) or [])
+            combined_hist = list(extra_recent or []) + list(self._cycle_accepted_refs) + recent_hist + x_extra
             pool = list(self._cycle_corroboration_pool or [article])
             corrob = compute_corroboration(article, batch_articles=pool, recent_history=combined_hist)
             apply_verification_guard(article, corrob)
@@ -610,14 +615,27 @@ class ArticlePipeline:
                     strip_rss_boilerplate(article.translated_summary)
                 )
 
-            # Uncorroborated Tier-3 preliminary attribution (only when Tier-3 has no corroboration)
+            # Uncorroborated Tier-3 & unofficial X eyewitness attribution (only when uncorroborated)
             if getattr(config, "ENABLE_SOURCE_VERIFICATION", True):
-                if not getattr(article, "_verification_checked", False) and get_source_tier(article.source_name) == TIER_3:
+                if not getattr(article, "_verification_checked", False) and (
+                    get_source_tier(article.source_name) == TIER_3
+                    or (
+                        is_x_source_url(article.original_url)
+                        and not is_official_media_source(article.source_name, article.original_url)
+                    )
+                ):
                     recent_hist = await self._get_published_history()
                     pool = list(self._cycle_corroboration_pool or [article])
-                    corrob = compute_corroboration(article, batch_articles=pool, recent_history=recent_hist)
+                    x_extra = list(getattr(article, "_x_context_corroborations", []) or [])
+                    corrob = compute_corroboration(
+                        article,
+                        batch_articles=pool,
+                        recent_history=recent_hist + x_extra,
+                    )
                     apply_verification_guard(article, corrob)
-                if getattr(article, "_is_uncorroborated_tier3", False) and article.translated_summary:
+                if getattr(article, "_is_uncorroborated_x_video", False) and article.translated_summary:
+                    article.translated_summary = prepend_x_video_attribution(article.translated_summary)
+                elif getattr(article, "_is_uncorroborated_tier3", False) and article.translated_summary:
                     article.translated_summary = prepend_tier3_attribution(article.translated_summary)
 
             # Final Sorani re-check after terminology normalization
@@ -899,6 +917,28 @@ class ArticlePipeline:
                 )
                 return True
             else:
+                watermark_reason = getattr(article, "_watermark_rejected_reason", None)
+                if watermark_reason:
+                    await self._db.update_article_status(
+                        article_id,
+                        ArticleStatus.SKIPPED,
+                        error_message=f"SKIPPED [Watermark]: {watermark_reason}"[:500],
+                    )
+                    await self._db.mark_url_skipped(
+                        article.canonical_url or article.original_url,
+                        title=article.original_title,
+                        score=float(article.importance_score or 0.0),
+                        reason="unofficial_third_party_watermark",
+                    )
+                    self._metrics.increment("articles_skipped_watermark")
+                    logger.info(
+                        "[SKIPPED WATERMARK] Article %d (%s): %s",
+                        article_id,
+                        article.source_name,
+                        watermark_reason,
+                    )
+                    return False
+
                 # Publish failed — no message_id returned
                 retry_count = await self._db.increment_retry(
                     article_id, "Telegram publish returned no message_id"
@@ -913,6 +953,18 @@ class ArticlePipeline:
             self._health.record_failure("publishing", str(e))
             self._metrics.increment("publish_failures")
             return False
+
+    @staticmethod
+    def _candidate_priority_key(article: Article) -> tuple:
+        """
+        Rank higher credibility tiers and recognized official media ahead of
+        unofficial social/OSINT accounts so official media always wins duplicate selection.
+        """
+        tier = get_source_tier(article.source_name)
+        official_rank = 0 if is_official_media_source(article.source_name, article.original_url) else 1
+        x_rank = 1 if is_x_source_url(article.original_url) else 0
+        cred_rank = -ArticleExtractor.get_source_credibility(article.source_name)
+        return (tier, official_rank, cred_rank, x_rank, *article_selection_sort_key(article))
 
     async def evaluate_batch_candidates(
         self,
@@ -930,10 +982,7 @@ class ArticlePipeline:
 
         seed_refs = list(extra_queue_refs or [])
         if getattr(config, "ENABLE_SOURCE_VERIFICATION", True):
-            prioritized = sorted(
-                articles,
-                key=lambda a: (get_source_tier(a.source_name), *article_selection_sort_key(a)),
-            )
+            prioritized = sorted(articles, key=self._candidate_priority_key)
         else:
             prioritized = sorted(articles, key=article_selection_sort_key)
         pre_screened: list[Article] = []
@@ -990,6 +1039,23 @@ class ArticlePipeline:
         if not gemini_candidates:
             return [], results
 
+        # Zero-Gemini-cost context enrichment for short/ambiguous X video posts
+        if any(is_x_source_url(a.original_url) for a in gemini_candidates):
+            x_hist = await self._get_published_history()
+            x_pool = list(self._cycle_corroboration_pool or articles)
+            for cand_art in gemini_candidates:
+                if is_x_source_url(cand_art.original_url):
+                    try:
+                        x_corrob = await enrich_x_article_context(
+                            cand_art,
+                            batch_articles=x_pool,
+                            recent_history=x_hist,
+                        )
+                        if x_corrob:
+                            cand_art._x_context_corroborations = x_corrob  # type: ignore[attr-defined]
+                    except Exception as exc:
+                        logger.debug("X context enrichment skipped cleanly: %s", exc)
+
         # Pass 2: Batched Gemini Importance Evaluation (10-15 articles per single JSON call)
         eligible: list[Article] = []
         accepted_event_refs: list[dict] = []
@@ -1008,14 +1074,15 @@ class ArticlePipeline:
                 combined_hist = seed_refs + list(self._cycle_accepted_refs) + recent_hist
                 for art, relevance in evaluated_pairs:
                     if relevance.passed:
+                        x_extra = list(getattr(art, "_x_context_corroborations", []) or [])
                         corrob = compute_corroboration(
                             art,
                             batch_articles=batch_pool,
-                            recent_history=combined_hist,
+                            recent_history=combined_hist + x_extra,
                         )
                         apply_verification_guard(art, corrob)
                 evaluated_pairs.sort(
-                    key=lambda pair: (get_source_tier(pair[0].source_name), *article_selection_sort_key(pair[0]))
+                    key=lambda pair: self._candidate_priority_key(pair[0])
                 )
 
             for art, relevance in evaluated_pairs:

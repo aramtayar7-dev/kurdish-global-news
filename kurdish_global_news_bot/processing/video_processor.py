@@ -9,6 +9,7 @@ the top-right corner using non-blocking FFmpeg (`asyncio.create_subprocess_exec`
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from pathlib import Path
 import shutil
@@ -18,7 +19,13 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+import config
 from config import ASSETS_DIR
+from processing.video_watermark_detector import (
+    choose_kgn_corner,
+    detect_video_watermarks,
+    has_third_party_repost_marker,
+)
 
 logger = logging.getLogger("processing.video_processor")
 
@@ -26,6 +33,19 @@ DEFAULT_MAX_DOWNLOAD_MB = 30
 DEFAULT_TIMEOUT_SEC = 90
 MAX_TELEGRAM_VIDEO_BYTES = 48 * 1024 * 1024  # Strictly under Telegram Bot API 50 MB limit
 _DOWNLOAD_CHUNK_BYTES = 64 * 1024
+
+_WATERMARK_POLICY_CTX: contextvars.ContextVar[Optional[dict[str, object]]] = contextvars.ContextVar(
+    "kgn_video_watermark_policy", default=None
+)
+
+
+class WatermarkRejectedError(Exception):
+    """Raised when an unofficial/reposted video violates the strict no-watermark policy."""
+
+
+def get_watermark_policy_context() -> Optional[dict[str, object]]:
+    """Return active per-publish video watermark policy context if set."""
+    return _WATERMARK_POLICY_CTX.get()
 
 _DOWNLOAD_HEADERS = {
     "User-Agent": (
@@ -58,22 +78,36 @@ def cleanup_video_file(file_path: Optional[str | Path]) -> None:
         logger.debug("Temp video cleanup skipped (%s): %s", file_path, exc)
 
 
+_OVERLAY_EXPRESSIONS: dict[str, str] = {
+    "top_right": "W-w-W*0.035:y=W*0.035",
+    "top_left": "W*0.035:y=W*0.035",
+    "bottom_right": "W-w-W*0.035:y=H-h-W*0.035",
+    "bottom_left": "W*0.035:y=H-h-W*0.035",
+}
+
+
 def build_ffmpeg_watermark_command(
     input_path: str | Path,
     logo_path: str | Path,
     output_path: str | Path,
     ffmpeg_bin: str = "ffmpeg",
+    corner: str = "top_right",
 ) -> list[str]:
     """
     Build the FFmpeg argv list that:
       - Scales the circular KGN logo proportionally to ~11% of video width.
-      - Overlays the logo in the top-right corner with a balanced ~3.5% margin.
+      - Overlays the logo in the specified corner (default: top_right) with ~3.5% margin
+        to avoid overlapping recognized official news channel bugs.
       - Ensures even output dimensions for libx264/yuv420p compatibility.
       - Preserves audio if present (`-map 0:a? -c:a aac -b:a 128k`) without failing on muted videos.
     """
+    overlay_coords = _OVERLAY_EXPRESSIONS.get(
+        (corner or "top_right").strip().lower(),
+        _OVERLAY_EXPRESSIONS["top_right"],
+    )
     filter_complex = (
         "[1:v][0:v]scale2ref=w=trunc(main_w*0.11/2)*2:h=-2[logo][base];"
-        "[base][logo]overlay=x=W-w-W*0.035:y=W*0.035:format=auto,"
+        f"[base][logo]overlay=x={overlay_coords}:format=auto,"
         "scale=trunc(iw/2)*2:trunc(ih/2)*2[vout]"
     )
     return [
@@ -191,15 +225,37 @@ async def download_and_brand_video(
     video_url: str,
     max_download_mb: int = DEFAULT_MAX_DOWNLOAD_MB,
     timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    *,
+    is_official_media: Optional[bool] = None,
+    text_hint: str = "",
+    check_watermarks: Optional[bool] = None,
 ) -> Optional[str]:
     """
-    Download `video_url` asynchronously, watermark it with the KGN logo in the top-right corner
-    via FFmpeg, verify the branded output is <= 48 MB, and return the temp file path (or None).
-    Caller should clean up the returned temp file path after publishing via `cleanup_video_file`.
+    Download `video_url` asynchronously, enforce tiered official-vs-unofficial corner
+    watermark policy when enabled, overlay the KGN logo cleanly on an unoccupied corner,
+    verify the branded output is <= 48 MB, and return the temp file path (or None).
+    Raises `WatermarkRejectedError` when an unofficial/reposted video carries a watermark.
     """
     if not video_url or not video_url.strip().startswith(("http://", "https://")):
         logger.warning("Invalid video URL skipped: %s", str(video_url)[:80])
         return None
+
+    ctx = _WATERMARK_POLICY_CTX.get() or {}
+    eff_official = (
+        bool(is_official_media)
+        if is_official_media is not None
+        else bool(ctx.get("is_official_media", True))
+    )
+    eff_hint = text_hint or str(ctx.get("text_hint", "") or "")
+    eff_check = (
+        bool(check_watermarks)
+        if check_watermarks is not None
+        else bool(ctx.get("check_watermarks", False))
+    )
+
+    # Reject obvious third-party repost watermarks before downloading heavy MP4s
+    if eff_check and has_third_party_repost_marker(eff_hint):
+        raise WatermarkRejectedError("unofficial_third_party_watermark")
 
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
@@ -221,12 +277,33 @@ async def download_and_brand_video(
     output_path: Optional[Path] = None
     proc: Optional[asyncio.subprocess.Process] = None
     try:
+        placement_corner = "top_right"
+        if eff_check:
+            report = await detect_video_watermarks(raw_path, text_hint=eff_hint)
+            if report.has_third_party_repost_marker:
+                raise WatermarkRejectedError("unofficial_third_party_watermark")
+            if not eff_official:
+                if bool(getattr(config, "X_REQUIRE_CLEAN_NO_LOGO_FOR_UNOFFICIAL", True)) and report.has_watermark:
+                    logger.info("Rejected watermarked unofficial video (%s): %s", report.reason, video_url[:90])
+                    raise WatermarkRejectedError(f"unofficial_third_party_watermark ({report.reason})")
+            else:
+                if report.has_watermark and not bool(getattr(config, "X_ALLOW_OFFICIAL_MEDIA_LOGO", True)):
+                    raise WatermarkRejectedError("official_logo_disallowed")
+                if report.occupied_corners:
+                    placement_corner = choose_kgn_corner(report.occupied_corners)
+                    logger.info(
+                        "Official channel bug detected in %s; placing KGN logo at '%s'.",
+                        report.occupied_corners,
+                        placement_corner,
+                    )
+
         output_path = await asyncio.to_thread(_create_temp_path, "kgn_branded_", ".mp4")
         cmd = build_ffmpeg_watermark_command(
             input_path=raw_path,
             logo_path=logo_path,
             output_path=output_path,
             ffmpeg_bin=ffmpeg_bin,
+            corner=placement_corner,
         )
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -270,6 +347,9 @@ async def download_and_brand_video(
                 pass
         cleanup_video_file(output_path)
         return None
+    except WatermarkRejectedError:
+        cleanup_video_file(output_path)
+        raise
     except Exception as exc:
         logger.warning("Video branding error: %s", str(exc)[:200])
         cleanup_video_file(output_path)

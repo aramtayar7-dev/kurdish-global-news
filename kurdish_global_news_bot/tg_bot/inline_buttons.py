@@ -22,18 +22,34 @@ DEFAULT_BUTTON_LABEL = "🔗 بابەتی ئەسڵی"
 SOURCE_BUTTON_PREFIX = "🔗 سەرچاوە — "
 
 _TELEGRAM_DOMAINS = {"t.me", "telegram.me", "telegram.dog"}
+_X_DOMAINS = {
+    "x.com",
+    "twitter.com",
+    "mobile.x.com",
+    "mobile.twitter.com",
+    "fxtwitter.com",
+    "vxtwitter.com",
+}
 _SUFFIX_STRIP_RE = re.compile(
     r"\s+(?:RSS|Feed|Sorani|Arabic|English|EN|Digital|TV)\s*$",
     re.IGNORECASE,
 )
 
 
-def is_valid_button_url(url: Optional[str], allow_telegram_links: bool = False) -> bool:
+def _matches_domain(host: str, domains: set[str]) -> bool:
+    return host in domains or any(host.endswith(f".{dom}") for dom in domains)
+
+
+def is_valid_button_url(
+    url: Optional[str],
+    allow_telegram_links: bool = False,
+    allow_x_links: bool = False,
+) -> bool:
     """
     Validate that `url` is a safe, public HTTP(S) URL suitable for a Telegram URL button.
     Rejects empty strings, whitespace/control chars, unsafe schemes (javascript:, mailto:, tg:),
-    localhost/private IPs, overly long URLs (>2048 chars), and external Telegram links unless
-    explicitly permitted.
+    localhost/private IPs, overly long URLs (>2048 chars), external Telegram links unless
+    explicitly permitted, and X/Twitter links unless `ENABLE_X_SOURCE_LINK_BUTTON` is True.
     """
     if not url or not isinstance(url, str):
         return False
@@ -68,9 +84,11 @@ def is_valid_button_url(url: Optional[str], allow_telegram_links: bool = False) 
         if "." not in host:
             return False
 
-    if not allow_telegram_links:
-        if host in _TELEGRAM_DOMAINS or any(host.endswith(f".{dom}") for dom in _TELEGRAM_DOMAINS):
-            return False
+    if not allow_telegram_links and _matches_domain(host, _TELEGRAM_DOMAINS):
+        return False
+
+    if not allow_x_links and _matches_domain(host, _X_DOMAINS):
+        return False
 
     return True
 
@@ -110,6 +128,7 @@ def resolve_article_button_url(
     article: Optional[Article] = None,
     url: Optional[str] = None,
     allow_telegram_links: bool = False,
+    allow_x_links: bool = False,
 ) -> Optional[str]:
     """Return the first eligible source URL from explicit `url` or Article fields, else None."""
     candidates: list[Optional[str]] = [url]
@@ -121,7 +140,11 @@ def resolve_article_button_url(
         ])
 
     for cand in candidates:
-        if is_valid_button_url(cand, allow_telegram_links=allow_telegram_links):
+        if is_valid_button_url(
+            cand,
+            allow_telegram_links=allow_telegram_links,
+            allow_x_links=allow_x_links,
+        ):
             return str(cand).strip()
     return None
 
@@ -133,11 +156,12 @@ def build_source_button_markup(
     article: Optional[Article] = None,
     enabled: Optional[bool] = None,
     allow_telegram_links: Optional[bool] = None,
+    allow_x_links: Optional[bool] = None,
     max_label_len: Optional[int] = None,
 ) -> Optional[InlineKeyboardMarkup]:
     """
     Build a single-row Telegram `InlineKeyboardMarkup` linking to the article's source URL,
-    or return `None` when disabled, missing/invalid, or blocked (`t.me/` retention protection).
+    or return `None` when disabled, missing/invalid, or blocked (`t.me/` / X retention protection).
     """
     is_enabled = (
         bool(getattr(config, "ENABLE_INLINE_SOURCE_BUTTON", True))
@@ -152,10 +176,16 @@ def build_source_button_markup(
         if allow_telegram_links is None
         else bool(allow_telegram_links)
     )
+    allow_x = (
+        bool(getattr(config, "ENABLE_X_SOURCE_LINK_BUTTON", False))
+        if allow_x_links is None
+        else bool(allow_x_links)
+    )
     resolved_url = resolve_article_button_url(
         article=article,
         url=url,
         allow_telegram_links=allow_tg,
+        allow_x_links=allow_x,
     )
     if not resolved_url:
         return None
