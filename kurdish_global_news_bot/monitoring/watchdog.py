@@ -46,6 +46,8 @@ _SECRET_REGEXES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?<![A-Za-z0-9_-])[0-9]{6,15}:[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"), "[REDACTED]"),
     (re.compile(r"AIza[0-9A-Za-z_-]+"), "[REDACTED]"),
     (re.compile(r"AQ\.[A-Za-z0-9._-]+"), "[REDACTED]"),
+    (re.compile(r"sk-or-[A-Za-z0-9._-]+"), "[REDACTED]"),
+    (re.compile(r"gsk_[A-Za-z0-9._-]+"), "[REDACTED]"),
     (re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "[REDACTED]"),
     (re.compile(r"((?:apikey|api_key|x-goog-api-key|token)=)[^\s&\"']+"), r"\1[REDACTED]"),
 )
@@ -87,8 +89,14 @@ def _gather_active_secrets(extra_secrets: Optional[list[str]] = None) -> list[st
         str(getattr(config, "GEMINI_API_KEY", "") or ""),
         os.getenv("GEMINI_API_KEY", ""),
         os.getenv("GEMINI_API_KEYS", ""),
+        str(getattr(config, "OPENROUTER_API_KEY", "") or ""),
+        os.getenv("OPENROUTER_API_KEY", ""),
+        os.getenv("OPENROUTER_API_KEYS", ""),
+        str(getattr(config, "GROQ_API_KEY", "") or ""),
+        os.getenv("GROQ_API_KEY", ""),
     ]
     raw_candidates.extend(getattr(config, "GEMINI_API_KEYS", []) or [])
+    raw_candidates.extend(getattr(config, "OPENROUTER_API_KEYS", []) or [])
     if extra_secrets:
         raw_candidates.extend(extra_secrets)
 
@@ -129,6 +137,7 @@ class WatchdogCycleMetrics:
     duplicates_blocked: int = 0
     gemini_429_hits: int = 0
     gemini_exhausted: int = 0
+    openrouter_rescued: int = 0
     supabase_fallback: bool = False
     supabase_error: str = ""
     storage_backend: str = "SQLite"
@@ -327,7 +336,11 @@ class AdminWatchdog:
         """Persist non-zero Gemini 429 or fallback events into system_logs for 24h rollups."""
         if self._db is None or not hasattr(self._db, "log_system_event"):
             return
-        if metrics.gemini_429_hits <= 0 and not metrics.supabase_fallback:
+        if (
+            metrics.gemini_429_hits <= 0
+            and metrics.openrouter_rescued <= 0
+            and not metrics.supabase_fallback
+        ):
             return
         now_utc = now or datetime.now(timezone.utc)
         if now_utc.tzinfo is None:
@@ -336,6 +349,7 @@ class AdminWatchdog:
             payload = {
                 "gemini_429_hits": int(metrics.gemini_429_hits),
                 "gemini_exhausted": int(metrics.gemini_exhausted),
+                "openrouter_rescued": int(metrics.openrouter_rescued),
                 "supabase_fallback": bool(metrics.supabase_fallback),
             }
             await self._db.log_system_event(
@@ -436,19 +450,24 @@ class AdminWatchdog:
         queued_cnt = int(art_metrics.get("queued_count") or 0)
 
         gemini_429_24h = 0
+        openrouter_rescued_24h = 0
         saw_sb_fallback = bool(metrics and metrics.supabase_fallback)
         for row in tel_logs:
             try:
                 data = json.loads(str(row.get("message") or "{}"))
                 gemini_429_24h += int(data.get("gemini_429_hits", 0) or 0)
+                openrouter_rescued_24h += int(data.get("openrouter_rescued", 0) or 0)
                 if data.get("supabase_fallback"):
                     saw_sb_fallback = True
             except Exception:
                 continue
 
         # Add current cycle hits only if not yet recorded to telemetry table
-        if metrics and metrics.gemini_429_hits > 0 and not tel_logs:
-            gemini_429_24h += int(metrics.gemini_429_hits)
+        if metrics and not tel_logs:
+            if metrics.gemini_429_hits > 0:
+                gemini_429_24h += int(metrics.gemini_429_hits)
+            if metrics.openrouter_rescued > 0:
+                openrouter_rescued_24h += int(metrics.openrouter_rescued)
 
         active_sources = len(sources)
         failing_sources = [s for s in sources if int(s.get("consecutive_failures") or 0) >= 3]
@@ -467,6 +486,12 @@ class AdminWatchdog:
             else "هیچ"
         )
 
+        or_line = (
+            f"\n• فریاکەوتنی OpenRouter (٢٤ کاتژمێر): {openrouter_rescued_24h}"
+            if openrouter_rescued_24h > 0
+            else ""
+        )
+
         report_text = (
             f"📊 <b>ڕاپۆرتی ڕۆژانەی تەندروستیی بۆت — {today_str}</b>\n\n"
             f"📰 <b>بڵاوکراوەکانی ٢٤ کاتژمێر:</b> {total_pub}\n"
@@ -477,7 +502,7 @@ class AdminWatchdog:
             f"• دووبارە ڕاگیراو: {dup_24h} | پشتگوێخراو: {skip_24h}\n"
             f"• چاوەڕوان لە نۆرە (QUEUED): {queued_cnt}\n\n"
             f"🔌 <b>API و کۆگا:</b>\n"
-            f"• هەڵەی Gemini 429 (٢٤ کاتژمێر): {gemini_429_24h}\n"
+            f"• هەڵەی Gemini 429 (٢٤ کاتژمێر): {gemini_429_24h}{or_line}\n"
             f"• بنکەدراوی چالاک: {html.escape(str(backend_label), quote=False)}\n\n"
             f"📡 <b>سەرچاوەکان ({active_sources} چالاک):</b>\n"
             f"• سەرچاوە پەککەوتووەکان (≥٣ هەڵە): {len(failing_sources)} ({failing_line})"
@@ -532,8 +557,8 @@ class AdminWatchdog:
                 ):
                     summary["alerts_sent"].append(ALERT_SUPABASE_FALLBACK)
 
-            # 2. Gemini all-keys exhausted alert
-            if cycle_metrics.gemini_exhausted > 0:
+            # 2. Gemini all-keys exhausted alert (suppressed if OpenRouter fallback rescued the requests)
+            if cycle_metrics.gemini_exhausted > 0 and cycle_metrics.openrouter_rescued <= 0:
                 details = (
                     f"هەموو کلیلەکانی Gemini تووشی سنوورداریی HTTP 429 بوون.\n"
                     f"ژمارەی 429 لەم خولەدا: {cycle_metrics.gemini_429_hits}\n"

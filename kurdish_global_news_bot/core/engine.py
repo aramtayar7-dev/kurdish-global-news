@@ -674,6 +674,7 @@ class NewsEngine:
                         published=published_this_cycle,
                         gemini_429_hits=int(gem_stats.get("http_429_hits", 0) or 0),
                         gemini_exhausted=int(gem_stats.get("quota_exhausted_events", 0) or 0),
+                        openrouter_rescued=int(gem_stats.get("openrouter_rescued", 0) or 0),
                         supabase_fallback=self._supabase_fallback_active,
                         supabase_error=self._supabase_fallback_error,
                         storage_backend=self._active_storage_backend_label(),

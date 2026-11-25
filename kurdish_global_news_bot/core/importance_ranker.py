@@ -922,7 +922,11 @@ class ImportanceRanker:
                 used_fallback=False,
             )
 
-        if not self._gemini.has_keys or self._gemini.all_keys_in_cooldown():
+        has_active_engine = (
+            self._gemini.has_keys and not self._gemini.all_keys_in_cooldown()
+        ) or getattr(self._gemini, "has_fallback", False)
+
+        if not has_active_engine:
             return self._rule_based_fallback(
                 article,
                 "All Gemini keys in cooldown" if self._gemini.has_keys else "GEMINI_API_KEY not configured",
@@ -1005,7 +1009,11 @@ class ImportanceRanker:
                 results[idx] = await self.evaluate_global_relevance(art)
             return [r for r in results if r is not None]
 
-        if not self._gemini.has_keys or self._gemini.all_keys_in_cooldown():
+        has_active_engine = (
+            self._gemini.has_keys and not self._gemini.all_keys_in_cooldown()
+        ) or getattr(self._gemini, "has_fallback", False)
+
+        if not has_active_engine:
             reason = (
                 "All Gemini keys in cooldown" if self._gemini.has_keys else "GEMINI_API_KEY not configured"
             )
@@ -1018,7 +1026,11 @@ class ImportanceRanker:
 
         for start in range(0, len(to_classify), effective_batch):
             chunk = to_classify[start: start + effective_batch]
-            if quota_exhausted or self._gemini.all_keys_in_cooldown():
+            chunk_engine_ready = (
+                not self._gemini.all_keys_in_cooldown()
+                or getattr(self._gemini, "has_fallback", False)
+            )
+            if quota_exhausted or not chunk_engine_ready:
                 for idx, art in chunk:
                     results[idx] = self._rule_based_fallback(art, "All Gemini keys exhausted (cooldown)")
                 continue

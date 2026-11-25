@@ -21,13 +21,16 @@ from typing import Any, Optional
 import aiohttp
 
 from config import (
+    ENABLE_OPENROUTER_FALLBACK,
     GEMINI_API_KEY,
     GEMINI_KEY_COOLDOWN_SECONDS,
     GEMINI_MODEL,
     GEMINI_QUOTA_COOLDOWN_SECONDS,
     GEMINI_REQUEST_PACING_SECONDS,
+    OPENROUTER_API_KEY,
     REQUEST_TIMEOUT,
 )
+from processing.openrouter_client import OpenRouterClient, OpenRouterError
 
 logger = logging.getLogger("processing.gemini")
 
@@ -104,20 +107,36 @@ class GeminiClient:
         self._exhausted_warned_until: float = 0.0
         self._rate_limit_hits_cycle: int = 0
         self._exhausted_events_cycle: int = 0
+        self._openrouter_client: Optional[OpenRouterClient] = None
+        self._openrouter_rescued_cycle: int = 0
 
     def consume_cycle_stats(self) -> dict[str, int]:
         """Return and reset per-cycle Gemini HTTP 429 & quota exhaustion counters."""
         stats = {
             "http_429_hits": int(self._rate_limit_hits_cycle),
             "quota_exhausted_events": int(self._exhausted_events_cycle),
+            "openrouter_rescued": int(self._openrouter_rescued_cycle),
         }
         self._rate_limit_hits_cycle = 0
         self._exhausted_events_cycle = 0
+        self._openrouter_rescued_cycle = 0
         return stats
 
     @property
     def has_keys(self) -> bool:
         return bool(self._api_keys)
+
+    @property
+    def has_fallback(self) -> bool:
+        """Return True if an alternative LLM provider (such as OpenRouter) is configured and ready."""
+        import config
+
+        if not getattr(config, "ENABLE_OPENROUTER_FALLBACK", True):
+            return False
+        return bool(
+            getattr(config, "OPENROUTER_API_KEY", "")
+            or getattr(config, "OPENROUTER_API_KEYS", [])
+        )
 
     @property
     def api_keys(self) -> list[str]:
@@ -181,11 +200,13 @@ class GeminiClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         loop = asyncio.get_running_loop()
-        if (
-            self._session is None
-            or self._session.closed
-            or getattr(self._session, "_loop", None) != loop
-        ):
+        sess = self._session
+        sess_loop = getattr(sess, "_loop", None)
+        loop_mismatch = (
+            isinstance(sess_loop, asyncio.AbstractEventLoop)
+            and sess_loop != loop
+        )
+        if sess is None or getattr(sess, "closed", False) or loop_mismatch:
             timeout = aiohttp.ClientTimeout(total=max(REQUEST_TIMEOUT, 30))
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
@@ -193,8 +214,26 @@ class GeminiClient:
             )
         return self._session
 
+    def _get_openrouter_client(self) -> Optional[OpenRouterClient]:
+        """Lazy-initialize OpenRouter client if fallback is enabled and credentials exist."""
+        import config
+
+        if not getattr(config, "ENABLE_OPENROUTER_FALLBACK", True):
+            return None
+        or_keys = getattr(config, "OPENROUTER_API_KEY", "")
+        if not or_keys and not getattr(config, "OPENROUTER_API_KEYS", []):
+            return None
+        if self._openrouter_client is None:
+            self._openrouter_client = OpenRouterClient(
+                api_key=or_keys or getattr(config, "OPENROUTER_API_KEYS", []),
+                session=self._session,
+            )
+        return self._openrouter_client
+
     async def cleanup(self) -> None:
         """Close the underlying aiohttp session if open."""
+        if self._openrouter_client:
+            await self._openrouter_client.cleanup()
         if self._session and not self._session.closed:
             await self._session.close()
 
@@ -220,8 +259,19 @@ class GeminiClient:
         Invoke Gemini generateContent and parse JSON output.
         Rotates cooled-down keys immediately on HTTP 429 and short-circuits
         when every key is already in cooldown.
+        Fails over cleanly to OpenRouter free models if all Gemini keys are unavailable.
         """
         if not self._api_keys:
+            if openrouter := self._get_openrouter_client():
+                logger.info("No Gemini keys configured; delegating to OpenRouter fallback...")
+                try:
+                    res = await openrouter.generate_json(
+                        system_prompt, user_content, temperature, max_tokens
+                    )
+                    self._openrouter_rescued_cycle += 1
+                    return res
+                except Exception as exc:
+                    logger.warning("OpenRouter fallback failed: %s", exc)
             raise GeminiAPIError("GEMINI_API_KEY is not configured.")
 
         now = time.monotonic()
@@ -237,6 +287,16 @@ class GeminiClient:
                     wait_left,
                 )
                 self._exhausted_warned_until = earliest
+            if openrouter := self._get_openrouter_client():
+                logger.info("All Gemini keys in 429 cooldown; failing over to OpenRouter free models...")
+                try:
+                    res = await openrouter.generate_json(
+                        system_prompt, user_content, temperature, max_tokens
+                    )
+                    self._openrouter_rescued_cycle += 1
+                    return res
+                except Exception as exc:
+                    logger.warning("OpenRouter fallback failed after Gemini 429 cooldown: %s", exc)
             raise GeminiQuotaExhaustedError("All Gemini API keys are cooling down after HTTP 429.")
 
         generation_config: dict[str, Any] = {
@@ -254,10 +314,26 @@ class GeminiClient:
         }
         endpoint = f"{GEMINI_API_BASE_URL}/{self._model}:generateContent"
 
-        if self._semaphore is not None:
-            async with self._semaphore:
-                return await self._execute_with_retries(endpoint, payload)
-        return await self._execute_with_retries(endpoint, payload)
+        try:
+            if self._semaphore is not None:
+                async with self._semaphore:
+                    return await self._execute_with_retries(endpoint, payload)
+            return await self._execute_with_retries(endpoint, payload)
+        except (GeminiQuotaExhaustedError, GeminiAPIError) as gemini_err:
+            if openrouter := self._get_openrouter_client():
+                logger.info(
+                    "Gemini execution failed (%s); failing over to OpenRouter free models...",
+                    gemini_err,
+                )
+                try:
+                    res = await openrouter.generate_json(
+                        system_prompt, user_content, temperature, max_tokens
+                    )
+                    self._openrouter_rescued_cycle += 1
+                    return res
+                except Exception as fallback_err:
+                    logger.warning("OpenRouter fallback failed after Gemini error: %s", fallback_err)
+            raise
 
     async def _execute_with_retries(
         self,

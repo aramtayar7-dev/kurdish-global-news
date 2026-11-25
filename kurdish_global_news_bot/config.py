@@ -186,6 +186,56 @@ GEMINI_KEY_COOLDOWN_SECONDS: float = _float(os.getenv("GEMINI_KEY_COOLDOWN_SECON
 GEMINI_QUOTA_COOLDOWN_SECONDS: float = _float(os.getenv("GEMINI_QUOTA_COOLDOWN_SECONDS"), 300.0)
 GEMINI_REQUEST_PACING_SECONDS: float = _float(os.getenv("GEMINI_REQUEST_PACING_SECONDS"), 0.5)
 
+# ═══════════════════════════════════════════════════
+# OpenRouter Kurdish-Optimized Free Fallback Engine
+# ═══════════════════════════════════════════════════
+def _load_openrouter_keys() -> list[str]:
+    """Load & deduplicate comma-separated keys from OPENROUTER_API_KEYS and OPENROUTER_API_KEY."""
+    raw_combined = ",".join(
+        part
+        for part in (os.getenv("OPENROUTER_API_KEYS", ""), os.getenv("OPENROUTER_API_KEY", ""))
+        if part
+    )
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in raw_combined.split(","):
+        key = item.strip()
+        if key and key not in seen:
+            keys.append(key)
+            seen.add(key)
+    return keys
+
+
+OPENROUTER_API_KEYS: list[str] = _load_openrouter_keys()
+OPENROUTER_API_KEY: str = ",".join(OPENROUTER_API_KEYS)
+ENABLE_OPENROUTER_FALLBACK: bool = _bool(os.getenv("ENABLE_OPENROUTER_FALLBACK"), True)
+OPENROUTER_BASE_URL: str = os.getenv(
+    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"
+).strip()
+OPENROUTER_APP_URL: str = os.getenv(
+    "OPENROUTER_APP_URL", "https://github.com/aramtayar7-dev/kurdish-global-news"
+).strip()
+OPENROUTER_APP_TITLE: str = os.getenv(
+    "OPENROUTER_APP_TITLE", "Kurdish Global News Bot"
+).strip()
+
+# Priority-ordered Central Kurdish (Sorani)-capable free models on OpenRouter
+_DEFAULT_OPENROUTER_MODELS: list[str] = [
+    "google/gemma-3-27b-it:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "deepseek/deepseek-chat-v3-0324:free",
+    "qwen/qwen3-235b-a22b:free",
+    "openrouter/free",
+]
+
+_raw_or_models = os.getenv("OPENROUTER_MODELS", "")
+OPENROUTER_KURDISH_FREE_MODELS: list[str] = [
+    m.strip() for m in _raw_or_models.split(",") if m.strip()
+] if _raw_or_models.strip() else _DEFAULT_OPENROUTER_MODELS
+
+# Optional Groq Support
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
+
 # Branding & Card Generation
 CHANNEL_HANDLE: str = os.getenv("CHANNEL_HANDLE", "@KurdishGlobalNews").strip() or "@KurdishGlobalNews"
 ASSETS_DIR: Path = _PROJECT_ROOT / "assets"
