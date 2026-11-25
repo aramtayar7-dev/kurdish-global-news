@@ -41,6 +41,13 @@ TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHANNEL_ID: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
 NOTIFY_DAILY_DIGEST: bool = _bool(os.getenv("NOTIFY_DAILY_DIGEST"), False)
 
+# Inline Source URL Button UI
+ENABLE_INLINE_SOURCE_BUTTON: bool = _bool(os.getenv("ENABLE_INLINE_SOURCE_BUTTON"), True)
+ENABLE_TELEGRAM_SOURCE_LINK_BUTTON: bool = _bool(os.getenv("ENABLE_TELEGRAM_SOURCE_LINK_BUTTON"), False)
+INLINE_SOURCE_BUTTON_MAX_LABEL_LEN: int = max(
+    16, _int(os.getenv("INLINE_SOURCE_BUTTON_MAX_LABEL_LEN"), 36)
+)
+
 # ═══════════════════════════════════════════════════
 # Private Admin Watchdog & Telemetry Alerts
 # ═══════════════════════════════════════════════════

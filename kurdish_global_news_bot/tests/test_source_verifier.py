@@ -446,10 +446,10 @@ class TestVerificationGuardAndCorroboration:
         assert db_sab_rumor.is_breaking is False
         assert db_sab_rumor.translated_summary.startswith(TIER3_ATTRIBUTION_PREFIX)
 
-        # Verify captions delivered to Telegram
+        # Verify captions delivered to Telegram (Reuters web link sits in inline button; Sabereen t.me stays in caption)
         sent_calls = mock_bot.send_photo.call_args_list
         captions_by_url = {c.kwargs["caption"]: c.kwargs["disable_notification"] for c in sent_calls}
-        reuters_cap = next(cap for cap in captions_by_url if "reuters.com" in cap)
+        reuters_cap = next(cap for cap in captions_by_url if "Reuters" in cap)
         rumor_cap = next(cap for cap in captions_by_url if "Sabren_News1/9501" in cap)
         assert "🔴 بەپەلە | " in reuters_cap
         assert captions_by_url[reuters_cap] is False

@@ -277,9 +277,14 @@ class ContentFormatter:
             prefix = ""
         return self._escape_html(f"{prefix}{raw_title}")
 
-    def format_telegram_message(self, article: Article) -> str:
+    def format_telegram_message(
+        self,
+        article: Article,
+        has_inline_source_button: bool = False,
+    ) -> str:
         """
         Format an article as a Telegram HTML text message.
+        Omits the bottom text URL line when `has_inline_source_button=True`.
         """
         parts: list[str] = []
 
@@ -305,16 +310,23 @@ class ContentFormatter:
             if date_str:
                 parts.append(f"🕐 {date_str}")
 
-        if article.original_url:
-            safe_url = self._escape_html(article.original_url)
-            parts.append(f'\n🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
+        if not has_inline_source_button and article.original_url:
+            raw_url = article.original_url.strip()
+            if raw_url.lower().startswith(("http://", "https://")):
+                safe_url = self._escape_html(raw_url)
+                parts.append(f'\n🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
 
         return "\n".join(parts)
 
-    def format_caption(self, article: Article) -> str:
+    def format_caption(
+        self,
+        article: Article,
+        has_inline_source_button: bool = False,
+    ) -> str:
         """
         Format a photo caption guaranteed to fit within Telegram's 1024-character limit
         without cutting mid-sentence (`...`) or truncating footer tags.
+        Omits the bottom text URL line when an inline source button is attached.
         """
         kurdish_cat, emoji = resolve_category_display(article.category)
         headline = self._format_headline(article)
@@ -326,9 +338,11 @@ class ContentFormatter:
         ]
         if article.source_name:
             footer_parts.append(f"📡 {self._escape_html(article.source_name)}")
-        if article.original_url:
-            safe_url = self._escape_html(article.original_url)
-            footer_parts.append(f'🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
+        if not has_inline_source_button and article.original_url:
+            raw_url = article.original_url.strip()
+            if raw_url.lower().startswith(("http://", "https://")):
+                safe_url = self._escape_html(raw_url)
+                footer_parts.append(f'🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
         footer = "\n".join(footer_parts)
 
         summary = normalize_neutral_terminology(

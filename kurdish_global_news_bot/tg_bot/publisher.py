@@ -32,6 +32,7 @@ from processing.translator import is_valid_kurdish_sorani, trim_at_sentence_boun
 from processing.video_processor import cleanup_video_file, download_and_brand_video
 from storage.models import Article
 from tg_bot.image_handler import ImageHandler
+from tg_bot.inline_buttons import build_source_button_markup
 
 logger = logging.getLogger("tg_bot.publisher")
 
@@ -161,6 +162,27 @@ class TelegramPublisher:
             return await self._send_with_retry(method, **send_kwargs)
         except BadRequest as exc:
             err_lower = str(exc).lower()
+            is_button_err = send_kwargs.get("reply_markup") is not None and any(
+                tok in err_lower
+                for tok in ("button_url_invalid", "reply_markup", "inline keyboard", "button_user_invalid")
+            )
+            if is_button_err:
+                logger.warning(
+                    "Telegram rejected inline reply_markup (%s); retrying cleanly without button.",
+                    str(exc)[:140],
+                )
+                if rewind_file is not None and hasattr(rewind_file, "seek"):
+                    try:
+                        rewind_file.seek(0)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                send_kwargs.pop("reply_markup", None)
+                try:
+                    return await self._send_with_retry(method, **send_kwargs)
+                except BadRequest as exc2:
+                    exc = exc2
+                    err_lower = str(exc2).lower()
+
             is_reply_err = reply_to_message_id is not None and any(
                 tok in err_lower
                 for tok in ("reply", "message to be replied", "replied", "not found")
@@ -196,9 +218,13 @@ class TelegramPublisher:
         if not branded_video_path:
             return None
 
-        caption = self._trim_caption_at_sentence(self._formatter.format_caption(article))
+        reply_markup = build_source_button_markup(article=article)
+        caption = self._trim_caption_at_sentence(
+            self._formatter.format_caption(article, has_inline_source_button=(reply_markup is not None))
+        )
         try:
             with open(branded_video_path, "rb") as video_file:
+                send_extra = {"reply_markup": reply_markup} if reply_markup is not None else {}
                 message = await self._send_with_optional_reply(
                     self._bot.send_video,
                     reply_to_message_id=reply_root_id,
@@ -209,6 +235,7 @@ class TelegramPublisher:
                     parse_mode=ParseMode.HTML,
                     supports_streaming=True,
                     disable_notification=disable_notification,
+                    **send_extra,
                 )
             if message:
                 logger.info(
@@ -244,7 +271,10 @@ class TelegramPublisher:
         if article.image_url:
             image_bytes = await self._image_handler.download_image(article.image_url)
 
-        caption = self._trim_caption_at_sentence(self._formatter.format_caption(article))
+        reply_markup = build_source_button_markup(article=article)
+        caption = self._trim_caption_at_sentence(
+            self._formatter.format_caption(article, has_inline_source_button=(reply_markup is not None))
+        )
         card_path: Optional[Path] = None
 
         try:
@@ -252,6 +282,7 @@ class TelegramPublisher:
                 article, image_bytes=image_bytes, is_breaking=breaking
             )
             with open(card_path, "rb") as photo_file:
+                send_extra = {"reply_markup": reply_markup} if reply_markup is not None else {}
                 message = await self._send_with_optional_reply(
                     self._bot.send_photo,
                     reply_to_message_id=reply_root_id,
@@ -261,6 +292,7 @@ class TelegramPublisher:
                     caption=caption,
                     parse_mode=ParseMode.HTML,
                     disable_notification=disable_notification,
+                    **send_extra,
                 )
             if message:
                 logger.info(
@@ -294,9 +326,13 @@ class TelegramPublisher:
         article.is_breaking = breaking
         disable_notification = not breaking
         reply_root_id = getattr(article, "thread_root_message_id", None)
-        text = self._formatter.format_telegram_message(article)
+        reply_markup = build_source_button_markup(article=article)
+        text = self._formatter.format_telegram_message(
+            article, has_inline_source_button=(reply_markup is not None)
+        )
 
         try:
+            send_extra = {"reply_markup": reply_markup} if reply_markup is not None else {}
             message = await self._send_with_optional_reply(
                 self._bot.send_message,
                 reply_to_message_id=reply_root_id,
@@ -305,6 +341,7 @@ class TelegramPublisher:
                 parse_mode=ParseMode.HTML,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
                 disable_notification=disable_notification,
+                **send_extra,
             )
             if message:
                 logger.info(
