@@ -15,7 +15,7 @@ import logging
 from typing import Optional
 
 from config import CHANNEL_HANDLE, GEMINI_API_KEY, GEMINI_MODEL
-from processing.content_formatter import resolve_category_display
+from processing.content_formatter import normalize_neutral_terminology, resolve_category_display
 from processing.gemini_client import GeminiAPIError, GeminiClient
 from processing.translator import normalize_sorani_chars, trim_at_sentence_boundary
 from storage.database import get_kurdistan_date_str
@@ -52,7 +52,7 @@ GEMINI_DIGEST_SYSTEM_PROMPT = (
     "so the entire digest fits comfortably between 650 and 920 characters total (including header and footer).\n"
     "4. Emoji Assignment: Use each story's exact matching category emoji (☀️ for kurdistan, ⚔️ for military_conflict, "
     "🌍 for politics_world, 📈 for economy_markets, 🤖 for ai_tech, 🛡️ for cybersecurity, 🚀 for science_space).\n"
-    "5. Language Quality: Use proper Central Kurdish Arabic orthography (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی). Never hallucinate unstated facts.\n"
+    "5. Language Quality & Neutrality: Maintain strict non-partisan Reuters/BBC neutrality without partisan epithets ('هەرێمی کوردستان', 'ئەمریکا', 'ئیسرائیل', 'سووریا'), and use proper Central Kurdish Arabic orthography (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی). Never hallucinate unstated facts.\n"
     "6. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
     '{"stories": [{"emoji": "☀️", "summary": "1-2 crisp Sorani sentences ending with a period."}]}'
 )
@@ -110,7 +110,7 @@ class DailyDigestGenerator:
 
         formatted_bullets: list[str] = []
         for emoji, raw_summary in items:
-            clean_summary = normalize_sorani_chars(raw_summary).strip()
+            clean_summary = normalize_neutral_terminology(normalize_sorani_chars(raw_summary)).strip()
             if clean_summary and clean_summary[-1] not in ".؟!":
                 clean_summary += "."
             formatted_bullets.append(f"{emoji} {html.escape(clean_summary)}")

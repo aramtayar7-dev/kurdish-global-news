@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS articles (
     error_message TEXT NOT NULL DEFAULT '',
     telegram_message_id BIGINT,
     image_url TEXT NOT NULL DEFAULT '',
+    video_url TEXT DEFAULT NULL,
     country TEXT NOT NULL DEFAULT '',
     region TEXT NOT NULL DEFAULT '',
     named_entities TEXT NOT NULL DEFAULT '',

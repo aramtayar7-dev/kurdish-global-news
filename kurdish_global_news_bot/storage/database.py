@@ -100,6 +100,7 @@ class Database:
                 error_message TEXT DEFAULT '',
                 telegram_message_id INTEGER,
                 image_url TEXT DEFAULT '',
+                video_url TEXT DEFAULT NULL,
                 country TEXT DEFAULT '',
                 region TEXT DEFAULT '',
                 named_entities TEXT DEFAULT ''
@@ -165,6 +166,11 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_canonical_url_unique
                 ON articles(canonical_url);
         """)
+        # Safe lightweight column migrations for pre-existing SQLite databases
+        async with self.conn.execute("PRAGMA table_info(articles)") as cursor:
+            existing_cols = {row["name"] for row in await cursor.fetchall()}
+        if "video_url" not in existing_cols:
+            await self.conn.execute("ALTER TABLE articles ADD COLUMN video_url TEXT DEFAULT NULL")
         await self.conn.commit()
         logger.info("Database schema initialized.")
 
@@ -183,9 +189,9 @@ class Database:
                         source_name, category, priority, importance_score,
                         publication_date, discovered_at, processed_at, published_at,
                         status, content_hash, event_fingerprint, retry_count,
-                        error_message, telegram_message_id, image_url, country,
-                        region, named_entities
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        error_message, telegram_message_id, image_url, video_url,
+                        country, region, named_entities
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     article.canonical_url, article.original_url, article.original_title,
                     article.normalized_title, article.translated_title, article.original_summary,
@@ -194,7 +200,8 @@ class Database:
                     article.discovered_at, article.processed_at, article.published_at,
                     article.status, article.content_hash, article.event_fingerprint,
                     article.retry_count, article.error_message, article.telegram_message_id,
-                    article.image_url, article.country, article.region, article.named_entities,
+                    article.image_url, article.video_url, article.country, article.region,
+                    article.named_entities,
                 ))
                 await self.conn.commit()
                 article.id = cursor.lastrowid
@@ -627,6 +634,7 @@ class Database:
     @staticmethod
     def _row_to_article(row: aiosqlite.Row) -> Article:
         """Convert a database row to an Article object."""
+        row_keys = set(row.keys())
         return Article(
             id=row["id"],
             canonical_url=row["canonical_url"],
@@ -651,6 +659,7 @@ class Database:
             error_message=row["error_message"] or "",
             telegram_message_id=row["telegram_message_id"],
             image_url=row["image_url"] or "",
+            video_url=(row["video_url"] or None) if "video_url" in row_keys else None,
             country=row["country"] or "",
             region=row["region"] or "",
             named_entities=row["named_entities"] or "",

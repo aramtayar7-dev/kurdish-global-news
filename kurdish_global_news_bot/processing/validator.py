@@ -13,9 +13,11 @@ from urllib.parse import urlparse
 from typing import Optional
 
 from storage.models import Article
-from config import MAX_ARTICLE_AGE_HOURS, MAX_ARTICLE_AGE_MINUTES
+from config import ENABLE_TELEGRAM, MAX_ARTICLE_AGE_HOURS, MAX_ARTICLE_AGE_MINUTES, TELEGRAM_SOURCE_CHANNELS
 
 logger = logging.getLogger("processing.validator")
+
+_TELEGRAM_POST_PATH_RE = re.compile(r"^/([A-Za-z0-9_]{3,})/(\d+)/?$")
 
 # Domains to reject
 BLOCKED_DOMAINS: set[str] = {
@@ -125,10 +127,11 @@ class ArticleValidator:
         # Remove port for comparison
         domain_no_port = domain.split(":")[0]
 
-        # Check blocked domains
-        for blocked in BLOCKED_DOMAINS:
-            if domain_no_port == blocked or domain_no_port.endswith(f".{blocked}"):
-                return False, f"Blocked domain: {blocked}"
+        # Allow canonical public-channel post URLs configured for Telegram discovery
+        if not self._is_configured_telegram_post_url(domain_no_port, parsed.path):
+            for blocked in BLOCKED_DOMAINS:
+                if domain_no_port == blocked or domain_no_port.endswith(f".{blocked}"):
+                    return False, f"Blocked domain: {blocked}"
 
         # Reject IPs and localhost
         if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", domain_no_port):
@@ -141,6 +144,22 @@ class ArticleValidator:
             return False, "URL too long"
 
         return True, ""
+
+    @staticmethod
+    def _is_configured_telegram_post_url(domain_no_port: str, path: str) -> bool:
+        """Allow canonical `t.me/{configured_username}/{post_id}` URLs when Telegram source is enabled."""
+        if not ENABLE_TELEGRAM or domain_no_port not in ("t.me", "telegram.me"):
+            return False
+        m = _TELEGRAM_POST_PATH_RE.match(path or "")
+        if not m:
+            return False
+        username = m.group(1).lower()
+        allowed = {
+            (ch.get("username") or "").strip().lstrip("@").lower()
+            for ch in TELEGRAM_SOURCE_CHANNELS
+            if ch.get("username")
+        }
+        return username in allowed
 
     def is_quality_summary(self, summary: str) -> bool:
         """Check if a summary has sufficient quality for publishing."""

@@ -22,13 +22,21 @@ from core.importance_ranker import (
     PRIORITY_TIER_3,
     ImportanceRanker,
     RelevanceEvaluation,
+    check_blocked_topic,
     classify_priority_tier,
     is_bashur_article,
+    is_genuine_kurdistan_event,
 )
 from core.pipeline import ArticlePipeline
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics
+from processing.content_formatter import ContentFormatter
 from processing.gemini_client import GEMINI_API_BASE_URL
+from processing.translator import (
+    GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT,
+    GEMINI_TRANSLATION_SYSTEM_PROMPT,
+    strip_news_dateline,
+)
 from processing.importance_ranker import (
     ImportanceRanker as ProcessingImportanceRanker,
     RelevanceEvaluation as ProcessingRelevanceEvaluation,
@@ -414,3 +422,154 @@ class TestPipelineAndSkippedUrlPersistence:
         assert db_art.category == "economy_markets"
         assert db_art.image_url == "https://example.com/nvidia.jpg"
         await db.close()
+
+    @pytest.mark.asyncio
+    async def test_north_press_houston_fbi_isis_court_case_rejected_and_not_kurdistan(self, tmp_path):
+        """
+        Regression: North Press article with Qamishli dateline reporting a US federal court
+        sentencing a Houston man for ISIS propaganda / lying to the FBI must be rejected
+        (eligible=False, skipped_urls recorded) and NEVER classified as Kurdistan news.
+        """
+        db = Database(str(tmp_path / "test_houston_fbi.db"))
+        await db.connect()
+
+        publisher = MagicMock(spec=TelegramPublisher)
+        publisher.publish_article = AsyncMock(return_value=1111)
+        pipeline = ArticlePipeline(db, publisher, HealthMonitor(), Metrics())
+
+        art = Article_factory(
+            url="https://npasyria.com/en/houston-fbi-isis-sentence",
+            title="Houston Man Sentenced to 15 Years for Distributing ISIS Propaganda and Lying to FBI",
+            summary=(
+                "Qamishli, Syria (North Press) – A U.S. federal court in Houston sentenced a Texas man "
+                "to 15 years in prison on Friday after he pleaded guilty to distributing ISIS propaganda "
+                "and lying to the FBI during a domestic counterterrorism investigation."
+            ),
+            source_name="North Press Agency",
+            category="kurdistan",
+            region="West Kurdistan",
+        )
+        art.id = await db.insert_article(art)
+
+        # Ranker checks
+        ranker = ImportanceRanker(api_key="gem_test_key")
+        # Even if mock Gemini wasn't reached or tried to mislabel, deterministic guard blocks it
+        mock_session = _make_gemini_session(
+            200, json_payload={"score": 9, "is_breaking": False, "category": "kurdistan", "reason": "Mock leak"}
+        )
+        ranker._gemini._get_session = AsyncMock(return_value=mock_session)
+        eval_res = await ranker.evaluate_global_relevance(art)
+
+        assert eval_res.passed is False
+        assert eval_res.category != "kurdistan"
+        assert is_genuine_kurdistan_event(art) is False
+        assert is_bashur_article(art) is False
+        assert check_blocked_topic(art) is not None
+        assert ranker.is_eligible(0.95, 0.90, article=art) is False
+
+        # Pipeline rejects cleanly and saves to skipped_urls
+        pipeline._extractor.fetch_article_content_and_image = AsyncMock()
+        pipeline._translator.translate_article = AsyncMock()
+        published = await pipeline.process_article(art)
+
+        assert published is False
+        pipeline._extractor.fetch_article_content_and_image.assert_not_called()
+        pipeline._translator.translate_article.assert_not_called()
+        publisher.publish_article.assert_not_called()
+
+        db_art = await db.get_article_by_canonical_url(art.canonical_url)
+        assert db_art.status == ArticleStatus.SKIPPED
+        assert await db.is_url_skipped(art.canonical_url) is True
+
+        # Ensure genuine ICJ ruling & Bashur Peshmerga operation remain allowed
+        icj_art = Article_factory(
+            url="https://reuters.com/world/icj-ruling",
+            title="International Court of Justice Issues Emergency Ruling on Gaza Ceasefire",
+            summary="The ICJ issued binding provisional measures amid ongoing Middle East diplomatic crisis.",
+            source_name="Reuters",
+            category="politics_world",
+        )
+        assert check_blocked_topic(icj_art) is None
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_npr_morocco_afcon_sports_match_rejected_never_politics(self, tmp_path):
+        """
+        Regression: NPR News article covering Morocco / Africa Cup of Nations football match
+        must be rejected (eligible=False, skipped_urls) and never slip into Politics or Kurdistan.
+        """
+        db = Database(str(tmp_path / "test_sports_block.db"))
+        await db.connect()
+
+        publisher = MagicMock(spec=TelegramPublisher)
+        publisher.publish_article = AsyncMock(return_value=2222)
+        pipeline = ArticlePipeline(db, publisher, HealthMonitor(), Metrics())
+
+        art = Article_factory(
+            url="https://npr.org/2026/morocco-afcon-final",
+            title="Morocco Faces Senegal in Chaotic Africa Cup of Nations Football Final",
+            summary=(
+                "Rabat stadium erupted as the Morocco national football team battled in the AFCON "
+                "tournament match with dramatic penalty drama and coach reactions."
+            ),
+            source_name="NPR News",
+            category="politics_world",
+        )
+        art.id = await db.insert_article(art)
+
+        ranker = ImportanceRanker(api_key="gem_test_key")
+        eval_res = await ranker.evaluate_global_relevance(art)
+        assert eval_res.passed is False
+        assert ranker.is_eligible(0.90, 0.90, article=art) is False
+        assert check_blocked_topic(art) is not None
+
+        pipeline._extractor.fetch_article_content_and_image = AsyncMock()
+        pipeline._translator.translate_article = AsyncMock()
+        published = await pipeline.process_article(art)
+
+        assert published is False
+        pipeline._extractor.fetch_article_content_and_image.assert_not_called()
+        pipeline._translator.translate_article.assert_not_called()
+        publisher.publish_article.assert_not_called()
+
+        db_art = await db.get_article_by_canonical_url(art.canonical_url)
+        assert db_art.status == ArticleStatus.SKIPPED
+        assert await db.is_url_skipped(art.canonical_url) is True
+        await db.close()
+
+    def test_leading_agency_datelines_stripped_from_kurdish_summaries(self):
+        """Verify Gemini prompts forbid agency datelines and formatter/cleaner strips them cleanly."""
+        assert "قامیشلی، سوریا (نۆرس پرێس)" in GEMINI_TRANSLATION_SYSTEM_PROMPT
+        assert "dateline" in GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT.lower()
+
+        assert strip_news_dateline(
+            "قامیشلی، سوریا (نۆرس پرێس) – شاندی هەرێمی کوردستان لە بەغدا کۆبوونەوە."
+        ) == "شاندی هەرێمی کوردستان لە بەغدا کۆبوونەوە."
+        assert strip_news_dateline(
+            "هەولێر - وەزارەتی پێشمەرگە ڕاگەیەندراوێکی بڵاوکردەوە."
+        ) == "وەزارەتی پێشمەرگە ڕاگەیەندراوێکی بڵاوکردەوە."
+        assert strip_news_dateline(
+            "واشنتۆن (ڕۆیتەرز) - کۆشکی سپی هەڵوێستی خۆی ڕاگەیاند."
+        ) == "کۆشکی سپی هەڵوێستی خۆی ڕاگەیاند."
+        # Hyphenated compound headlines are preserved intact
+        assert strip_news_dateline(
+            "هەولێر-بەغدا لەسەر بودجە ڕێککەوتن."
+        ) == "هەولێر-بەغدا لەسەر بودجە ڕێککەوتن."
+
+        formatter = ContentFormatter()
+        art = Article_factory(
+            title="Erbil Baghdad Accord",
+            summary="Summary placeholder",
+            category="kurdistan",
+        )
+        art.translated_title = "ڕێککەوتنی نوێ لە هەولێر واژۆ کرا"
+        art.translated_summary = (
+            "قامیشلی، سوریا (نۆرس پرێس) – لایەنە سیاسییەکان گەیشتنە لێکتێگەیشتنێکی هاوبەش. "
+            "وردەکاری ڕێککەوتنەکە لە کۆنگرەیەکی ڕۆژنامەوانیدا بڵاوکرایەوە."
+        )
+        caption = formatter.format_caption(art)
+        text_msg = formatter.format_telegram_message(art)
+        assert "قامیشلی، سوریا (نۆرس پرێس)" not in caption
+        assert "قامیشلی، سوریا (نۆرس پرێس)" not in text_msg
+        assert "لایەنە سیاسییەکان گەیشتنە لێکتێگەیشتنێکی هاوبەش." in caption
+        assert "لایەنە سیاسییەکان گەیشتنە لێکتێگەیشتنێکی هاوبەش." in text_msg

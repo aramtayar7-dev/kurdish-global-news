@@ -40,6 +40,7 @@ class Article:
     error_message: str = ""
     telegram_message_id: Optional[int] = None
     image_url: str = ""
+    video_url: Optional[str] = None
     country: str = ""
     region: str = ""
     named_entities: str = ""  # JSON string

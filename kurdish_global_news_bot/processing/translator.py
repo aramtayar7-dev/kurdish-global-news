@@ -40,28 +40,43 @@ DEFAULT_TRANSLATE_HEADERS = {
 }
 
 GEMINI_TRANSLATION_SYSTEM_PROMPT = (
-    "You are an expert international news journalist and senior Central Kurdish (Sorani / سۆرانی) editor.\n"
-    "Translate and edit the given international news article into publication-ready, broadcast-grade Central Kurdish (Sorani) in ONE step.\n\n"
+    "You are an expert international news journalist and senior Central Kurdish (Sorani / سۆرانی) editor "
+    "working for Kurdish Global News — an independent, non-partisan international news organization.\n"
+    "Translate and edit the given international news article into publication-ready, BBC/Reuters-style Central Kurdish (Sorani) in ONE step.\n\n"
+    "Editorial Identity & Strict Neutrality Rules (Mandatory for ALL Sources):\n"
+    "- Kurdish Global News is neither aligned with nor hostile toward Iran, the United States, Israel, Iraq, the Kurdistan Region, or any political, military, religious, or ideological faction.\n"
+    "- NEVER reproduce propaganda slogans, insults, slurs, mockery, curses, sectarian labels, dehumanization, glorification, or demonization from the original source.\n"
+    "- Report verifiable actions and facts cleanly, attributing disputed claims or allegations directly to their sources (distinguishing confirmed facts vs claims/unverified reports) without inventing details or creating artificial false equivalence.\n"
+    "- Mandatory Neutral Terminology Normalization:\n"
+    "  * Whenever referring to the Kurdistan Region of Iraq, normalize 'شمال العراق', 'Northern Iraq', 'باکووری عێراق', or 'باکوری عێراق' -> 'هەرێمی کوردستان'.\n"
+    "  * Normalize anti-US epithets ('العدو الأمريكي', 'الاحتلال الأمريكي', 'الشيطان الأكبر', 'ئەمریکای دوژمن', 'دوژمنی ئەمریکی') -> 'ئەمریکا' or 'هێزەکانی ئەمریکا'.\n"
+    "  * Normalize anti-Israel epithets ('الكيان الصهيوني', 'العدو الصهيوني', 'الكيان المؤقت', 'قەوارەی زایۆنی', 'دوژمنی زایۆنی') -> 'ئیسرائیل' or 'سوپای ئیسرائیل'.\n"
+    "  * Normalize partisan Syria labels ('سوريا المحتلة', 'سووریای داگیرکراو', 'سووریای داگیرکراوە') -> 'سووریا'.\n"
+    "  * Neutralize derogatory labels against Iran, Iraq, Kurdistan Region, or any state/group while preserving independently verifiable facts of real territorial occupation, military presence, or disputed borders.\n\n"
     "Strict Journalistic & Sorani Quality Rules:\n"
     "1. Informative 3-4 Sentence Body: Write a clear, complete Sorani news report of 3 to 4 complete sentences (350 to 650 characters) "
     "so the entire post + metadata fits comfortably inside Telegram's 1024-character photo caption limit without cutting off mid-sentence.\n"
-    "2. Headline & No Repetition: Write a crisp, punchy Sorani headline. NEVER repeat the headline verbatim or paraphrase it as the first sentence of the summary.\n"
-    "3. 5Ws & Facts: Clearly convey what happened, who is involved, where, why it matters, and exact numbers/facts strictly from the source text. Do NOT invent or hallucinate details.\n"
+    "2. Headline & No Repetition: Write a crisp, punchy, neutral Sorani headline. NEVER repeat the headline verbatim or paraphrase it as the first sentence of the summary.\n"
+    "3. 5Ws & Facts: Clearly convey what happened, who is involved, where, why it matters, and exact numbers/facts strictly from the source text. Do NOT invent facts, casualties, victories, or quotations.\n"
     "4. Accurate Terms (No Mistranslation): Translate roles and ages faithfully — NEVER translate 'man', 'official', or an older adult (e.g., a 62-year-old) as 'گەنج'; use accurate Sorani terms such as 'پیاوێکی تەمەن ٦٢ ساڵ' or 'بەرپرسێک'.\n"
     "5. Natural Sorani (No Raw Jargon): Replace untranslated foreign jargon (such as 'ئیفێمیزم' or 'ڕیگۆلیتی') with clear natural Sorani phrasing (e.g., 'دەربڕینی ناڕاستەوخۆ' or 'تۆز و خۆڵی هاوشێوەی سەر مانگ').\n"
     "6. Proper Sorani Orthography: Always use proper Sorani characters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی) rather than Arabic ي or ك.\n"
-    "7. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
+    "7. No Agency Datelines: NEVER copy or prepend news-agency datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -', 'Qamishli, Syria (North Press) –') at the start of the summary. Begin directly with the first clean news sentence.\n"
+    "8. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
     '{"title": "punchy Sorani headline", "summary": "3 to 4 complete Sorani sentences"}'
 )
 
 GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT = (
-    "You are a senior Central Kurdish (Sorani / سۆرانی) broadcast news editor.\n"
-    "The provided article is ALREADY written in Kurdish Sorani. Do NOT translate from English; instead summarize and rewrite it cleanly in neutral, authoritative journalistic Sorani.\n\n"
-    "Editorial Rules:\n"
-    "1. Neutrality & Clarity: Remove partisan hype or clickbait while keeping all concrete facts, names, dates, and numbers strictly accurate.\n"
-    "2. Headline & Structure: Craft a concise, clear Sorani headline and a 3 to 4 complete-sentence news report (350 to 650 characters) that never repeats the headline verbatim.\n"
-    "3. Complete Sentences & Orthography: End every sentence with proper punctuation (. or ؟ or !) and proper Sorani letters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی).\n"
-    "4. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
+    "You are a senior Central Kurdish (Sorani / سۆرانی) broadcast news editor at Kurdish Global News, "
+    "an independent, non-partisan international news organization.\n"
+    "The provided article is ALREADY written in Kurdish Sorani. Do NOT translate from English; instead summarize and rewrite it cleanly in neutral, objective BBC/Reuters-style journalistic Sorani.\n\n"
+    "Editorial & Neutrality Rules:\n"
+    "1. Non-Partisan Objectivity: Remove partisan hype, propaganda slogans, insults, slurs, or emotional epithets toward Iran, US, Israel, Iraq, the Kurdistan Region, or any group, attributing disputed claims to their sources.\n"
+    "2. Neutral Terminology: Normalize 'باکووری عێراق'/'باکوری عێراق'/'شمال العراق' -> 'هەرێمی کوردستان'; 'ئەمریکای دوژمن'/'دوژمنی ئەمریکی' -> 'ئەمریکا'; 'قەوارەی زایۆنی'/'دوژمنی زایۆنی' -> 'ئیسرائیل'; 'سووریای داگیرکراو' -> 'سووریا', while preserving documented factual military/territorial realities.\n"
+    "3. Headline & Structure: Craft a concise, neutral Sorani headline and a 3 to 4 complete-sentence news report (350 to 650 characters) that never repeats the headline verbatim.\n"
+    "4. Complete Sentences & Orthography: End every sentence with proper punctuation (. or ؟ or !) and proper Sorani letters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی).\n"
+    "5. No Agency Datelines: Strip any raw news-agency or city datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -') from the start of the summary so it starts cleanly with the first sentence.\n"
+    "6. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
     '{"title": "clean journalistic Sorani headline", "summary": "3 to 4 complete neutral Sorani sentences"}'
 )
 
@@ -76,6 +91,37 @@ def normalize_sorani_chars(text: str) -> str:
         return ""
     cleaned = text.replace("ك", "ک").replace("ي", "ی")
     return re.sub(r"[ \t]+", " ", cleaned).strip()
+
+
+# Leading agency dateline patterns (Sorani/Arabic and English wire services)
+_DATELINE_WITH_AGENCY_RE = re.compile(
+    r"^\s*[^\n()—–\-\.\!\?]{1,55}?\([^()\n]{2,45}\)\s*(?:[-–—−]+|:)?\s+",
+)
+_DATELINE_CITY_DASH_RE = re.compile(
+    r"^\s*[\w\u0600-\u06FF]+(?:[\s,،]+[\w\u0600-\u06FF]+){0,2}\s+[-–—−]+\s+",
+)
+
+
+def strip_news_dateline(text: str) -> str:
+    """
+    Strip leading raw news-agency datelines such as:
+      - 'قامیشلی، سوریا (نۆرس پرێس) – '
+      - 'هەولێر - '
+      - 'واشنتۆن (ڕۆیتەرز) - '
+      - 'Qamishli, Syria (North Press) – '
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    for _ in range(2):
+        updated = _DATELINE_WITH_AGENCY_RE.sub("", cleaned, count=1)
+        if updated == cleaned:
+            updated = _DATELINE_CITY_DASH_RE.sub("", cleaned, count=1)
+        updated = updated.strip()
+        if not updated or updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
 
 
 def is_kurdish_sorani(text: str) -> bool:
@@ -219,8 +265,14 @@ class GeminiTranslationProvider(TranslationProvider):
         except GeminiAPIError as e:
             raise TranslationError(str(e)) from e
 
-        final_title = normalize_sorani_chars(str(data.get("title", "")).strip())
-        final_summary = normalize_sorani_chars(str(data.get("summary", "")).strip())
+        from processing.content_formatter import normalize_neutral_terminology
+
+        final_title = normalize_neutral_terminology(
+            normalize_sorani_chars(str(data.get("title", "")).strip())
+        )
+        final_summary = normalize_neutral_terminology(
+            strip_news_dateline(normalize_sorani_chars(str(data.get("summary", "")).strip()))
+        )
 
         if not final_title:
             raise TranslationError("Gemini returned an empty Kurdish headline.")
@@ -491,8 +543,16 @@ class TranslationEngine:
 
         # Native Kurdish safety fallback (do not send Sorani through Google Translate)
         if native_kurdish:
-            clean_title = normalize_sorani_chars(title)
-            clean_summary = trim_at_sentence_boundary(normalize_sorani_chars(summary), max_len=650) if summary else ""
+            from processing.content_formatter import normalize_neutral_terminology
+            clean_title = normalize_neutral_terminology(normalize_sorani_chars(title))
+            clean_summary = (
+                trim_at_sentence_boundary(
+                    normalize_neutral_terminology(strip_news_dateline(normalize_sorani_chars(summary))),
+                    max_len=650,
+                )
+                if summary
+                else ""
+            )
             logger.info("Using native Sorani text directly after Gemini fallback.")
             return clean_title, clean_summary
 
@@ -503,9 +563,10 @@ class TranslationEngine:
         fallback_summary = ""
         if summary and summary.strip():
             # Keep fallback summary concise so caption stays within Telegram limit
-            trimmed_source = trim_at_sentence_boundary(summary.strip(), max_len=1200)
+            trimmed_source = trim_at_sentence_boundary(strip_news_dateline(summary.strip()), max_len=1200)
             translated_sum = await self._google_fallback.translate(trimmed_source, target_lang=target_lang)
-            fallback_summary = trim_at_sentence_boundary(self._post_process(translated_sum, trimmed_source), max_len=650)
+            cleaned_sum = strip_news_dateline(self._post_process(translated_sum, trimmed_source))
+            fallback_summary = trim_at_sentence_boundary(cleaned_sum, max_len=650)
 
         return fallback_title, fallback_summary
 
@@ -527,10 +588,12 @@ class TranslationEngine:
         raise TranslationError(f"All translation providers failed. Last error: {last_error}")
 
     def _post_process(self, translated: str, original: str) -> str:
-        """Post-process translated text for quality."""
+        """Post-process translated text for Sorani orthography and neutral terminology."""
         if not translated:
             return ""
-        return normalize_sorani_chars(re.sub(r"\s+", " ", translated).strip())
+        from processing.content_formatter import normalize_neutral_terminology
+        cleaned = normalize_sorani_chars(re.sub(r"\s+", " ", translated).strip())
+        return normalize_neutral_terminology(cleaned)
 
     async def validate_translation(self, translated: str, original: str) -> bool:
         """Validate that a translation is acceptable."""

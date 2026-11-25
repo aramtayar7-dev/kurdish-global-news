@@ -18,6 +18,7 @@ from typing import Optional
 from storage.models import Article
 from processing.extractor import ArticleExtractor
 from processing.gemini_client import GeminiClient, GeminiAPIError
+from processing.translator import strip_news_dateline
 from config import (
     CANONICAL_CATEGORIES,
     GEMINI_API_KEY,
@@ -102,6 +103,71 @@ PRIORITY_TIER_1B = "1B"
 PRIORITY_TIER_2 = "2"
 PRIORITY_TIER_3 = "3"
 
+# ── Deterministic Second-Layer Blocked Topic Guards ──
+BLOCKED_CATEGORY_NAMES: set[str] = {
+    "international sports",
+    "sports",
+    "lifestyle",
+    "entertainment",
+    "culture",
+}
+
+INTERNATIONAL_COURT_OR_STATE_CRISIS_PATTERN = re.compile(
+    r"(international\s+court\s+of\s+justice|international\s+criminal\s+court|\bicj\b|\bicc\b|"
+    r"war\s+crimes\s+tribunal|un\s+security\s+council|constitutional\s+crisis|impeachment)",
+    re.IGNORECASE,
+)
+
+DOMESTIC_CRIME_COURT_PATTERN = re.compile(
+    r"(sentenced\s+to\s+\d+|years?\s+in\s+(?:federal\s+)?prison|months?\s+in\s+prison|"
+    r"pleaded\s+guilty|u\.?s\.?\s+district\s+court|federal\s+court\s+in\s+[a-z]+|"
+    r"federal\s+prosecutors?|district\s+judge|jury\s+convicted|indicted\s+(?:on|for)|"
+    r"lying\s+to\s+(?:the\s+)?fbi|fbi\s+(?:arrest|agent|agents|affidavit)|"
+    r"(?:u\.?s\.?\s+)?department\s+of\s+justice.{0,90}(?:sentenc|plead|indict|guilty|arrest)|"
+    r"justice\s+department.{0,90}(?:sentenc|plead|indict|guilty|arrest)|"
+    r"(?:houston|texas|florida|california|new\s+york|chicago|ohio|michigan)\s+(?:man|woman|resident)|"
+    r"municipal\s+court|local\s+police|police\s+(?:arrested|charged)\s+(?:a\s+|two\s+|three\s+)?(?:man|woman|suspect|teen)|"
+    r"prison\s+sentence|bail\s+hearing|extremism\s+trial|propaganda\s+trial|material\s+support\s+to\s+(?:isis|terror)|"
+    r"سزای\s+\d+\s+ساڵ\s+زیندان|دادگای\s+فیدراڵی\s+ئەمریکا|تۆمەتی\s+درۆکردن\s+بۆ\s+ئێف\s*بی\s*ئای|"
+    r"پڕوپاگەندەی\s+داعش.{0,40}دادگای)",
+    re.IGNORECASE,
+)
+
+SPORTS_PATTERN = re.compile(
+    r"(\bfootball\b|\bsoccer\b|\bafcon\b|africa\s+cup(?:\s+of\s+nations)?|"
+    r"(?:world|africa|nations|champions|european|asian)\s+cup|\bolympics?\b|\bfifa\b|\buefa\b|"
+    r"champions\s+league|premier\s+league|la\s+liga|serie\s+a|bundesliga|"
+    r"\bnba\b|\bnfl\b|\bmlb\b|\bnhl\b|\bufc\b|\bwimbledon\b|grand\s+slam|"
+    r"\bgoalkeeper\b|\bstriker\b|\bmidfielder\b|\bpenalty\s+shootout\b|\bhat-trick\b|\bred\s+card\b|"
+    r"\b(?:football|soccer|basketball|tennis|cricket)\s+(?:match|player|star|club|team|coach|tournament)\b|"
+    r"\bnational\s+(?:football|soccer|basketball)?\s*team\b|"
+    r"\b(?:semifinal|quarterfinal|cup\s+final|sports?\s+tournament)\b|"
+    r"\b(?:win|wins|won|beat|beats|defeat|defeats|scores?|scored)\b.{0,40}\b(?:match|cup|goal|coach|fc|stadium|morocco|senegal)\b|"
+    r"تۆپی\s+پێ|جامی\s+نەتەوەکانی\s+ئەفریقا|مۆندیال|ئۆڵۆمپیاد|خولی\s+پاڵەوانەکان|یاریگا|گۆڵکار|وەرزش)",
+    re.IGNORECASE,
+)
+
+CULTURE_LIFESTYLE_PATTERN = re.compile(
+    r"(\bcelebrity\s+gossip\b|\bred\s+carpet\b|\bbox\s+office\b|\boscar\s+nominees?\b|"
+    r"\bgrammy\s+awards?\b|\bfashion\s+week\b|\breality\s+tv\b|\breality\s+show\b|"
+    r"\bmovie\s+review\b|\balbum\s+review\b|\bculinary\s+festival\b|\bhoroscope\b|\bzodiac\s+sign\b)",
+    re.IGNORECASE,
+)
+
+TRAFFIC_MUNICIPAL_AD_PATTERN = re.compile(
+    r"(تنويه\s+مروري|مديرية\s+المرور|شرطة\s+المرور|مفارز\s+المرور|غرامة\s+مرورية|"
+    r"رادار(?:ات)?\s+(?:المرور|السرعة)|كاميرات\s+(?:المراقبة\s+المرورية|السرعة|المرور)|"
+    r"ازدحام\s+مروري|[کك]امێرای\s+(?:خێرایی|هاتووچۆ)|بەڕێوەبەرایەتی\s+هاتووچۆ|"
+    r"\bspeed\s+(?:radar\s+)?cameras?\b|\btraffic\s+(?:radar|police)\b|"
+    r"جدول\s+(?:قطع\s+)?الكهرباء|انقطاع\s+التيار\s+الكهربائي|صيانة\s+شبكة\s+المياه|"
+    r"أمانة\s+بغداد.{0,40}صيانة|ساعات\s+التشغيل\s+للمولدات|"
+    r"\bwater\s+and\s+electricity\s+outage\b|\boutage\s+maintenance\s+schedule\b|"
+    r"للاعلان(?:ات)?|للتواصل\s+والإعلان|عرض\s+خاص|تخفيضات|خصم\s+\d+%|"
+    r"اشترك(?:وا)?\s+(?:في|عبر)\s+قناتنا|انضموا\s+إلى\s+قناتنا|ڕیکلام|"
+    r"\bsponsored\s+discount\b|\bfollow\s+us\s+on\s+telegram\b)",
+    re.IGNORECASE,
+)
+
 LEGACY_TO_CANONICAL_CATEGORY: dict[str, str] = {
     "kurdistan": "kurdistan",
     "wars & armed conflicts": "military_conflict",
@@ -141,8 +207,11 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "- \"ai_tech\": Artificial intelligence models, semiconductors, major tech releases, consumer/enterprise technology breakthroughs.\n"
     "- \"cybersecurity\": Cyberattacks, ransomware, state-sponsored hacking, major data breaches, zero-day vulnerabilities.\n"
     "- \"science_space\": Space missions, astronomy, NASA/SpaceX, scientific breakthroughs, major medical discoveries.\n\n"
-    "IMPORTANT Categorization Accuracy:\n"
-    "- Classify strictly by the article's actual subject, NOT the publisher name (e.g., Nvidia stock news from Al Jazeera is \"economy_markets\" or \"ai_tech\", NOT \"military_conflict\"; UK royal news is \"politics_world\", NOT \"military_conflict\").\n\n"
+    "IMPORTANT Geographic & Categorization Accuracy:\n"
+    "- Determine geography strictly from WHERE the actual event took place and whose government, territory, or forces are directly involved.\n"
+    "- NEVER classify an article as \"kurdistan\" merely because it was published by a Kurdish/regional outlet (e.g., North Press Agency, Rudaw, Kurdistan24), "
+    "because of an agency dateline (e.g., 'Qamishli, Syria (North Press) –', 'Erbil -'), or because it mentions ISIS/داعش in a foreign/non-Kurdistan context.\n"
+    "- Classify strictly by actual subject, NOT the publisher name (e.g., Nvidia stock news from Al Jazeera is \"economy_markets\" or \"ai_tech\"; US court/FBI news published by North Press is NOT \"kurdistan\").\n\n"
     "STRICT Breaking News Rule (`is_breaking`):\n"
     "- Set \"is_breaking\": true ONLY for sudden, unfolding, emergency, high-impact events happening right now (and ONLY when score >= 9): "
     "active military strikes, explosions, missile/drone attacks, assassinations, sudden declarations of war or ceasefires, major earthquakes/natural disasters, "
@@ -153,11 +222,12 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "Scoring Criteria (1 to 10):\n"
     "- 9 to 10 (HIGHEST PRIORITY): Major Southern Kurdistan (Bashur — Erbil, Sulaymaniyah, Duhok, Halabja, Kirkuk, KRG, Peshmerga, Erbil-Baghdad) politics, "
     "war, security/drone/missile incidents; or major wars, military escalations, world leader summits, and severe crises.\n"
-    "- 8 (HIGH PASS): Any significant political, security, economic (salaries/مووچە, oil/energy, official decrees), or human-rights development in ANY of the 4 parts of Kurdistan "
-    "(MUST get score >= 8 and category=\"kurdistan\"); regional geopolitics (Iraq, Iran, Turkey, Syria, US, Middle East); major global economy/sanctions, AI breakthroughs, and critical cyberattacks.\n"
-    "- 7 (PASS): Notable international diplomacy, cross-border crises, significant space/science milestones.\n"
-    "- 1 to 6 (REJECT): Hyper-local domestic news in foreign countries (e.g., individual US state lawsuits, municipal/city politics, "
-    "local crime, routine business/licensing disputes, local court cases), celebrity gossip, sports trivia, clickbait, or minor opinion fluff.\n\n"
+    "- 8 (HIGH PASS): Genuine political, security, economic (salaries/مووچە, oil/energy, official decrees), or human-rights development taking place in ANY of the 4 parts of Kurdistan; "
+    "regional geopolitics (Iraq, Iran, Turkey, Syria, US, Middle East); major global economy/sanctions, AI breakthroughs, and critical cyberattacks.\n"
+    "- 7 (PASS): Notable international diplomacy, cross-border crises, ICJ/ICC international court rulings, or significant space/science milestones.\n"
+    "- 1 to 6 (REJECT): Domestic crime, FBI arrests, individual extremism/propaganda trials, local police reports, personal prison sentences (EVEN if ISIS/terrorism is mentioned in a foreign domestic court); "
+    "ALL sports/tournaments (football/soccer, AFCON, World Cup, Olympics, matches, players, teams — even from general feeds like NPR); "
+    "culture, lifestyle, celebrity gossip, entertainment, routine business licensing disputes, or minor fluff.\n\n"
     "Respond ONLY with valid JSON (no markdown fences, no commentary):\n"
     '{"score": <integer 1-10>, "is_breaking": <true or false>, "category": "<one of the 7 keys>", "reason": "<short one-sentence justification>"}'
 )
@@ -174,17 +244,72 @@ class RelevanceEvaluation:
     used_fallback: bool = False
 
 
+def clean_article_event_text(article: Article) -> str:
+    """
+    Extract normalized event text from an article after stripping leading agency
+    datelines (e.g., 'Qamishli, Syria (North Press) –') so datelines and publisher
+    headers cannot spoof geographic classification.
+    """
+    clean_title = strip_news_dateline(article.original_title or "")
+    clean_summary = strip_news_dateline(article.original_summary or "")
+    return f"{clean_title} {clean_summary}".strip()
+
+
+def is_genuine_kurdistan_event(article: Article) -> bool:
+    """
+    Return True ONLY when stripped event text directly involves Kurdish
+    territories, governments, or forces (never merely datelines, outlet name, or foreign ISIS trials).
+    """
+    clean_text = clean_article_event_text(article)
+    if not clean_text:
+        return False
+    return bool(KURDISTAN_PATTERN.search(clean_text))
+
+
+def check_blocked_topic(article: Article) -> Optional[str]:
+    """
+    Deterministic second-layer guard rejecting domestic crime/individual court trials,
+    sports/tournaments, and culture/lifestyle fluff before classification or publishing.
+    Returns rejection reason string if blocked, else None.
+    """
+    cat = (getattr(article, "category", "") or "").strip().lower()
+    if cat in BLOCKED_CATEGORY_NAMES:
+        return f"Blocked category: {article.category}"
+
+    clean_text = clean_article_event_text(article)
+    if not clean_text:
+        return None
+
+    if SPORTS_PATTERN.search(clean_text):
+        return "Blocked topic: sports/tournament news excluded from channel"
+
+    if DOMESTIC_CRIME_COURT_PATTERN.search(clean_text) and not INTERNATIONAL_COURT_OR_STATE_CRISIS_PATTERN.search(clean_text):
+        return "Blocked topic: foreign/domestic crime or individual court sentencing"
+
+    if CULTURE_LIFESTYLE_PATTERN.search(clean_text):
+        return "Blocked topic: culture/lifestyle/entertainment fluff"
+
+    if TRAFFIC_MUNICIPAL_AD_PATTERN.search(clean_text):
+        return "Blocked topic: traffic/municipal-service notice or advertisement"
+
+    return None
+
+
 def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
     """Map any category string strictly onto one of the 7 canonical category keys."""
+    cleaned_hint = strip_news_dateline(text_hint or "")
     if raw_category:
         cleaned = raw_category.strip().lower()
+        if cleaned == "kurdistan" or "kurd" in cleaned:
+            # If event text is supplied, keep 'kurdistan' ONLY when actual content involves Kurdistan
+            if not cleaned_hint or KURDISTAN_PATTERN.search(cleaned_hint):
+                return "kurdistan"
+            return "politics_world"
         if cleaned in CANONICAL_CATEGORIES:
             return cleaned
         if cleaned in LEGACY_TO_CANONICAL_CATEGORY:
             return LEGACY_TO_CANONICAL_CATEGORY[cleaned]
         # Partial keyword heuristics if model slightly varied format
-        if "kurd" in cleaned:
-            return "kurdistan"
         if "military" in cleaned or "war" in cleaned or "conflict" in cleaned or "defense" in cleaned:
             return "military_conflict"
         if "cyber" in cleaned or "hack" in cleaned:
@@ -196,7 +321,7 @@ def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
         if "science" in cleaned or "space" in cleaned:
             return "science_space"
 
-    if text_hint and KURDISTAN_PATTERN.search(text_hint):
+    if cleaned_hint and KURDISTAN_PATTERN.search(cleaned_hint):
         return "kurdistan"
     return "politics_world"
 
@@ -214,26 +339,17 @@ def is_strict_breaking(article: Article) -> bool:
 
 def is_bashur_article(article: Article) -> bool:
     """
-    Identify Southern Kurdistan (Bashur) stories covering Erbil, Sulaymaniyah,
-    Duhok, Halabja, Kirkuk, KRG, Peshmerga, or Erbil-Baghdad relations.
-    Excludes non-Bashur Rojava/Bakur/Rojhelat stories unless they focus on Bashur.
+    Strictly identify Southern Kurdistan (Bashur) events directly involving Erbil,
+    Sulaymaniyah, Duhok, Halabja, Kirkuk, KRG, Peshmerga, or Erbil-Baghdad relations.
+    Strips leading agency datelines and never relies on publisher name, raw region tag,
+    or foreign ISIS mentions.
     """
-    region = (getattr(article, "region", "") or "").strip().lower()
-    category = (getattr(article, "category", "") or "").strip().lower()
-    text = f"{article.original_title or ''} {article.original_summary or ''}"
-
-    if BASHUR_PATTERN.search(text):
-        return True
-    if ("south" in region or "bashur" in region) and (
-        category == "kurdistan" or KURDISTAN_PATTERN.search(text)
-    ):
-        return True
-    if NON_BASHUR_KURDISTAN_PATTERN.search(text) or region in {
-        "west kurdistan",
-        "north kurdistan",
-        "east kurdistan",
-    }:
+    if check_blocked_topic(article) is not None:
         return False
+
+    clean_text = clean_article_event_text(article)
+    if BASHUR_PATTERN.search(clean_text):
+        return True
     return False
 
 
@@ -332,20 +448,33 @@ class ImportanceRanker:
         self, article: Article, err_reason: str
     ) -> RelevanceEvaluation:
         """Fail-open safely using rule-based importance scoring when Gemini classifier errors out."""
+        blocked_reason = check_blocked_topic(article)
+        if blocked_reason:
+            return RelevanceEvaluation(
+                score=2,
+                is_breaking=False,
+                category="politics_world",
+                reason=blocked_reason,
+                passed=False,
+                used_fallback=True,
+            )
+
         rule_score, _ = self.score_article(article)
         credibility = ArticleExtractor.get_source_credibility(article.source_name)
-        passed = self.is_eligible(rule_score, credibility)
+        passed = self.is_eligible(rule_score, credibility, article=article)
         scaled_score = max(1, min(10, round(rule_score * 10)))
-        text_hint = f"{article.original_title} {article.original_summary} {article.region}"
-        cat = normalize_category(article.category, text_hint=text_hint)
-        if cat == "kurdistan" or KURDISTAN_PATTERN.search(text_hint):
+        clean_text = clean_article_event_text(article)
+        cat = normalize_category(article.category, text_hint=clean_text)
+        if is_genuine_kurdistan_event(article):
             cat = "kurdistan"
             scaled_score = max(8, scaled_score)
             passed = True
+        elif cat == "kurdistan":
+            cat = "politics_world"
 
         # Never let Kurdistan focus boost or Priority.CRITICAL flip is_breaking to True.
         # Only mark breaking on genuine sudden-emergency keywords without statement/interview markers.
-        lower_text = f"{article.original_title} {article.original_summary}".lower()
+        lower_text = clean_text.lower()
         non_breaking_markers = (
             "interview", "statement", "speech", "remarks", "commentary",
             "analysis", "opinion", "forecast", "says ", "said ", "urges ",
@@ -386,13 +515,30 @@ class ImportanceRanker:
         """
         threshold = self._min_relevance_score if min_score is None else min_score
 
+        blocked_reason = check_blocked_topic(article)
+        if blocked_reason:
+            return RelevanceEvaluation(
+                score=2,
+                is_breaking=False,
+                category="politics_world",
+                reason=blocked_reason,
+                passed=False,
+                used_fallback=False,
+            )
+
         if not self._gemini.has_keys:
             return self._rule_based_fallback(article, "GEMINI_API_KEY not configured")
 
-        snippet = (article.original_summary or "").strip()[:500]
-        region_line = f"Region Tag: {article.region}\n" if article.region else ""
+        clean_title = strip_news_dateline(article.original_title or "")
+        snippet = strip_news_dateline(article.original_summary or "").strip()[:500]
+        # Only forward Region Tag if stripped event content genuinely pertains to Kurdistan
+        region_line = (
+            f"Region Tag: {article.region}\n"
+            if article.region and is_genuine_kurdistan_event(article)
+            else ""
+        )
         user_content = (
-            f"Title: {article.original_title}\n"
+            f"Title: {clean_title}\n"
             f"Source: {article.source_name or 'Unknown'}\n"
             f"{region_line}"
             f"Snippet: {snippet}"
@@ -411,12 +557,11 @@ class ImportanceRanker:
             score = max(1, min(10, int(round(float(data["score"])))))
             raw_is_breaking = bool(data.get("is_breaking", False))
             raw_category = str(data.get("category", "")).strip()
-            text_hint = f"{article.original_title} {snippet} {article.region}"
-            category = normalize_category(raw_category, text_hint=text_hint)
+            clean_hint = f"{clean_title} {snippet}".strip()
+            category = normalize_category(raw_category, text_hint=clean_hint)
 
-            # Enforce high priority if Gemini classified as Kurdistan (all 4 parts)
-            # Note: this NEVER flips is_breaking to True.
-            if category == "kurdistan" and score < 8:
+            # Enforce high priority ONLY for genuine Kurdistan events scoring >= threshold
+            if category == "kurdistan" and is_genuine_kurdistan_event(article) and score >= threshold and score < 8:
                 score = 8
 
             # Strict breaking gate: only True if Gemini returned True AND score >= 9
@@ -480,7 +625,7 @@ class ImportanceRanker:
         - +0.20 for Primary focus (Kurdistan 4 parts, war, military strikes, conflicts, world leaders, geopolitics).
         - +0.10 for key Secondary focus (AI breakthroughs, major cyberattacks, major economic shifts).
         """
-        text = f"{article.original_title} {article.original_summary}".lower()
+        text = clean_article_event_text(article).lower()
 
         if KURDISTAN_PATTERN.search(text) or is_primary_category(article.category):
             return 0.20
@@ -517,8 +662,15 @@ class ImportanceRanker:
 
         return 0.0
 
-    def is_eligible(self, score: float, credibility_score: float | None = None) -> bool:
-        """Check if an article meets the minimum thresholds for publication."""
+    def is_eligible(
+        self,
+        score: float,
+        credibility_score: float | None = None,
+        article: Optional[Article] = None,
+    ) -> bool:
+        """Check if an article meets minimum thresholds and passes blocked-topic guards."""
+        if article is not None and check_blocked_topic(article) is not None:
+            return False
         if score < MIN_IMPORTANCE_SCORE:
             return False
         if credibility_score is not None and credibility_score < MIN_SOURCE_CREDIBILITY:
@@ -526,7 +678,7 @@ class ImportanceRanker:
         return True
 
     def _score_keywords(self, article: Article) -> float:
-        text = f"{article.original_title} {article.original_summary}".lower()
+        text = clean_article_event_text(article).lower()
         critical_hits = sum(1 for kw in CRITICAL_KEYWORDS if kw in text)
         if critical_hits >= 2:
             return 1.0
@@ -618,7 +770,7 @@ class ImportanceRanker:
         return 0.5
 
     def _determine_priority(self, score: float, article: Article) -> str:
-        text = f"{article.original_title} {article.original_summary}".lower()
+        text = clean_article_event_text(article).lower()
         critical_hits = sum(1 for kw in CRITICAL_KEYWORDS if kw in text)
         if critical_hits >= 2 or score >= 0.85:
             return Priority.CRITICAL

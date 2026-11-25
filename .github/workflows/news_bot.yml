@@ -40,6 +40,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libfribidi0 libharfbuzz0b libraqm0
 
+      - name: Ensure FFmpeg is Available
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+
       - name: Prefer IPv4 for Telegram API
         run: |
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1

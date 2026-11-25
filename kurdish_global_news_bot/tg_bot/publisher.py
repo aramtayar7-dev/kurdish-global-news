@@ -29,6 +29,7 @@ from core.importance_ranker import is_strict_breaking
 from processing.card_generator import NewsCardGenerator
 from processing.content_formatter import ContentFormatter
 from processing.translator import trim_at_sentence_boundary
+from processing.video_processor import cleanup_video_file, download_and_brand_video
 from storage.models import Article
 from tg_bot.image_handler import ImageHandler
 
@@ -103,11 +104,19 @@ class TelegramPublisher:
 
     async def publish_article(self, article: Article) -> Optional[int]:
         """
-        Publish an article immediately using an auto-generated branded 1280x720 card.
-        Falls back cleanly to text-only if card photo upload fails.
+        Publish an article immediately:
+        - When `video_url` is present: download & watermark with KGN logo and send via sendVideo.
+        - Otherwise (or on video fallback): generate branded 1280x720 card and send via sendPhoto.
+        - Falls back cleanly to text-only if photo card upload fails.
         """
         if not self._bot:
             raise RuntimeError("Publisher not initialized. Call initialize() first.")
+
+        if getattr(article, "video_url", None):
+            message_id = await self._publish_with_video(article)
+            if message_id is not None:
+                return message_id
+            logger.info("Video publish/branding failed or unavailable, falling back to branded image card.")
 
         if ENABLE_IMAGES:
             message_id = await self._publish_with_card(article)
@@ -116,6 +125,52 @@ class TelegramPublisher:
             logger.info("Card photo publish failed, falling back to text-only.")
 
         return await self._publish_text_only(article)
+
+    async def _publish_with_video(self, article: Article) -> Optional[int]:
+        """Download & watermark video with KGN logo, send via send_video, and clean up temp file."""
+        assert self._bot is not None
+        if not article.video_url:
+            return None
+
+        breaking = is_strict_breaking(article)
+        article.is_breaking = breaking
+        disable_notification = not breaking
+
+        branded_video_path = await download_and_brand_video(article.video_url)
+        if not branded_video_path:
+            return None
+
+        caption = self._trim_caption_at_sentence(self._formatter.format_caption(article))
+        try:
+            with open(branded_video_path, "rb") as video_file:
+                message = await self._send_with_retry(
+                    self._bot.send_video,
+                    chat_id=self._channel_id,
+                    video=video_file,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    supports_streaming=True,
+                    disable_notification=disable_notification,
+                )
+            if message:
+                logger.info(
+                    "Published branded video: msg_id=%d, breaking=%s, silent=%s, source=%s, category=%s, title='%s'",
+                    message.message_id,
+                    breaking,
+                    disable_notification,
+                    article.source_name,
+                    article.category,
+                    article.original_title[:60],
+                )
+                return message.message_id
+        except BadRequest as e:
+            logger.warning("Telegram rejected branded video: %s", str(e)[:200])
+        except Exception as e:
+            logger.error("Video publish error: %s", str(e)[:200])
+        finally:
+            cleanup_video_file(branded_video_path)
+
+        return None
 
     async def _publish_with_card(self, article: Article) -> Optional[int]:
         """Generate branded 1280x720 news card, send via send_photo, and clean up temp file."""

@@ -13,7 +13,7 @@ import re
 from typing import Optional
 
 from config import CATEGORY_EMOJIS, CATEGORY_META
-from processing.translator import trim_at_sentence_boundary
+from processing.translator import strip_news_dateline, trim_at_sentence_boundary
 from storage.models import Article
 
 logger = logging.getLogger("processing.formatter")
@@ -67,12 +67,115 @@ def resolve_category_display(category: Optional[str]) -> tuple[str, str]:
     return "سیاسەت و جیهان", "🌍"
 
 
+# Unicode Arabic/Kurdish letter boundaries so punctuation (، ؛ ؟ .) separates cleanly
+# while partial substrings inside unrelated words are never matched.
+_BOUNDARY_LEFT = r"(?<![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"
+_BOUNDARY_RIGHT = r"(?![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"
+
+# Ordered longest/most-specific first; replaces partisan epithets with neutral journalistic forms
+_RAW_NEUTRAL_TERM_RULES: tuple[tuple[str, str], ...] = (
+    # Kurdistan Region (normalize geopolitical misnomers to هەرێمی کوردستان)
+    (r"(?:إقليم|اقليم)\s+شمال\s+العراق", "هەرێمی کوردستان"),
+    (r"هەرێمی\s+باکوو?ری\s+عێراق", "هەرێمی کوردستان"),
+    (r"شمال\s+العراق", "هەرێمی کوردستان"),
+    (r"باکوو?ری\s+عێراق", "هەرێمی کوردستان"),
+    (r"Northern\s+Iraq", "هەرێمی کوردستان"),
+    # Israel & Military (ordered specific military/government forms before bare country forms)
+    (
+        r"(?:سوپای|سوپاى)\s+(?:قەوارەی|قەوارەى|کیانی|کیانى|ڕژێمی|رژێمی|دوژمنی|دوژمنێ|داگیرکەر|داگیرکەری)?\s*(?:زایۆنی|زایۆنى|ئیسرائیل)",
+        "سوپای ئیسرائیل",
+    ),
+    (
+        r"(?:هێزە|هێزەکانی|هێزەکانى)\s+(?:(?:داگیرکەر|داگیرکەری|داگیرکەرەکانی)\s+)?(?:قەوارەی|قەوارەى|کیانی|کیانى|دوژمنی|دوژمنێ)\s+(?:زایۆنی|زایۆنى)",
+        "هێزەکانی ئیسرائیل",
+    ),
+    (
+        r"(?:هێزە|هێزەکانی|هێزەکانى)\s+(?:داگیرکەر|داگیرکەری|داگیرکەرەکانی)\s+(?:زایۆنی|زایۆنى|ئیسرائیل)",
+        "هێزەکانی ئیسرائیل",
+    ),
+    (
+        r"(?:حکومەتی|حکومەتى)\s+(?:قەوارەی|قەوارەى|کیانی|کیانى|دوژمنی)\s+(?:زایۆنی|زایۆنى)",
+        "حکومەتی ئیسرائیل",
+    ),
+    (r"جيش\s+(?:العدو|الكيان|الاحتلال)\s+(?:الصهيوني|الإسرائيلي|الاسرائيلي)", "سوپای ئیسرائیل"),
+    (r"قوات\s+(?:العدو|الكيان|الاحتلال)\s+(?:الصهيوني|الإسرائيلي|الاسرائيلي)", "هێزەکانی ئیسرائیل"),
+    (
+        r"(?:قەوارەی|قەوارەى|کیانی|کیانى|دوژمنی|ڕژێمی|رژێمی|داگیرکەری)\s+(?:زایۆنی|زایۆنى)",
+        "ئیسرائیل",
+    ),
+    (
+        r"(?:قەوارەی|قەوارەى|کیانی|کیانى)\s+(?:داگیرکەر|داگیرکەرەکە|کاتی|کاتى)",
+        "ئیسرائیل",
+    ),
+    (r"ئەسرائیلی\s+داگیرکەر", "ئیسرائیل"),
+    (r"الكيان\s+الصهيوني", "ئیسرائیل"),
+    (r"العدو\s+الصهيوني", "ئیسرائیل"),
+    (r"الكيان\s+المؤقت", "ئیسرائیل"),
+    # United States & Forces
+    (
+        r"(?:هێزە|هێزەکانی|هێزەکانى)\s+(?:داگیرکەر|داگیرکەری|داگیرکەرەکانی)\s+(?:ئەمریکا|ئەمریکای|ئەمەریکا|ئەمەریکای)",
+        "هێزەکانی ئەمریکا",
+    ),
+    (r"(?:هێزەکانی|هێزەکانى)\s+(?:ئەمریکای|ئەمریکاى)\s+دوژمن", "هێزەکانی ئەمریکا"),
+    (r"(?:هێزەکانی|هێزەکانى)\s+دوژمنی\s+(?:ئەمریکی|ئەمریکى|ئەمەریکی)", "هێزەکانی ئەمریکا"),
+    (r"قوات\s+(?:الاحتلال|العدو)\s+(?:الأمريكي|الامريكي)", "هێزەکانی ئەمریکا"),
+    (r"(?:ئەمریکای|ئەمریکاى|ئەمەریکای|ئەمەریکاى)\s+دوژمن", "ئەمریکا"),
+    (r"(?:داگیرکاری|داگیرکەری)\s+(?:ئەمریکا|ئەمەریکا)", "ئەمریکا"),
+    (r"دوژمنی\s+(?:ئەمریکی|ئەمریکى|ئەمەریکی|ئەمەریکى)", "ئەمریکا"),
+    (r"شەیتانی\s+گەورە", "ئەمریکا"),
+    (r"العدو\s+(?:الأمريكي|الامريكي)", "ئەمریکا"),
+    (r"الاحتلال\s+(?:الأمريكي|الامريكي)", "هێزەکانی ئەمریکا"),
+    (r"الشيطان\s+(?:الأكبر|الاكبر)", "ئەمریکا"),
+    # Syria
+    (r"سوو?ریای\s+داگیرکراوە?", "سووریا"),
+    (r"سوري[اة]\s+المحتلة", "سووریا"),
+    # Other partisan epithets
+    (r"(?:ئێرانی\s+دوژمن|دوژمنی\s+ئێرانی|ڕژێمی\s+مەلاکان)", "ئێران"),
+    (r"(?:العدو\s+(?:الإيراني|الايراني)|النظام\s+الصفوي)", "ئێران"),
+)
+
+_COMPILED_NEUTRAL_TERM_RULES: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(
+            rf"{_BOUNDARY_LEFT}(?:(?P<conj>و)(?=ال))?{pat}(?P<suffix>دا|ەوە|یش)?{_BOUNDARY_RIGHT}",
+            re.IGNORECASE,
+        ),
+        repl,
+    )
+    for pat, repl in _RAW_NEUTRAL_TERM_RULES
+]
+
+
+def normalize_neutral_terminology(text: str) -> str:
+    """
+    Deterministically normalize partisan, hostile, or misnamed Kurdish/Arabic
+    geopolitical terminology to neutral BBC/Reuters-style Central Kurdish terms.
+    Preserves sentence structure, punctuation, numbers, factual occupation/presence
+    descriptions, and avoids partial substring corruption. Idempotent.
+    """
+    if not text:
+        return ""
+
+    result = text
+    for pattern, replacement in _COMPILED_NEUTRAL_TERM_RULES:
+        result = pattern.sub(
+            lambda m, r=replacement: f"{(m.group('conj') + ' ') if m.group('conj') else ''}{r}{m.group('suffix') or ''}",
+            result,
+        )
+
+    # Normalize redundant horizontal spaces cleanly while keeping intentional newlines
+    lines = [re.sub(r"[ \t]{2,}", " ", ln).strip() if ln.strip() else "" for ln in result.splitlines()]
+    return "\n".join(lines).strip()
+
+
 class ContentFormatter:
     """Formats articles for Telegram publication in Kurdish Sorani."""
 
     def _format_headline(self, article: Article) -> str:
         """Escape the headline and prepend the breaking badge prefix when active."""
-        raw_title = (article.translated_title or article.original_title or "").strip()
+        raw_title = normalize_neutral_terminology(
+            (article.translated_title or article.original_title or "").strip()
+        )
         prefix = "🔴 بەپەلە | " if getattr(article, "is_breaking", False) else ""
         return self._escape_html(f"{prefix}{raw_title}")
 
@@ -86,7 +189,9 @@ class ContentFormatter:
         headline = self._format_headline(article)
         parts.append(f"{emoji} <b>{headline}</b>")
 
-        summary = article.translated_summary or article.original_summary
+        summary = normalize_neutral_terminology(
+            strip_news_dateline(article.translated_summary or article.original_summary or "")
+        )
         if summary:
             trimmed = self._truncate_summary(summary, max_len=650)
             parts.append(f"\n{self._escape_html(trimmed)}")
@@ -128,7 +233,9 @@ class ContentFormatter:
             footer_parts.append(f'🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
         footer = "\n".join(footer_parts)
 
-        summary = (article.translated_summary or article.original_summary or "").strip()
+        summary = normalize_neutral_terminology(
+            strip_news_dateline(article.translated_summary or article.original_summary or "")
+        )
         if not summary:
             caption = f"{header}\n{footer}"
             return caption if len(caption) <= 1024 else f"{header[:900]}</b>\n{footer}"[:1024]

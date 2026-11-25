@@ -200,14 +200,31 @@ class SupabaseDatabase:
             "named_entities": article.named_entities,
             "is_breaking": bool(getattr(article, "is_breaking", False)),
         }
-        resp = await self._request(
-            "POST",
-            "articles",
-            params={"on_conflict": "canonical_url"},
-            json_body=payload,
-            extra_headers={"Prefer": "resolution=ignore-duplicates,return=representation"},
-            allow_conflict=True,
-        )
+        if getattr(article, "video_url", None):
+            payload["video_url"] = article.video_url
+        try:
+            resp = await self._request(
+                "POST",
+                "articles",
+                params={"on_conflict": "canonical_url"},
+                json_body=payload,
+                extra_headers={"Prefer": "resolution=ignore-duplicates,return=representation"},
+                allow_conflict=True,
+            )
+        except SupabaseAPIError as exc:
+            if "video_url" in payload and "video_url" in str(exc):
+                logger.warning("Supabase schema missing video_url column; retrying insert without video_url.")
+                payload.pop("video_url", None)
+                resp = await self._request(
+                    "POST",
+                    "articles",
+                    params={"on_conflict": "canonical_url"},
+                    json_body=payload,
+                    extra_headers={"Prefer": "resolution=ignore-duplicates,return=representation"},
+                    allow_conflict=True,
+                )
+            else:
+                raise
         if resp.status_code == 409:
             logger.debug("Duplicate article URL in Supabase: %s", article.canonical_url)
             return None
@@ -237,13 +254,27 @@ class SupabaseDatabase:
             patch_data["processed_at"] = now_iso
         patch_data.update(extra_fields)
 
-        await self._request(
-            "PATCH",
-            "articles",
-            params={"id": f"eq.{article_id}"},
-            json_body=patch_data,
-            extra_headers={"Prefer": "return=minimal"},
-        )
+        try:
+            await self._request(
+                "PATCH",
+                "articles",
+                params={"id": f"eq.{article_id}"},
+                json_body=patch_data,
+                extra_headers={"Prefer": "return=minimal"},
+            )
+        except SupabaseAPIError as exc:
+            if "video_url" in patch_data and "video_url" in str(exc):
+                logger.warning("Supabase schema missing video_url column; retrying update without video_url.")
+                patch_data.pop("video_url", None)
+                await self._request(
+                    "PATCH",
+                    "articles",
+                    params={"id": f"eq.{article_id}"},
+                    json_body=patch_data,
+                    extra_headers={"Prefer": "return=minimal"},
+                )
+            else:
+                raise
 
     async def get_article_by_canonical_url(self, canonical_url: str) -> Optional[Article]:
         """Fetch an article by its canonical URL."""
@@ -722,6 +753,7 @@ class SupabaseDatabase:
             error_message=row.get("error_message") or "",
             telegram_message_id=row.get("telegram_message_id"),
             image_url=row.get("image_url") or "",
+            video_url=row.get("video_url") or None,
             country=row.get("country") or "",
             region=row.get("region") or "",
             named_entities=row.get("named_entities") or "",

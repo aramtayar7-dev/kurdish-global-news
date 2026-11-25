@@ -17,7 +17,7 @@ from typing import Optional
 from storage import create_database, get_kurdistan_date_str
 from storage.migrations import run_migrations
 from core.scheduler import DiscoveryScheduler
-from core.importance_ranker import is_strict_breaking
+from core.importance_ranker import check_blocked_topic, is_strict_breaking
 from core.pipeline import ArticlePipeline
 from core.recovery import RecoveryManager
 from sources.base import BaseSource, RawArticle
@@ -26,6 +26,7 @@ from sources.rss_source import RSSSource
 from sources.gdelt_source import GDELTSource
 from sources.official_sources import OfficialSourcesAdapter
 from sources.kurdistan_source import KurdistanNewsSource
+from sources.telegram_source import TelegramSource
 from processing.extractor import ArticleExtractor
 from processing.card_generator import NewsCardGenerator
 from processing.digest_generator import DIGEST_HEADER_PREFIX, DailyDigestGenerator
@@ -33,7 +34,7 @@ from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics, Timer
 from config import (
-    ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, CHANNEL_HANDLE,
+    ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, ENABLE_TELEGRAM, CHANNEL_HANDLE,
     MAX_CONCURRENT_SOURCES, ArticleStatus, BACKUP_INTERVAL_HOURS,
     MAX_ARTICLE_AGE_MINUTES, BATCH_PUBLISH_LIMIT,
 )
@@ -398,6 +399,11 @@ class NewsEngine:
         await kurdistan.initialize()
         self._sources.append(kurdistan)
 
+        if ENABLE_TELEGRAM:
+            telegram_src = TelegramSource()
+            await telegram_src.initialize()
+            self._sources.append(telegram_src)
+
         # Register sources in database
         for source in self._sources:
             from storage.models import Source
@@ -480,6 +486,10 @@ class NewsEngine:
             recent_published=recent_published,
         )
         for held in plan.selected:
+            blocked_reason = check_blocked_topic(held)
+            if blocked_reason:
+                await self._pipeline._reject_blocked_topic(held, blocked_reason)
+                continue
             held.is_breaking = is_strict_breaking(held)
             logger.info(
                 "[BALANCER] Held article %s ('%s') eligible under 5-of-8 plan: %s",

@@ -270,3 +270,139 @@ class TestTelegramPublisherHarden:
 
             assert mock_bot_instance.get_me.await_count == 3
 
+
+class TestTelegramVideoPublishingAndFallback:
+    """Test branded video publishing (sendVideo + cleanup) and image-card fallback."""
+
+    @pytest.mark.asyncio
+    async def test_publish_branded_video_sends_video_with_source_caption_and_cleans_temp(self, tmp_path):
+        from tg_bot.publisher import TelegramPublisher
+
+        branded_file = tmp_path / "kgn_branded_test.mp4"
+        branded_file.write_bytes(b"BRANDED_VIDEO_CONTENT")
+
+        mock_bot = AsyncMock()
+        msg_obj = MagicMock()
+        msg_obj.message_id = 8842
+        mock_bot.send_video = AsyncMock(return_value=msg_obj)
+        mock_bot.send_photo = AsyncMock()
+
+        pub = TelegramPublisher()
+        pub._channel_id = "@KurdishGlobalNews"
+        pub._bot = mock_bot
+
+        article = Article(
+            original_url="https://t.me/SabrenNewss/4200",
+            canonical_url="https://t.me/SabrenNewss/4200",
+            original_title="Defense systems activated during overnight aerial alert",
+            translated_title="سیستەمی بەرگریی ئاسمانی لە کاتی ئاگادارکردنەوەی شەوانەدا کارا کرا",
+            translated_summary=(
+                "سیستەمی بەرگریی ئاسمانی لە دەوروبەری بنکە سەربازییەکاندا کارا کرا دوای تێبینیکردنی چەند فڕۆکەیەکی بێفڕۆکەوان. "
+                "لایەنە پەیوەندیدارەکان جەختیان لە سەلامەتی دۆخەکە کردەوە."
+            ),
+            source_name="Sabereen News",
+            category="military_conflict",
+            image_url="https://cdn4.telegram-cdn.org/file/thumb_4200.jpg",
+            video_url="https://cdn4.telegram-cdn.org/file/vid_4200.mp4",
+            importance_score=8.5,
+            is_breaking=False,
+        )
+
+        with patch("tg_bot.publisher.download_and_brand_video", new=AsyncMock(return_value=str(branded_file))):
+            msg_id = await pub.publish_article(article)
+
+        assert msg_id == 8842
+        mock_bot.send_video.assert_awaited_once()
+        mock_bot.send_photo.assert_not_awaited()
+
+        kwargs = mock_bot.send_video.call_args.kwargs
+        assert kwargs["supports_streaming"] is True
+        assert kwargs["disable_notification"] is True
+        assert len(kwargs["caption"]) <= 1024
+        assert "Sabereen News" in kwargs["caption"]
+        assert "https://t.me/SabrenNewss/4200" in kwargs["caption"]
+        assert "بابەتی ئەسڵی" in kwargs["caption"]
+        assert "🔴 بەپەلە | " not in kwargs["caption"]
+        assert not branded_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_publish_video_breaking_alert_and_fallback_to_card_when_branding_fails(self, tmp_path):
+        from tg_bot.publisher import TelegramPublisher
+
+        # Case 1: Branding fails (returns None) -> seamlessly falls back to branded photo card using video thumbnail
+        mock_bot = AsyncMock()
+        photo_msg = MagicMock()
+        photo_msg.message_id = 8843
+        mock_bot.send_video = AsyncMock()
+        mock_bot.send_photo = AsyncMock(return_value=photo_msg)
+
+        pub = TelegramPublisher()
+        pub._channel_id = "@KurdishGlobalNews"
+        pub._bot = mock_bot
+        pub._image_handler.download_image = AsyncMock(return_value=None)
+
+        article_fallback = Article(
+            original_url="https://t.me/Sabren_News1/4201",
+            canonical_url="https://t.me/Sabren_News1/4201",
+            original_title="Parliament security committee holds emergency session",
+            translated_title="لیژنەی ئەمنی پەرلەمان کۆبوونەوەیەکی بەپەلەی سازکرد",
+            translated_summary="ئەندامانی لیژنەی ئەمنی دۆخی سنوورەکان و هەماهەنگی هێزەکانیان تاوتوێ کرد.",
+            source_name="Sabereen Plus",
+            category="politics_world",
+            image_url="https://cdn4.telegram-cdn.org/file/thumb_4201.jpg",
+            video_url="https://cdn4.telegram-cdn.org/file/vid_4201.mp4",
+            importance_score=8.0,
+            is_breaking=False,
+        )
+
+        with patch("tg_bot.publisher.download_and_brand_video", new=AsyncMock(return_value=None)):
+            msg_id = await pub.publish_article(article_fallback)
+
+        assert msg_id == 8843
+        mock_bot.send_video.assert_not_awaited()
+        mock_bot.send_photo.assert_awaited_once()
+        pub._image_handler.download_image.assert_awaited_once_with("https://cdn4.telegram-cdn.org/file/thumb_4201.jpg")
+        photo_kwargs = mock_bot.send_photo.call_args.kwargs
+        assert "Sabereen Plus" in photo_kwargs["caption"]
+        assert "https://t.me/Sabren_News1/4201" in photo_kwargs["caption"]
+
+        # Case 2: True emergency video (score >= 9.0 + is_breaking=True) uses alert notification + prefix
+        mock_bot.send_video.reset_mock()
+        video_msg = MagicMock()
+        video_msg.message_id = 8844
+        mock_bot.send_video = AsyncMock(return_value=video_msg)
+
+        branded_brk = tmp_path / "kgn_branded_brk.mp4"
+        branded_brk.write_bytes(b"BREAKING_VIDEO")
+        article_breaking = Article(
+            original_url="https://t.me/SabrenNewss/4202",
+            canonical_url="https://t.me/SabrenNewss/4202",
+            original_title="Missile strikes reported on regional airbase",
+            translated_title="چەند مووشەکێک ئاراستەی بنکەیەکی سەربازی کران",
+            translated_summary="بەرپرسانی سەربازی ڕایانگەیاند بەرگریی ئاسمانی بەرپەرچی هێرشەکانی داوەتەوە.",
+            source_name="Sabereen News",
+            category="military_conflict",
+            image_url="",
+            video_url="https://cdn4.telegram-cdn.org/file/vid_4202.mp4",
+            importance_score=9.5,
+            is_breaking=True,
+        )
+        with patch("tg_bot.publisher.download_and_brand_video", new=AsyncMock(return_value=str(branded_brk))):
+            brk_msg_id = await pub.publish_article(article_breaking)
+
+        assert brk_msg_id == 8844
+        brk_kwargs = mock_bot.send_video.call_args.kwargs
+        assert brk_kwargs["disable_notification"] is False
+        assert "🔴 بەپەلە | " in brk_kwargs["caption"]
+        assert not branded_brk.exists()
+
+    def test_workflow_ensures_ffmpeg_without_altering_dispatch_trigger(self):
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        wf_content = (repo_root / ".github" / "workflows" / "news_bot.yml").read_text(encoding="utf-8")
+        assert "workflow_dispatch:" in wf_content
+        assert "command -v ffmpeg" in wf_content
+        assert "apt-get install -y ffmpeg" in wf_content
+
+

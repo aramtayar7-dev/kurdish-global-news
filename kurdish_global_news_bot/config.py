@@ -67,6 +67,7 @@ ENABLE_IMAGES: bool = _bool(os.getenv("ENABLE_IMAGES"), True)
 ENABLE_RSS: bool = _bool(os.getenv("ENABLE_RSS"), True)
 ENABLE_DDG: bool = _bool(os.getenv("ENABLE_DDG"), True)
 ENABLE_GDELT: bool = _bool(os.getenv("ENABLE_GDELT"), True)
+ENABLE_TELEGRAM: bool = _bool(os.getenv("ENABLE_TELEGRAM"), True)
 ENABLE_TRANSLATION_FALLBACK: bool = _bool(os.getenv("ENABLE_TRANSLATION_FALLBACK"), True)
 ENABLE_LOCAL_LLM: bool = _bool(os.getenv("ENABLE_LOCAL_LLM"), False)
 
@@ -262,6 +263,14 @@ RSS_FEEDS: list[dict[str, str]] = [
 ]
 
 # ═══════════════════════════════════════════════════
+# Public Telegram News Channels (https://t.me/s/{username})
+# ═══════════════════════════════════════════════════
+TELEGRAM_SOURCE_CHANNELS: list[dict[str, str]] = [
+    {"username": "SabrenNewss", "name": "Sabereen News", "region_hint": "iraq_region", "lang": "ar"},
+    {"username": "Sabren_News1", "name": "Sabereen Plus", "region_hint": "iraq_region", "lang": "ar"},
+]
+
+# ═══════════════════════════════════════════════════
 # Source Credibility Scores
 # ═══════════════════════════════════════════════════
 SOURCE_CREDIBILITY: dict[str, float] = {
@@ -293,6 +302,8 @@ SOURCE_CREDIBILITY: dict[str, float] = {
     "defense news": 0.84,
     "the hacker news": 0.84,
     "bleepingcomputer": 0.84,
+    "sabereen news": 0.72,
+    "sabereen plus": 0.72,
     "google news": 0.78,
     "default": 0.50,
 }

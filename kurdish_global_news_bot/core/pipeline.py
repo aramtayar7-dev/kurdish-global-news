@@ -18,6 +18,7 @@ from storage.models import Article, Event
 from core.importance_ranker import (
     ImportanceRanker,
     article_selection_sort_key,
+    check_blocked_topic,
     classify_priority_tier,
     is_bashur_article,
 )
@@ -27,7 +28,7 @@ from processing.deduplicator import SemanticDeduplicator
 from processing.extractor import ArticleExtractor
 from processing.validator import ArticleValidator
 from processing.translator import TranslationEngine, TranslationError
-from processing.content_formatter import ContentFormatter
+from processing.content_formatter import ContentFormatter, normalize_neutral_terminology
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics, Timer
@@ -99,6 +100,29 @@ class ArticlePipeline:
         async with self._semaphore:
             return await self._process_single(article)
 
+    async def _reject_blocked_topic(self, article: Article, reason_text: str) -> bool:
+        """Mark an article SKIPPED and record its URL hash in skipped_urls."""
+        await self._db.update_article_status(
+            article.id,
+            ArticleStatus.SKIPPED,
+            error_message=f"SKIPPED [Blocked Topic]: {reason_text}",
+            importance_score=0.0,
+            priority=Priority.LOW,
+        )
+        await self._db.mark_url_skipped(
+            article.canonical_url or article.original_url,
+            title=article.original_title,
+            score=2.0,
+            reason=reason_text,
+        )
+        logger.info(
+            "SKIPPED [Blocked Topic]: %s — %s",
+            article.original_title[:100],
+            reason_text,
+        )
+        self._metrics.increment("articles_blocked_topic")
+        return False
+
     async def _evaluate_candidate(
         self,
         article: Article,
@@ -129,6 +153,11 @@ class ArticlePipeline:
             self._metrics.increment("articles_rejected")
             return False
 
+        # ── Deterministic Blocked Topic Guard (Pre-LLM) ──
+        blocked_reason = check_blocked_topic(article)
+        if blocked_reason:
+            return await self._reject_blocked_topic(article, blocked_reason)
+
         # ── Step 2: Score importance ──
         await self._db.update_article_status(article_id, ArticleStatus.PROCESSING)
         score, priority = self._ranker.score_article(article)
@@ -136,7 +165,7 @@ class ArticlePipeline:
         article.priority = priority
 
         credibility = ArticleExtractor.get_source_credibility(article.source_name)
-        if not self._ranker.is_eligible(score, credibility):
+        if not self._ranker.is_eligible(score, credibility, article=article):
             await self._db.update_article_status(
                 article_id, ArticleStatus.FAILED,
                 error_message=f"Below importance threshold: score={score:.2f}",
@@ -218,6 +247,11 @@ class ArticlePipeline:
             priority = Priority.HIGH
             article.priority = Priority.HIGH
 
+        # Second-layer deterministic blocked topic guard behind Gemini & before scraping
+        post_blocked = check_blocked_topic(article)
+        if post_blocked:
+            return await self._reject_blocked_topic(article, post_blocked)
+
         # ── Step 4.5: Cross-Source Semantic Event Deduplication (After Classification, Before Scrape/Translate) ──
         dedup_res = await self._semantic_dedup.check_duplicate(article, extra_recent=extra_recent)
         if dedup_res.is_duplicate:
@@ -291,6 +325,11 @@ class ArticlePipeline:
                 return False
             article_content = fallback[:3000]
 
+        # Second-layer pre-publish guard after full-article scrape
+        scrape_blocked = check_blocked_topic(article)
+        if scrape_blocked:
+            return await self._reject_blocked_topic(article, scrape_blocked)
+
         # ── Step 5b: Translate to Kurdish Sorani & Gemini Proofread ──
         await self._db.update_article_status(article_id, ArticleStatus.TRANSLATING)
         try:
@@ -308,6 +347,10 @@ class ArticlePipeline:
             if not title_ok:
                 raise TranslationError("Title translation validation failed.")
 
+            article.translated_title = normalize_neutral_terminology(article.translated_title)
+            if article.translated_summary:
+                article.translated_summary = normalize_neutral_terminology(article.translated_summary)
+
             logger.info("[TRANSLATED] Article %s translated: '%s' -> '%s'",
                         article_id, article.original_title[:60], article.translated_title[:60])
 
@@ -324,15 +367,21 @@ class ArticlePipeline:
             return False
 
         # ── Step 6: Update article with all computed fields ──
+        update_fields: dict[str, object] = {
+            "translated_title": article.translated_title,
+            "translated_summary": article.translated_summary,
+            "original_summary": article.original_summary,
+            "category": article.category,
+            "image_url": article.image_url,
+            "importance_score": article.importance_score,
+            "priority": priority,
+        }
+        if getattr(article, "video_url", None):
+            update_fields["video_url"] = article.video_url
         await self._db.update_article_status(
-            article_id, ArticleStatus.READY_TO_PUBLISH,
-            translated_title=article.translated_title,
-            translated_summary=article.translated_summary,
-            original_summary=article.original_summary,
-            category=article.category,
-            image_url=article.image_url,
-            importance_score=article.importance_score,
-            priority=priority,
+            article_id,
+            ArticleStatus.READY_TO_PUBLISH,
+            **update_fields,
         )
 
         # ── Step 6b: Publish immediately ──
