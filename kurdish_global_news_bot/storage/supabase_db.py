@@ -638,36 +638,69 @@ class SupabaseDatabase:
                 recent_24h.append(art)
         return prioritize_digest_articles(recent_24h, limit=limit)
 
+    async def get_published_counts_last_24h(self) -> tuple[int, int]:
+        """
+        Count published articles (global and total) in the rolling 24 hours.
+        Fail-closed to MAX_GLOBAL_POSTS_PER_DAY (4), 0 on error to protect 90/10 ratio.
+        Paginates or fetches all published articles within cutoff without arbitrary limits.
+        Excludes duplicates by canonical_url and strictly filters on status = 'PUBLISHED'
+        and published_at (never discovered_at).
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            offset = 0
+            batch_size = 1000
+            seen_canonical: set[str] = set()
+            global_count = 0
+            total_count = 0
+
+            while True:
+                resp = await self._request(
+                    "GET",
+                    "articles",
+                    params={
+                        "status": "eq.PUBLISHED",
+                        "published_at": f"gte.{cutoff.isoformat()}",
+                        "select": "id,canonical_url,region,published_at",
+                        "order": "published_at.desc,id.desc",
+                        "limit": str(batch_size),
+                        "offset": str(offset),
+                    },
+                )
+                rows = resp.json() if resp.content else []
+                if not rows:
+                    break
+                for row in rows:
+                    pub_ts = row.get("published_at")
+                    if not pub_ts:
+                        continue
+                    dt = parse_utc_timestamp(pub_ts)
+                    if dt is not None and dt >= cutoff:
+                        canon = str(row.get("canonical_url") or "").strip()
+                        if canon:
+                            if canon in seen_canonical:
+                                continue
+                            seen_canonical.add(canon)
+                        total_count += 1
+                        reg = str(row.get("region") or "").strip().lower()
+                        if reg == "global":
+                            global_count += 1
+                if len(rows) < batch_size:
+                    break
+                offset += batch_size
+
+            return global_count, total_count
+        except Exception as exc:
+            logger.error("Supabase error counting published posts last 24h: %s; failing closed.", exc)
+            return int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)), 0
+
     async def get_global_posts_count_last_24h(self) -> int:
         """
         Count the number of published articles with region == 'global' in the rolling 24 hours.
         Fail-closed to MAX_GLOBAL_POSTS_PER_DAY (4) on error to protect 90/10 Middle East ratio.
         """
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            resp = await self._request(
-                "GET",
-                "articles",
-                params={
-                    "status": "eq.PUBLISHED",
-                    "published_at": f"gte.{cutoff.isoformat()}",
-                    "select": "id,region,published_at,discovered_at",
-                    "order": "published_at.desc,id.desc",
-                    "limit": "200",
-                },
-            )
-            rows = resp.json() if resp.content else []
-            count = 0
-            for row in rows:
-                dt = parse_utc_timestamp(row.get("published_at") or row.get("discovered_at"))
-                if dt is not None and dt >= cutoff:
-                    reg = str(row.get("region") or "").strip().lower()
-                    if reg == "global":
-                        count += 1
-            return count
-        except Exception as exc:
-            logger.error("Supabase error counting global posts last 24h: %s; failing closed to max daily limit.", exc)
-            return int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+        g, _ = await self.get_published_counts_last_24h()
+        return g
 
     async def is_digest_published_for_date(self, digest_date: str) -> bool:
         """Return True if a daily digest has already been recorded for `digest_date`."""
@@ -1045,6 +1078,136 @@ class SupabaseDatabase:
             timestamp=dt.isoformat(),
         )
         return dt
+
+    # ───────────────────────────────────────────────
+    # Global Admission Reservations (Concurrency & 90/10 Ratio)
+    # ───────────────────────────────────────────────
+
+    async def get_active_global_reservations(self, ttl_minutes: int = 15) -> list[str]:
+        """
+        Return the list of canonical URLs holding active global reservations from Supabase system_logs.
+        A reservation is active if its latest record within ttl_minutes is 'RESERVED'.
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(ttl_minutes)))
+            resp = await self._request(
+                "GET",
+                "system_logs",
+                params={
+                    "component": "eq.GLOBAL_RESERVATION",
+                    "select": "id,timestamp,level,message",
+                    "order": "timestamp.asc,id.asc",
+                    "timestamp": f"gte.{cutoff.isoformat()}",
+                },
+            )
+            rows = resp.json() if resp.content else []
+            active: dict[str, datetime] = {}
+            for row in rows:
+                dt = parse_utc_timestamp(row.get("timestamp"))
+                url = str(row.get("message") or "").strip()
+                lvl = str(row.get("level") or "").strip().upper()
+                if not url or dt is None:
+                    continue
+                if lvl == "RESERVED":
+                    if dt >= cutoff:
+                        active[url] = dt
+                    else:
+                        active.pop(url, None)
+                elif lvl in ("RELEASED", "COMMITTED"):
+                    active.pop(url, None)
+
+            return [url for url, dt in active.items() if dt >= cutoff]
+        except Exception as exc:
+            logger.error("Failed to query active global reservations in Supabase: %s", exc)
+            return []
+
+    async def get_active_global_reservations_count(self, ttl_minutes: int = 15) -> int:
+        """Return the count of active global admission reservations from Supabase."""
+        active = await self.get_active_global_reservations(ttl_minutes=ttl_minutes)
+        return len(active)
+
+    async def reserve_global_admission(
+        self,
+        canonical_url: str,
+        ttl_minutes: int = 15,
+        total_published_24h: Optional[int] = None,
+    ) -> bool:
+        """
+        Reserve a Global post slot in Supabase system_logs if quota allows.
+        Returns True if reservation succeeded, False if daily cap or 90/10 ratio prevents admission.
+        """
+        clean_url = str(canonical_url or "").strip()
+        if not clean_url:
+            return False
+
+        max_daily_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+        now_dt = datetime.now(timezone.utc)
+
+        try:
+            g_pub, t_pub = await self.get_published_counts_last_24h()
+            active = await self.get_active_global_reservations(ttl_minutes=ttl_minutes)
+            if clean_url in active:
+                return True
+
+            if len(active) + g_pub >= max_daily_g:
+                logger.info(
+                    "[GLOBAL RESERVATION] Rejected for %s in Supabase: daily cap reached (pub=%d, res=%d, max=%d)",
+                    clean_url, g_pub, len(active), max_daily_g,
+                )
+                return False
+
+            # Check 90/10 ratio if total published is provided
+            if total_published_24h is not None:
+                proj_g = g_pub + len(active) + 1
+                proj_t = int(total_published_24h) + len(active) + 1
+                if 10 * proj_g > proj_t:
+                    logger.info(
+                        "[GLOBAL RESERVATION] Rejected for %s in Supabase: 90/10 ratio prevents admission (proj_g=%d, proj_t=%d)",
+                        clean_url, proj_g, proj_t,
+                    )
+                    return False
+
+            await self.log_system_event(
+                level="RESERVED",
+                component="GLOBAL_RESERVATION",
+                message=clean_url,
+                timestamp=now_dt.isoformat(),
+            )
+            logger.info("[GLOBAL RESERVATION] Reserved slot for %s in Supabase (active=%d)", clean_url, len(active) + 1)
+            return True
+        except Exception as exc:
+            logger.error("Failed to reserve global admission in Supabase for %s: %s", clean_url, exc)
+            return False
+
+    async def release_global_admission(self, canonical_url: str) -> None:
+        """Release an active global reservation in Supabase system_logs."""
+        clean_url = str(canonical_url or "").strip()
+        if not clean_url:
+            return
+        try:
+            await self.log_system_event(
+                level="RELEASED",
+                component="GLOBAL_RESERVATION",
+                message=clean_url,
+            )
+            logger.info("[GLOBAL RESERVATION] Released slot for %s in Supabase", clean_url)
+        except Exception as exc:
+            logger.error("Failed to release global reservation in Supabase for %s: %s", clean_url, exc)
+
+    async def commit_global_admission(self, canonical_url: str) -> None:
+        """Mark a global reservation as committed in Supabase system_logs."""
+        clean_url = str(canonical_url or "").strip()
+        if not clean_url:
+            return
+        try:
+            await self.log_system_event(
+                level="COMMITTED",
+                component="GLOBAL_RESERVATION",
+                message=clean_url,
+            )
+            logger.info("[GLOBAL RESERVATION] Committed slot for %s in Supabase", clean_url)
+        except Exception as exc:
+            logger.error("Failed to commit global reservation in Supabase for %s: %s", clean_url, exc)
 
     async def get_sources_status(self) -> list[dict]:
         """Fetch enabled sources and failure counts from Supabase `sources`."""

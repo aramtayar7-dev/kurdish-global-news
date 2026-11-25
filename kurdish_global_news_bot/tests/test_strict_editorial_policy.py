@@ -28,6 +28,7 @@ from config import (
 from core.balancer import (
     BalanceSelectionResult,
     QuotaBalancer,
+    can_admit_global_post,
     clear_global_selection_reservations,
     get_source_bucket,
     select_paced_batch,
@@ -480,3 +481,252 @@ class TestRegressionAndDatabaseMetrics:
             assert count == 2
         finally:
             await db.close()
+
+
+# ============================================================
+# PHASE 1 — DATABASE COUNTING PRECISION & ROLLING 24H TESTS
+# ============================================================
+
+class TestPhase1GlobalCountingAccuracy:
+    """Verify unbounded query, UTC cutoff handling, and duplicate exclusion."""
+
+    @pytest.mark.asyncio
+    async def test_unbounded_counting_beyond_200_limit(self, tmp_path):
+        """Articles beyond 200 rows must be accurately counted without query truncation."""
+        db = Database(str(tmp_path / "unbounded.db"))
+        await db.connect()
+        try:
+            now = datetime.now(timezone.utc)
+            # Insert 220 published articles (210 ME + 10 Global)
+            for i in range(1, 221):
+                is_g = (i <= 10)
+                art = _make_test_article(
+                    i,
+                    f"Headline {i}",
+                    region="global" if is_g else "middle_east",
+                    url=f"https://example.com/item/{i}",
+                )
+                art.status = ArticleStatus.PUBLISHED
+                art.published_at = (now - timedelta(minutes=i)).isoformat()
+                await db.insert_article(art)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=art.published_at)
+
+            g_count, t_count = await db.get_published_counts_last_24h()
+            assert t_count == 220, f"Expected 220 total published, got {t_count}"
+            assert g_count == 10, f"Expected 10 global published, got {g_count}"
+            assert await db.get_global_posts_count_last_24h() == 10
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_published_at_used_strictly_never_discovered_at(self, tmp_path):
+        """Only published_at determines 24h inclusion, never discovered_at."""
+        db = Database(str(tmp_path / "pub_vs_disc.db"))
+        await db.connect()
+        try:
+            now = datetime.now(timezone.utc)
+            # Item A: discovered 1 hour ago, but published 30 hours ago -> MUST BE EXCLUDED
+            art_a = _make_test_article(1, "Old published article", region="global", url="https://ex.com/a")
+            art_a.status = ArticleStatus.PUBLISHED
+            art_a.discovered_at = (now - timedelta(hours=1)).isoformat()
+            art_a.published_at = (now - timedelta(hours=30)).isoformat()
+            await db.insert_article(art_a)
+            await db.update_article_status(1, ArticleStatus.PUBLISHED, published_at=art_a.published_at)
+
+            # Item B: discovered 30 hours ago, but published 1 hour ago -> MUST BE INCLUDED
+            art_b = _make_test_article(2, "Fresh published article", region="global", url="https://ex.com/b")
+            art_b.status = ArticleStatus.PUBLISHED
+            art_b.discovered_at = (now - timedelta(hours=30)).isoformat()
+            art_b.published_at = (now - timedelta(hours=1)).isoformat()
+            await db.insert_article(art_b)
+            await db.update_article_status(2, ArticleStatus.PUBLISHED, published_at=art_b.published_at)
+
+            g_count, t_count = await db.get_published_counts_last_24h()
+            assert g_count == 1
+            assert t_count == 1
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_canonical_url_counted_once(self, tmp_path):
+        """Articles sharing the same canonical URL are counted only once in 24h window."""
+        db = Database(str(tmp_path / "dup_canonical.db"))
+        await db.connect()
+        try:
+            now = datetime.now(timezone.utc)
+            for i in (1, 2):
+                art = _make_test_article(i, f"Duplicate story {i}", region="global", url="https://ex.com/same-canonical")
+                art.status = ArticleStatus.PUBLISHED
+                art.published_at = now.isoformat()
+                await db.insert_article(art)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now.isoformat())
+
+            g_count, t_count = await db.get_published_counts_last_24h()
+            assert g_count == 1
+            assert t_count == 1
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_on_database_error(self, tmp_path):
+        """Database error fails closed to (MAX_GLOBAL_POSTS_PER_DAY=4, 0)."""
+        db = Database(str(tmp_path / "error_fail_closed.db"))
+        await db.connect()
+        async with db.conn.execute("DROP TABLE IF EXISTS articles"):
+            pass
+
+        g_count, t_count = await db.get_published_counts_last_24h()
+        assert g_count == 4
+        assert t_count == 0
+        await db.close()
+
+
+# ============================================================
+# PHASE 2 — CROSS-PROCESS CONCURRENCY & RESERVATIONS TESTS
+# ============================================================
+
+class TestPhase2CrossProcessReservations:
+    """Verify system_logs backed reservations, TTL expiration, release, and commit."""
+
+    @pytest.mark.asyncio
+    async def test_reserve_release_and_commit_lifecycle(self, tmp_path):
+        db = Database(str(tmp_path / "reservation_lifecycle.db"))
+        await db.connect()
+        try:
+            url = "https://reuters.com/world/ukraine-standoff"
+            # Initial active reservations: 0
+            assert await db.get_active_global_reservations_count() == 0
+
+            # Reserve slot
+            success = await db.reserve_global_admission(url)
+            assert success is True
+            assert await db.get_active_global_reservations_count() == 1
+            assert url in await db.get_active_global_reservations()
+
+            # Release slot (e.g. publication failed or article dropped)
+            await db.release_global_admission(url)
+            assert await db.get_active_global_reservations_count() == 0
+
+            # Re-reserve and commit upon publication
+            assert await db.reserve_global_admission(url) is True
+            assert await db.get_active_global_reservations_count() == 1
+            await db.commit_global_admission(url)
+            # Committed reservation is no longer an in-flight reservation
+            assert await db.get_active_global_reservations_count() == 0
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_stale_reservation_ttl_expiry(self, tmp_path):
+        """Reservations older than ttl_minutes are treated as expired."""
+        db = Database(str(tmp_path / "stale_res.db"))
+        await db.connect()
+        try:
+            url = "https://reuters.com/world/old-res"
+            stale_dt = datetime.now(timezone.utc) - timedelta(minutes=20)
+            await db.log_system_event(
+                level="RESERVED",
+                component="GLOBAL_RESERVATION",
+                message=url,
+                timestamp=stale_dt.isoformat(),
+            )
+            # With default 15-minute TTL, the 20-minute-old reservation has expired
+            assert await db.get_active_global_reservations_count(ttl_minutes=15) == 0
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_reservation_competition_at_daily_cap(self, tmp_path):
+        """When only 1 global slot remains, concurrent reservations cannot both succeed."""
+        db = Database(str(tmp_path / "concurrent_res.db"))
+        await db.connect()
+        try:
+            now = datetime.now(timezone.utc)
+            # Insert 3 published global articles in last 24h
+            for i in range(1, 4):
+                art = _make_test_article(i, f"Published global {i}", region="global")
+                art.status = ArticleStatus.PUBLISHED
+                art.published_at = now.isoformat()
+                await db.insert_article(art)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now.isoformat())
+
+            # Now exactly 1 global slot remains (4 - 3 = 1)
+            async def try_reserve(url: str):
+                return await db.reserve_global_admission(url)
+
+            url1 = "https://example.com/global-candidate-1"
+            url2 = "https://example.com/global-candidate-2"
+
+            res1, res2 = await asyncio.gather(try_reserve(url1), try_reserve(url2))
+            assert (res1, res2) in ((True, False), (False, True)), "Exactly one candidate must win the remaining slot"
+            assert await db.get_active_global_reservations_count() == 1
+        finally:
+            await db.close()
+
+
+# ============================================================
+# PHASE 3 — ROLLING 24H 90/10 RATIO FORMULA TESTS
+# ============================================================
+
+class TestPhase3Rolling9010RatioFormula:
+    """Verify strict adherence to 10 * (G + R + 1) <= (T + R + 1)."""
+
+    def test_admission_formula_matrix(self):
+        # 1. 0 published ME, 0 Global -> candidate 1 Global -> 10*1 <= 1 -> False
+        assert can_admit_global_post(published_global_24h=0, total_published_24h=0) is False
+
+        # 2. 9 published ME, 0 Global -> candidate 1 Global -> 10*1 <= 10 -> True
+        assert can_admit_global_post(published_global_24h=0, total_published_24h=9) is True
+
+        # 3. 9 published ME, 1 Global (total 10) -> candidate 1 Global -> 10*2 <= 11 -> False
+        assert can_admit_global_post(published_global_24h=1, total_published_24h=10) is False
+
+        # 4. 18 published ME, 1 Global (total 19) -> candidate 1 Global -> 10*2 <= 20 -> True
+        assert can_admit_global_post(published_global_24h=1, total_published_24h=19) is True
+
+        # 5. 4 Global already published -> candidate 1 Global -> exceeds MAX_GLOBAL_POSTS_PER_DAY -> False
+        assert can_admit_global_post(published_global_24h=4, total_published_24h=50) is False
+
+        # 6. Already selected 1 Global in current batch -> candidate 2nd Global -> False
+        assert can_admit_global_post(published_global_24h=0, total_published_24h=20, batch_global_selected=1) is False
+
+        # 7. In-flight reservation holds the slot -> candidate 2nd Global -> False
+        assert can_admit_global_post(published_global_24h=0, total_published_24h=9, active_reservations=1) is False
+
+
+# ============================================================
+# PHASE 4 — EDITORIAL POLICY INTEGRITY TESTS
+# ============================================================
+
+class TestPhase4EditorialPolicyIntegrity:
+    """Verify that local municipal fluff is rejected while state-level defense/politics passes."""
+
+    @pytest.mark.parametrize(
+        "fluff_title",
+        [
+            "Sulaymaniyah governor hosts constitutional federalism dialogue forum",
+            "Duhok customs authorities expand cross-border trade customs screening",
+            "Halabja provincial council inaugurates reconstruction funding committee",
+        ],
+    )
+    def test_local_municipal_and_customs_administration_rejected(self, fluff_title: str):
+        art = _make_test_article(1, fluff_title, region="South Kurdistan", category="kurdistan")
+        reason = check_pre_filter_off_topic(art)
+        assert reason is not None
+        assert "insufficient_political_or_military_importance" in reason
+
+    @pytest.mark.parametrize(
+        "defense_title",
+        [
+            "Sulaymaniyah security forces launch joint counterterrorism operation along border",
+            "Duhok border command intercepts armed militia drone targeting defense checkpoint",
+            "Halabja leaders and Baghdad reach strategic border security agreement",
+            "Erbil KRG cabinet approves civil servant salary distribution mechanism",
+            "Peshmerga commanders inspect Kirkuk frontier defense fortifications",
+        ],
+    )
+    def test_state_level_defense_and_governance_accepted(self, defense_title: str):
+        art = _make_test_article(1, defense_title, region="South Kurdistan", category="kurdistan")
+        reason = check_pre_filter_off_topic(art)
+        assert reason is None, f"Expected {defense_title} to pass editorial filter"
+

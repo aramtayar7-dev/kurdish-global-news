@@ -444,31 +444,53 @@ class Database:
 
         return _prioritize_digest_articles(recent_24h, limit=limit)
 
+    async def get_published_counts_last_24h(self) -> tuple[int, int]:
+        """
+        Count published articles (global and total) in the rolling 24 hours.
+        Fail-closed to MAX_GLOBAL_POSTS_PER_DAY (4), 0 on error to protect 90/10 Middle East ratio.
+        Excludes duplicates by canonical_url and strictly filters on status = 'PUBLISHED'
+        and published_at (never discovered_at). Unbounded by arbitrary limits.
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            async with self.conn.execute(
+                """SELECT canonical_url, region, published_at FROM articles
+                   WHERE status = 'PUBLISHED' AND published_at IS NOT NULL
+                   ORDER BY published_at DESC, id DESC"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            seen_canonical: set[str] = set()
+            global_count = 0
+            total_count = 0
+
+            for row in rows:
+                pub_ts = row["published_at"]
+                if not pub_ts:
+                    continue
+                dt = self._parse_utc_timestamp(pub_ts)
+                if dt is not None and dt >= cutoff:
+                    canon = str(row["canonical_url"] or "").strip()
+                    if canon:
+                        if canon in seen_canonical:
+                            continue
+                        seen_canonical.add(canon)
+                    total_count += 1
+                    reg = str(row["region"] or "").strip().lower()
+                    if reg == "global":
+                        global_count += 1
+            return global_count, total_count
+        except Exception as e:
+            logger.error("Failed to query published counts last 24h: %s; failing closed.", e)
+            return int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)), 0
+
     async def get_global_posts_count_last_24h(self) -> int:
         """
         Count the number of published articles with region == 'global' in the rolling 24 hours.
         Fail-closed to MAX_GLOBAL_POSTS_PER_DAY (4) on error to protect 90/10 Middle East ratio.
         """
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            async with self.conn.execute(
-                """SELECT region, published_at, discovered_at FROM articles
-                   WHERE status = 'PUBLISHED'
-                   ORDER BY published_at DESC, id DESC LIMIT 200"""
-            ) as cursor:
-                rows = await cursor.fetchall()
-
-            global_count = 0
-            for row in rows:
-                dt = self._parse_utc_timestamp(row["published_at"] or row["discovered_at"])
-                if dt is not None and dt >= cutoff:
-                    reg = str(row["region"] or "").strip().lower()
-                    if reg == "global":
-                        global_count += 1
-            return global_count
-        except Exception as e:
-            logger.error("Failed to query global posts count last 24h: %s; failing closed to max daily limit.", e)
-            return int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+        g, _ = await self.get_published_counts_last_24h()
+        return g
 
     async def is_digest_published_for_date(self, digest_date: str) -> bool:
         """Return True if a daily digest has already been recorded for `digest_date` (YYYY-MM-DD)."""
@@ -791,6 +813,140 @@ class Database:
             timestamp=dt.isoformat(),
         )
         return dt
+
+    # ───────────────────────────────────────────────
+    # Global Admission Reservations (Concurrency & 90/10 Ratio)
+    # ───────────────────────────────────────────────
+
+    async def get_active_global_reservations(self, ttl_minutes: int = 15) -> list[str]:
+        """
+        Return the list of canonical URLs currently holding active global admission reservations.
+        A reservation is active if its most recent system_logs record within ttl_minutes is 'RESERVED'.
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(ttl_minutes)))
+            async with self.conn.execute(
+                """SELECT timestamp, level, message FROM system_logs
+                   WHERE component = 'GLOBAL_RESERVATION'
+                   ORDER BY timestamp ASC, id ASC"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            active_reservations: dict[str, datetime] = {}
+            for row in rows:
+                dt = self._parse_utc_timestamp(row["timestamp"])
+                url = str(row["message"] or "").strip()
+                lvl = str(row["level"] or "").strip().upper()
+                if not url or dt is None:
+                    continue
+                if lvl == "RESERVED":
+                    if dt >= cutoff:
+                        active_reservations[url] = dt
+                    else:
+                        active_reservations.pop(url, None)
+                elif lvl in ("RELEASED", "COMMITTED"):
+                    active_reservations.pop(url, None)
+
+            return [url for url, dt in active_reservations.items() if dt >= cutoff]
+        except Exception as e:
+            logger.error("Failed to query active global reservations: %s", e)
+            return []
+
+    async def get_active_global_reservations_count(self, ttl_minutes: int = 15) -> int:
+        """Return the count of active global admission reservations."""
+        active = await self.get_active_global_reservations(ttl_minutes=ttl_minutes)
+        return len(active)
+
+    async def reserve_global_admission(
+        self,
+        canonical_url: str,
+        ttl_minutes: int = 15,
+        total_published_24h: Optional[int] = None,
+    ) -> bool:
+        """
+        Atomically reserve a Global post slot in existing `system_logs` if quota allows.
+        Returns True if reservation succeeded, False if daily cap or 90/10 ratio prevents admission.
+        """
+        clean_url = str(canonical_url or "").strip()
+        if not clean_url:
+            return False
+
+        max_daily_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+        now_dt = datetime.now(timezone.utc)
+
+        async with self._lock:
+            try:
+                g_pub, t_pub = await self.get_published_counts_last_24h()
+                active = await self.get_active_global_reservations(ttl_minutes=ttl_minutes)
+                if clean_url in active:
+                    return True  # Already reserved
+
+                # Check if total daily cap would be exceeded
+                if len(active) + g_pub >= max_daily_g:
+                    logger.info(
+                        "[GLOBAL RESERVATION] Rejected for %s: daily cap reached (pub=%d, res=%d, max=%d)",
+                        clean_url, g_pub, len(active), max_daily_g,
+                    )
+                    return False
+
+                # Check 90/10 ratio if total published is provided
+                if total_published_24h is not None:
+                    proj_g = g_pub + len(active) + 1
+                    proj_t = int(total_published_24h) + len(active) + 1
+                    if 10 * proj_g > proj_t:
+                        logger.info(
+                            "[GLOBAL RESERVATION] Rejected for %s: 90/10 ratio prevents admission (proj_g=%d, proj_t=%d)",
+                            clean_url, proj_g, proj_t,
+                        )
+                        return False
+
+                await self.conn.execute(
+                    """INSERT INTO system_logs (timestamp, level, component, message)
+                       VALUES (?, 'RESERVED', 'GLOBAL_RESERVATION', ?)""",
+                    (now_dt.isoformat(), clean_url[:2000]),
+                )
+                await self.conn.commit()
+                logger.info("[GLOBAL RESERVATION] Reserved slot for %s (active=%d)", clean_url, len(active) + 1)
+                return True
+            except Exception as e:
+                logger.error("Failed to reserve global admission for %s: %s", clean_url, e)
+                return False
+
+    async def release_global_admission(self, canonical_url: str) -> None:
+        """Release an active global admission reservation when post is dropped or fails."""
+        clean_url = str(canonical_url or "").strip()
+        if not clean_url:
+            return
+        try:
+            now_dt = datetime.now(timezone.utc)
+            async with self._lock:
+                await self.conn.execute(
+                    """INSERT INTO system_logs (timestamp, level, component, message)
+                       VALUES (?, 'RELEASED', 'GLOBAL_RESERVATION', ?)""",
+                    (now_dt.isoformat(), clean_url[:2000]),
+                )
+                await self.conn.commit()
+            logger.info("[GLOBAL RESERVATION] Released slot for %s", clean_url)
+        except Exception as e:
+            logger.error("Failed to release global reservation for %s: %s", clean_url, e)
+
+    async def commit_global_admission(self, canonical_url: str) -> None:
+        """Mark a global reservation as committed upon successful publication."""
+        clean_url = str(canonical_url or "").strip()
+        if not clean_url:
+            return
+        try:
+            now_dt = datetime.now(timezone.utc)
+            async with self._lock:
+                await self.conn.execute(
+                    """INSERT INTO system_logs (timestamp, level, component, message)
+                       VALUES (?, 'COMMITTED', 'GLOBAL_RESERVATION', ?)""",
+                    (now_dt.isoformat(), clean_url[:2000]),
+                )
+                await self.conn.commit()
+            logger.info("[GLOBAL RESERVATION] Committed slot for %s", clean_url)
+        except Exception as e:
+            logger.error("Failed to commit global reservation for %s: %s", clean_url, e)
 
     async def get_sources_status(self) -> list[dict]:
         """Return enabled sources and their failure counters for watchdog health monitoring."""

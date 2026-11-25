@@ -76,6 +76,37 @@ def record_global_selection(url_or_id: str) -> None:
     with _RESERVATION_LOCK:
         _ACTIVE_GLOBAL_SELECTIONS.append((now, url_or_id))
 
+
+def can_admit_global_post(
+    published_global_24h: int,
+    total_published_24h: Optional[int] = None,
+    active_reservations: int = 0,
+    batch_global_selected: int = 0,
+) -> bool:
+    """
+    Enforce 90/10 Middle East vs Global geographic control:
+      1. Batch cap: batch_global_selected < MAX_GLOBAL_POSTS_PER_BATCH (1)
+      2. Daily integer cap: (published_global_24h + active_reservations + batch_global_selected + 1) <= MAX_GLOBAL_POSTS_PER_DAY (4)
+      3. Rolling 24h 90/10 ratio: 10 * projected_global <= projected_total
+         (enforced when total_published_24h is provided)
+    """
+    max_batch_global = int(getattr(config, "MAX_GLOBAL_POSTS_PER_BATCH", 1))
+    max_daily_global = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+
+    if int(batch_global_selected) >= max_batch_global:
+        return False
+
+    projected_global = int(published_global_24h) + int(active_reservations) + int(batch_global_selected) + 1
+    if projected_global > max_daily_global:
+        return False
+
+    if total_published_24h is not None:
+        projected_total = int(total_published_24h) + int(active_reservations) + int(batch_global_selected) + 1
+        if 10 * projected_global > projected_total:
+            return False
+
+    return True
+
 _TELEGRAM_BUCKET_DOMAINS = {"t.me", "telegram.me", "telegram.dog"}
 _TELEGRAM_ONLY_NAMES = {"sabereen", "sabereen news", "sabereen plus", "sabrennewss", "sabren_news1"}
 _X_ONLY_NAMES = {
@@ -620,6 +651,8 @@ class QuotaBalancer:
         source_mix: Optional[dict[str, int]] = None,
         recent_published: Optional[list[Article]] = None,
         global_posts_last_24h: Optional[int] = None,
+        total_posts_last_24h: Optional[int] = None,
+        active_reservations: Optional[int] = None,
     ) -> BalanceSelectionResult:
         """
         Select up to `target_posts` (default 5) unique, non-duplicate articles enforcing:
@@ -666,7 +699,11 @@ class QuotaBalancer:
         max_daily_global = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
         max_batch_global = int(getattr(config, "MAX_GLOBAL_POSTS_PER_BATCH", 1))
         global_24h = int(global_posts_last_24h if global_posts_last_24h is not None else 0)
-        in_flight_global = get_active_global_reservations_count()
+        in_flight_global = (
+            int(active_reservations)
+            if active_reservations is not None
+            else get_active_global_reservations_count()
+        )
         effective_global_24h = global_24h + in_flight_global
         remaining_global = max(0, max_daily_global - effective_global_24h)
         max_global_in_batch = min(max_batch_global, remaining_global)
@@ -723,7 +760,12 @@ class QuotaBalancer:
             # Geographic 90/10 & Global cap check
             art_reg = _get_region(art)
             if art_reg == "global":
-                if global_admitted_count >= max_global_in_batch:
+                if not can_admit_global_post(
+                    published_global_24h=global_24h,
+                    total_published_24h=total_posts_last_24h,
+                    active_reservations=in_flight_global,
+                    batch_global_selected=global_admitted_count,
+                ):
                     return False
             topic = classify_topic_bucket(art)
             if topic in ("economy", "cybersecurity"):
@@ -856,6 +898,8 @@ def select_paced_batch(
     source_mix: Optional[dict[str, int]] = None,
     recent_published: Optional[list[Article]] = None,
     global_posts_last_24h: Optional[int] = None,
+    total_posts_last_24h: Optional[int] = None,
+    active_reservations: Optional[int] = None,
 ) -> BalanceSelectionResult:
     """Module-level helper to select an interleaved 2:2:1 paced batch up to `target_posts`."""
     limit = (
@@ -869,4 +913,6 @@ def select_paced_batch(
         source_mix=source_mix,
         recent_published=recent_published,
         global_posts_last_24h=global_posts_last_24h,
+        total_posts_last_24h=total_posts_last_24h,
+        active_reservations=active_reservations,
     )

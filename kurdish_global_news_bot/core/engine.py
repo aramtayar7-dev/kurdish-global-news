@@ -23,7 +23,7 @@ from storage.utils import (
     normalize_event_key,
     pack_event_metadata,
 )
-from core.balancer import get_source_bucket, select_paced_batch
+from core.balancer import can_admit_global_post, get_source_bucket, select_paced_batch
 from core.scheduler import DiscoveryScheduler
 from core.importance_ranker import (
     article_selection_sort_key,
@@ -984,13 +984,24 @@ class NewsEngine:
 
         # 3. 2:2:1 Paced Batch Selection + Interleaving (5 posts max, 90/10 ME ratio, zero duplicate padding)
         recent_published = await self._db.get_recent_published_articles(limit=8)
-        global_posts_24h = await self._db.get_global_posts_count_last_24h()
+        total_posts_last_24h: Optional[int] = None
+        if hasattr(self._db, "get_published_counts_last_24h"):
+            global_posts_24h, total_posts_24h = await self._db.get_published_counts_last_24h()
+        else:
+            global_posts_24h = await self._db.get_global_posts_count_last_24h()
+        active_reservations_count = (
+            await self._db.get_active_global_reservations_count()
+            if hasattr(self._db, "get_active_global_reservations_count")
+            else 0
+        )
         plan = select_paced_batch(
             candidate_pool,
             target_posts=target_posts,
             source_mix=source_mix,
             recent_published=recent_published,
             global_posts_last_24h=global_posts_24h,
+            total_posts_last_24h=total_posts_last_24h,
+            active_reservations=active_reservations_count,
         )
         logger.info("[BATCH PACING] %s", plan.reason)
 
@@ -1000,6 +1011,17 @@ class NewsEngine:
         try:
             # 4. Prepare (Gemini Sorani translation) selected batch UP FRONT
             for art in plan.selected:
+                art_reg = getattr(art, "region", None) or classify_geographic_region(art)
+                art.region = art_reg
+                if art_reg == "global" and hasattr(self._db, "reserve_global_admission"):
+                    reserved = await self._db.reserve_global_admission(
+                        art.canonical_url or art.original_url or str(art.id),
+                        total_published_24h=total_posts_last_24h,
+                    )
+                    if not reserved:
+                        logger.info("[BATCH PACING] Dropping global article %s: cross-process reservation denied", art.id)
+                        counts["rejected"] += 1
+                        continue
                 if art.status == ArticleStatus.QUEUED and is_valid_kurdish_sorani(art.translated_title or ""):
                     prepared_batch.append(art)
                     continue
@@ -1009,17 +1031,15 @@ class NewsEngine:
                         prepared_batch.append(art)
                     else:
                         counts["rejected"] += 1
+                        if art_reg == "global" and hasattr(self._db, "release_global_admission"):
+                            await self._db.release_global_admission(art.canonical_url or art.original_url or str(art.id))
                 except Exception as exc:
                     logger.error("Batch prepare error for article %s: %s", art.id, str(exc)[:200])
+                    if art_reg == "global" and hasattr(self._db, "release_global_admission"):
+                        await self._db.release_global_admission(art.canonical_url or art.original_url or str(art.id))
 
-            # Substitute any translation failures from clean overflow up to target_posts (enforcing global cap!)
+            # Substitute any translation failures from clean overflow up to target_posts (enforcing global cap & 90/10 ratio!)
             used_sub_ids: set[int] = set()
-            max_daily_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
-            max_batch_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_BATCH", 1))
-            g_24h = int(global_posts_24h if global_posts_24h is not None else 0)
-            rem_g = max(0, max_daily_g - g_24h)
-            max_g_in_batch = min(max_batch_g, rem_g)
-
             while len(prepared_batch) < target_posts and substitute_pool:
                 sub = substitute_pool.pop(0)
                 if sub.id is not None and sub.id in used_sub_ids:
@@ -1030,8 +1050,21 @@ class NewsEngine:
                     1 for a in prepared_batch
                     if (getattr(a, "region", "") or classify_geographic_region(a)) == "global"
                 )
-                if sub_reg == "global" and curr_g >= max_g_in_batch:
-                    continue
+                if sub_reg == "global":
+                    if not can_admit_global_post(
+                        published_global_24h=global_posts_24h,
+                        total_published_24h=total_posts_last_24h,
+                        active_reservations=active_reservations_count,
+                        batch_global_selected=curr_g,
+                    ):
+                        continue
+                    if hasattr(self._db, "reserve_global_admission"):
+                        reserved = await self._db.reserve_global_admission(
+                            sub.canonical_url or sub.original_url or str(sub.id),
+                            total_published_24h=total_posts_last_24h,
+                        )
+                        if not reserved:
+                            continue
                 if sub.status == ArticleStatus.QUEUED and is_valid_kurdish_sorani(sub.translated_title or ""):
                     prepared_batch.append(sub)
                     if sub.id is not None:
@@ -1045,14 +1078,21 @@ class NewsEngine:
                             used_sub_ids.add(sub.id)
                     else:
                         counts["rejected"] += 1
+                        if sub_reg == "global" and hasattr(self._db, "release_global_admission"):
+                            await self._db.release_global_admission(sub.canonical_url or sub.original_url or str(sub.id))
                 except Exception as exc:
                     logger.error("Substitute prepare error for article %s: %s", sub.id, str(exc)[:200])
+                    if sub_reg == "global" and hasattr(self._db, "release_global_admission"):
+                        await self._db.release_global_admission(sub.canonical_url or sub.original_url or str(sub.id))
 
             if not prepared_batch:
                 return counts
 
             if not config.AUTO_PUBLISH:
                 for q_art in prepared_batch + substitute_pool:
+                    if (getattr(q_art, "region", "") or classify_geographic_region(q_art)) == "global":
+                        if hasattr(self._db, "release_global_admission"):
+                            await self._db.release_global_admission(q_art.canonical_url or q_art.original_url or str(q_art.id))
                     await self._enqueue_article(q_art)
                     if q_art.status == ArticleStatus.QUEUED:
                         counts["queued"] += 1
@@ -1099,8 +1139,15 @@ class NewsEngine:
                 prev_post_dt = post_start_dt
                 if published:
                     counts["published"] += 1
-                elif art.status in (ArticleStatus.READY_TO_PUBLISH, ArticleStatus.QUEUED):
-                    substitute_pool.append(art)
+                    if (getattr(art, "region", "") or classify_geographic_region(art)) == "global":
+                        if hasattr(self._db, "commit_global_admission"):
+                            await self._db.commit_global_admission(art.canonical_url or art.original_url or str(art.id))
+                else:
+                    if (getattr(art, "region", "") or classify_geographic_region(art)) == "global":
+                        if hasattr(self._db, "release_global_admission"):
+                            await self._db.release_global_admission(art.canonical_url or art.original_url or str(art.id))
+                    if art.status in (ArticleStatus.READY_TO_PUBLISH, ArticleStatus.QUEUED):
+                        substitute_pool.append(art)
 
             # Enqueue eligible overflow articles cleanly without exceeding queue cap
             queue_budget = max(config.MAX_QUEUE_SIZE, target_posts)

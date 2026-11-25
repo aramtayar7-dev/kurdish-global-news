@@ -115,7 +115,7 @@ def _make_art(
         url = f"https://t.me/rudawdigital/{3000 + idx}"
         src = source_name or f"TGChannel{idx % 3}"
         cat = category or ("kurdistan" if idx % 2 == 0 else "politics_world")
-        reg = region or ("South Kurdistan" if cat == "kurdistan" else "global")
+        reg = region or ("South Kurdistan" if cat == "kurdistan" else "middle_east")
         t = title or story_t
     elif bucket == "x":
         handles = ["CENTCOM", "RudawEnglish", "EnglishBasNews", "ShafaqNews", "AuroraIntel", "ClashReport"]
@@ -129,7 +129,7 @@ def _make_art(
         url = f"https://www.reuters.com/world/story-{idx}"
         src = source_name or f"Reuters Outlet {idx % 3}"
         cat = category or "politics_world"
-        reg = region or "global"
+        reg = region or "middle_east"
         t = title or story_t
 
     art = Article(

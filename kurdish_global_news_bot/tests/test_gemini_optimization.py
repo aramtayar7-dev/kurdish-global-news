@@ -387,9 +387,9 @@ class TestPreFilteringCappingAndBatchEvaluation:
         bashur_titles = [
             "Erbil KRG cabinet approves civil servant salary distribution mechanism",
             "Peshmerga commanders inspect Kirkuk frontier defense fortifications",
-            "Sulaymaniyah governor hosts constitutional federalism dialogue forum",
-            "Duhok customs authorities expand cross-border trade customs screening",
-            "Halabja provincial council inaugurates reconstruction funding committee",
+            "Sulaymaniyah security forces launch joint counterterrorism operation along border",
+            "Duhok border command intercepts armed militia drone targeting defense checkpoint",
+            "Halabja leaders and Baghdad reach strategic border security agreement",
             "KRG judicial council in Erbil reviews regional security oversight bill",
         ]
         global_titles = [
@@ -485,9 +485,9 @@ class TestPreFilteringCappingAndBatchEvaluation:
         _distinct_sorani = [
             ("هەرێمی کوردستان و هەولێر: میکانیزمی دابەشکردنی مووچەی فەرمانبەران پەسەندکرا", "ئەنجومەنی وەزیران بڕیاری دابەشکردنی مووچەی فەرمانبەرانی دەرکرد."),
             ("پێشمەرگە سەنگەرەکانی بەرگری لە سنووری کەرکووک بەهێزتر دەکات", "فەرماندەکانی پێشمەرگە هێڵەکانی بەرگریان بەسەر کردەوە."),
-            ("پارێزگاری سلێمانی میوانداری کۆبوونەوەی فیدراڵیزمی دەستووری دەکات", "لە سلێمانی دیدارێک دەربارەی دەسەڵاتە دەستوورییەکان سازکرا."),
-            ("دەروازەی گومرگی دهۆک سیستەمی پشکنینی بازرگانی فراوانتر دەکات", "بەرپرسانی گومرگ لە دهۆک پڕۆژەی نوێیان ڕاگەیاند."),
-            ("ئەنجومەنی پارێزگای هەڵەبجە لیژنەی ئاوەدانکردنەوەی پێکهێنا", "لە هەڵەبجە پرۆژە خزمەتگوزارییەکان پەسەند کران."),
+            ("ئۆپەراسیۆنی دژەتیرۆری هێزە ئەمنییەکانی سلێمانی لە سنوور دەستیپێکرد", "هێزە ئەمنییەکان ئۆپەراسیۆنی هاوبەشیان لە ناوچە سنوورییەکان ئەنجامدا."),
+            ("فەرماندەیی سنووری دهۆک درۆنێکی چەکداری لە خاڵێکی بەرگری خستە خوارەوە", "هێزەکانی پاسەوانی سنوور درۆنێکی میلیشیا چەکدارەکانیان تێکشکاند."),
+            ("سەرکردەکانی هەڵەبجە و بەغدا گەیشتنە ڕێککەوتنی ستراتیژی ئەمنی سنوور", "ڕێککەوتنی ئەمنی هاوبەش لەنێوان هەڵەبجە و بەغدا واژۆ کرا."),
             ("ئەنجومەنی دادوەری کوردستان پێداچوونەوە بە یاسای ئەمنیدا دەکات", "پڕۆژە یاسای چاودێری ئەمنی خرایە بەردەم دادوەران."),
             ("ناتۆ و تاران لەسەر یاساکانی کەشتیوانی کەنداو ناکۆکن", "گرژییە دەریاییەکانی کەنداو چووە قۆناغێکی نوێوە."),
             ("ئەنجومەنی ئاسایش پاراستنی کەشتییەکان لە دەریای سوور تاوتوێ دەکات", "نوێنەرانی وڵاتان کۆبوونەوەی بەپەلەی دەریاییان ئەنجامدا."),
