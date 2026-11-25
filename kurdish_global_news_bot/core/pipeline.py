@@ -29,6 +29,7 @@ from core.importance_ranker import (
     check_pre_filter_off_topic,
     classify_priority_tier,
     is_bashur_article,
+    is_genuine_kurdistan_event,
     select_top_candidates_for_gemini,
 )
 from core.balancer import QuotaBalancer
@@ -52,6 +53,7 @@ from processing.content_formatter import (
     ContentFormatter,
     normalize_neutral_terminology,
     prepend_tier3_attribution,
+    strip_rss_boilerplate,
 )
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
@@ -380,8 +382,16 @@ class ArticlePipeline:
         if getattr(article, "_relevance_populated", False):
             return
         article.importance_score = float(relevance.score)
+        is_kurd_content = is_genuine_kurdistan_event(article)
         if not relevance.used_fallback:
             article.category = relevance.category
+        elif (article.category or "").strip().lower() in {"kurdistan", "کوردستان", "كردستان"} and not is_kurd_content:
+            # Never retain a Kurdistan feed tag on non-Kurdistan international stories during fallback
+            article.category = relevance.category
+        if not is_kurd_content and (article.region or "").strip().lower() in {
+            "south kurdistan", "kurdistan", "kurdistan_bashur", "کوردستان", "کوردستان (باشوور)",
+        }:
+            article.region = ""
         article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
 
         ev_key = normalize_event_key(getattr(relevance, "event_key", ""))
@@ -524,7 +534,7 @@ class ArticlePipeline:
             article.image_url = og_image
 
         if full_text and len(full_text) >= 160:
-            article_content = full_text[:3000]
+            article_content = strip_rss_boilerplate(full_text)[:3000]
             article.original_summary = article_content
             logger.info(
                 "Extracted %d chars of full article text from %s",
@@ -532,7 +542,7 @@ class ArticlePipeline:
                 article.original_url[:70],
             )
         else:
-            fallback = (article.original_summary or "").strip()
+            fallback = strip_rss_boilerplate((article.original_summary or "").strip())
             insufficient, reason = ArticleExtractor.is_insufficient_detail(
                 article.original_title,
                 fallback,
@@ -579,7 +589,9 @@ class ArticlePipeline:
 
             article.translated_title = normalize_neutral_terminology(article.translated_title)
             if article.translated_summary:
-                article.translated_summary = normalize_neutral_terminology(article.translated_summary)
+                article.translated_summary = normalize_neutral_terminology(
+                    strip_rss_boilerplate(article.translated_summary)
+                )
 
             # Uncorroborated Tier-3 preliminary attribution (only when Tier-3 has no corroboration)
             if getattr(config, "ENABLE_SOURCE_VERIFICATION", True):

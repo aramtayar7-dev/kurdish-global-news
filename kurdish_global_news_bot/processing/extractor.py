@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlparse
 from sources.base import RawArticle
 from storage.models import Article
 from config import SOURCE_CREDIBILITY, NEWS_CATEGORIES
+from processing.content_formatter import strip_rss_boilerplate
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -96,7 +97,7 @@ class ArticleExtractor:
         article.canonical_url = Article.canonicalize_url(raw.url)
         article.original_title = raw.title.strip()
         article.normalized_title = Article.normalize_title(raw.title)
-        article.original_summary = raw.summary.strip()[:1000]
+        article.original_summary = strip_rss_boilerplate(raw.summary)[:1000]
         article.source_name = raw.source_name.strip()
         article.publication_date = raw.publication_date or ""
         article.image_url = (raw.image_url or "").strip()
@@ -264,7 +265,7 @@ class ArticleExtractor:
                 return None
 
             combined = "\n\n".join(paragraphs).strip()
-            cleaned = combined[:3000].strip()
+            cleaned = strip_rss_boilerplate(combined)[:3000].strip()
             return cleaned if len(cleaned) >= 100 else None
 
         except Exception as e:

@@ -174,7 +174,8 @@ def select_background_theme(article: Article) -> str:
       6. Global Diplomacy (Ultimate default)
     """
     clean_text = clean_article_event_text(article)
-    combined_text = f"{clean_text} {getattr(article, 'region', '')} {getattr(article, 'country', '')}"
+    # Use content-only text for Southern Kurdistan checks so feed region hints never misclassify global stories
+    combined_text = f"{clean_text} {getattr(article, 'country', '')}"
     raw_cat = (getattr(article, "category", "") or "").strip().lower()
     norm_cat = normalize_category(raw_cat, text_hint=clean_text)
 
@@ -182,8 +183,8 @@ def select_background_theme(article: Article) -> str:
     if is_cybersecurity_article(article) or norm_cat == "cybersecurity" or CYBERSECURITY_PATTERN.search(combined_text):
         return THEME_CYBERSECURITY
 
-    # 2. Southern Kurdistan (Bashur)
-    if is_bashur_article(article) or BASHUR_EXPLICIT_PATTERN.search(combined_text):
+    # 2. Southern Kurdistan (Bashur) — strictly content-based
+    if is_bashur_article(article) or BASHUR_EXPLICIT_PATTERN.search(clean_text):
         return THEME_KURDISTAN_BASHUR
 
     # 3. Specialized: Economy & Energy

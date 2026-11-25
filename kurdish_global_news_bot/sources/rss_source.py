@@ -16,6 +16,7 @@ import feedparser
 
 from sources.base import BaseSource, RawArticle
 from config import RSS_FEEDS, REQUEST_TIMEOUT, USER_AGENT
+from processing.content_formatter import strip_rss_boilerplate
 
 logger = logging.getLogger("sources.rss")
 
@@ -35,10 +36,11 @@ def parse_rss_entry(entry: object, feed_name: str, category: str) -> Optional[Ra
     elif hasattr(entry, "description") and isinstance(entry.description, str):
         summary = entry.description.strip()
 
-    # Strip HTML tags from summary
+    # Strip HTML tags and RSS footer boilerplate from summary
     if summary:
         from bs4 import BeautifulSoup
         summary = BeautifulSoup(summary, "html.parser").get_text(separator=" ").strip()
+        summary = strip_rss_boilerplate(summary)
         summary = summary[:1500]
 
     # Extract publication date

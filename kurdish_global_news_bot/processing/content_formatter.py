@@ -28,6 +28,51 @@ _ATTRIBUTION_PREFIXES = (
     "بەپێی", "سەرچاوە", "میدیا", "لە ڕاپۆرتێکدا", "بەپێی ڕاپۆرتە",
 )
 
+# RSS/HTML footer boilerplate stripped before translation and after formatting
+_RSS_BOILERPLATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\s*\[\s*(?:\.\.\.|…)\s*\]\s*", re.IGNORECASE),
+    re.compile(r"\s*the\s+post\s+.+?\s+appeared\s+first\s+on\s+.+$", re.IGNORECASE),
+    re.compile(
+        r"(?:^|\s)(?:continue\s+reading|read\s+more(?:\s+at\s+\S+|\s+here)?|"
+        r"click\s+here(?:\s+to\s+read\s+more)?|watch\s+live|listen\s+to\s+the\s+episode|"
+        r"subscribe\s+(?:to|now)[^.!?\n]*|follow\s+us\s+on[^.!?\n]*|"
+        r"sign\s+up\s+for[^.!?\n]*)\s*(?:\.\.\.|…)?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:^|\s)(?:بەردەوام\s+بە\s+لە\s+خوێندنەوە|زیاتر\s+بخوێنەوە|"
+        r"تەواوی\s+(?:هەواڵەکە|بابەتەکە)\s+بخوێنەوە|کلیک\s+لێرە\s+بکە|"
+        r"ئابوونە\s+بکە|ڕاستەوخۆ\s+سەیر\s+بکە)\s*(?:\.\.\.|…)?\s*[.!؟]?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:^|\s)(?:اقرأ\s+المزيد|تابع\s+القراءة|للمزيد\s+اضغط\s+هنا)\s*(?:\.\.\.|…)?\s*[.!؟]?\s*$",
+        re.IGNORECASE,
+    ),
+)
+
+_AWKWARD_COMMA_AND_RE = re.compile(r"[,،]\s*و\s*[,،]")
+
+
+def strip_rss_boilerplate(text: str) -> str:
+    """
+    Strip trailing RSS/web boilerplate ('Continue reading...', 'Read more...',
+    'بەردەوام بە لە خوێندنەوە...', '[...]', etc.) cleanly without altering article facts.
+    """
+    if not text:
+        return ""
+
+    cleaned = text.strip()
+    for _ in range(3):
+        prev = cleaned
+        for pat in _RSS_BOILERPLATE_PATTERNS:
+            cleaned = pat.sub(" ", cleaned).strip()
+        # Strip lingering bracketed ellipses or bare trailing '...' left by truncated RSS descriptions
+        cleaned = re.sub(r"(?:\.{3}|…)\s*$", "", cleaned).strip()
+        if cleaned == prev:
+            break
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
 # Central Kurdish (Sorani) category labels covering the 7 canonical keys + legacy aliases
 CATEGORY_LABELS_KURDISH: dict[str, str] = {
     # Canonical 7 categories
@@ -196,16 +241,20 @@ def normalize_neutral_terminology(text: str) -> str:
     if not text:
         return ""
 
-    result = text
+    result = strip_rss_boilerplate(text)
     for pattern, replacement in _COMPILED_NEUTRAL_TERM_RULES:
         result = pattern.sub(
             lambda m, r=replacement: f"{(m.group('conj') + ' ') if m.group('conj') else ''}{r}{m.group('suffix') or ''}",
             result,
         )
 
+    # Fix literal comma-and-comma artifacts (e.g. ', و,' / '، و،') and clean redundant spacing
+    result = _AWKWARD_COMMA_AND_RE.sub(" و ", result)
+    result = re.sub(r"([،,])(?=[A-Za-z0-9\u0621-\u064A\u0671-\u06D5])", r"\1 ", result)
+
     # Normalize redundant horizontal spaces cleanly while keeping intentional newlines
     lines = [re.sub(r"[ \t]{2,}", " ", ln).strip() if ln.strip() else "" for ln in result.splitlines()]
-    return "\n".join(lines).strip()
+    return strip_rss_boilerplate("\n".join(lines).strip())
 
 
 class ContentFormatter:

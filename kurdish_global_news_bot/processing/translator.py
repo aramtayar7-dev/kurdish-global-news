@@ -62,7 +62,7 @@ GEMINI_TRANSLATION_SYSTEM_PROMPT = (
     "4. Accurate Terms (No Mistranslation): Translate roles and ages faithfully — NEVER translate 'man', 'official', or an older adult (e.g., a 62-year-old) as 'گەنج'; use accurate Sorani terms such as 'پیاوێکی تەمەن ٦٢ ساڵ' or 'بەرپرسێک'.\n"
     "5. Natural Sorani (No Raw Jargon): Replace untranslated foreign jargon (such as 'ئیفێمیزم' or 'ڕیگۆلیتی') with clear natural Sorani phrasing (e.g., 'دەربڕینی ناڕاستەوخۆ' or 'تۆز و خۆڵی هاوشێوەی سەر مانگ').\n"
     "6. Proper Sorani Orthography: Always use proper Sorani characters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی) rather than Arabic ي or ك.\n"
-    "7. No Agency Datelines: NEVER copy or prepend news-agency datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -', 'Qamishli, Syria (North Press) –') at the start of the summary. Begin directly with the first clean news sentence.\n"
+    "7. No Agency Datelines or RSS Footers: NEVER copy or prepend news-agency datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -') or RSS footers ('Continue reading...', 'Read more...', 'بەردەوام بە لە خوێندنەوە', 'زیاتر بخوێنەوە'). Begin directly with clean Sorani news sentences and NEVER emit broken punctuation such as ', و,' or '، و،'.\n"
     "8. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
     '{"title": "punchy Sorani headline", "summary": "3 to 4 complete Sorani sentences", '
     '"event_key": "short_english_snake_case_event_id", "event_entities": ["entity1", "entity2", "topic"]}'
@@ -77,7 +77,7 @@ GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT = (
     "2. Neutral Terminology: Normalize 'باکووری عێراق'/'باکوری عێراق'/'شمال العراق' -> 'هەرێمی کوردستان'; 'ئەمریکای دوژمن'/'دوژمنی ئەمریکی' -> 'ئەمریکا'; 'قەوارەی زایۆنی'/'دوژمنی زایۆنی' -> 'ئیسرائیل'; 'سووریای داگیرکراو' -> 'سووریا', while preserving documented factual military/territorial realities.\n"
     "3. Headline & Structure: Craft a concise, neutral Sorani headline and a 3 to 4 complete-sentence news report (350 to 650 characters) that never repeats the headline verbatim.\n"
     "4. Complete Sentences & Orthography: End every sentence with proper punctuation (. or ؟ or !) and proper Sorani letters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی).\n"
-    "5. No Agency Datelines: Strip any raw news-agency or city datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -') from the start of the summary so it starts cleanly with the first sentence.\n"
+    "5. No Agency Datelines or Boilerplate: Strip any raw news-agency/city datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -'), channel signatures, or footers ('زیاتر بخوێنەوە', 'بەردەوام بە لە خوێندنەوە') and avoid broken punctuation such as ', و,' or '، و،'.\n"
     "6. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
     '{"title": "clean journalistic Sorani headline", "summary": "3 to 4 complete neutral Sorani sentences", '
     '"event_key": "short_english_snake_case_event_id", "event_entities": ["entity1", "entity2", "topic"]}'
@@ -310,9 +310,12 @@ class GeminiTranslationProvider(TranslationProvider):
             else GEMINI_TRANSLATION_SYSTEM_PROMPT
         )
 
+        from processing.content_formatter import normalize_neutral_terminology, strip_rss_boilerplate
+
+        clean_input_summary = strip_rss_boilerplate(summary or "")
         user_content = (
             f"=== ORIGINAL HEADLINE ===\n{title}\n\n"
-            f"=== ARTICLE FACTS / CONTENT ===\n{(summary or '')[:3000]}\n\n"
+            f"=== ARTICLE FACTS / CONTENT ===\n{clean_input_summary[:3000]}\n\n"
             "Produce the final Sorani Kurdish headline and 3-4 sentence report (350-650 chars) as JSON: "
             '{"title": "...", "summary": "..."}'
         )
@@ -327,13 +330,13 @@ class GeminiTranslationProvider(TranslationProvider):
         except GeminiAPIError as e:
             raise TranslationError(str(e)) from e
 
-        from processing.content_formatter import normalize_neutral_terminology
-
         final_title = normalize_neutral_terminology(
             normalize_sorani_chars(str(data.get("title", "")).strip())
         )
         final_summary = normalize_neutral_terminology(
-            strip_news_dateline(normalize_sorani_chars(str(data.get("summary", "")).strip()))
+            strip_rss_boilerplate(
+                strip_news_dateline(normalize_sorani_chars(str(data.get("summary", "")).strip()))
+            )
         )
 
         if not final_title or not is_valid_kurdish_sorani(final_title):

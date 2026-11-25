@@ -60,7 +60,7 @@ HIGH_KEYWORDS: list[str] = [
 KURDISTAN_PATTERN = re.compile(
     r"(kurdistan|kurdish|kurds|erbil|hewler|sulaymaniyah|duhok|kirkuk|halabja|peshmerga|krg|"
     r"rojava|qamishli|kobani|hasakah|\bsdf\b|diyarbakir|amed|bakur|rojhelat|sanandaj|mahabad|urmia|kermanshah|"
-    r"کوردستان|کورد|هەولێر|سلێمانی|دهۆک|کەرکوک|هەڵەبجە|پێشمەرگە|ڕۆژئاوا|قامیشلۆ|کۆبانێ|حەسەکە|ئامەد|سنە|مەهاباد|ورمێ|کرماشان)",
+    r"کوردستان|کورد|هەولێر|سلێمانی|دهۆک|کەرکوو?ک|هەڵەبجە|پێشمەرگە|ڕۆژئاوا|قامیشلۆ|کۆبانێ|حەسەکە|ئامەد|سنە|مەهاباد|ورمێ|کرماشان)",
     re.IGNORECASE,
 )
 
@@ -69,7 +69,7 @@ BASHUR_PATTERN = re.compile(
     r"(erbil|hewler|sulaymaniyah|slemani|\bsuli\b|duhok|halabja|kirkuk|peshmerga|\bkrg\b|"
     r"kurdistan region|iraqi kurdistan|south kurdistan|\bbashur\b(?!\s+(?:beirut|lebanon|gaza|israel|syria|iraq|iran|damascus|tehran|baghdad))|"
     r"erbil[\s\-–]+baghdad|baghdad[\s\-–]+erbil|nechirvan|masrour|barzani|talabani|disputed areas?|article 140|"
-    r"هەولێر|سلێمانی|دهۆک|هەڵەبجە|کەرکوک|پێشمەرگە|هەرێمی کوردستان|حکومەتی هەرێم|"
+    r"هەولێر|سلێمانی|دهۆک|هەڵەبجە|کەرکوو?ک|پێشمەرگە|هەرێمی کوردستان|حکومەتی هەرێم|"
     r"کوردستانی باشوور|باشووری کوردستان|باشوور(?!ی\s+(?:بەیروت|لوبنان|غەززە|ئیسرائیل|سوریا|عێراق|تاران|بەغدا|دیمەشق|ئەمریکا|یەمان|سودان|کەرتی|ئێران|تەورێز|کەناری))|"
     r"بارزانی|تاڵەبانی|هەولێر و بەغدا|مووچە)",
     re.IGNORECASE,
@@ -132,6 +132,7 @@ DOMESTIC_CRIME_COURT_PATTERN = re.compile(
     r"justice\s+department.{0,90}(?:sentenc|plead|indict|guilty|arrest)|"
     r"(?:houston|texas|florida|california|new\s+york|chicago|ohio|michigan)\s+(?:man|woman|resident)|"
     r"municipal\s+court|local\s+police|police\s+(?:arrested|charged)\s+(?:a\s+|two\s+|three\s+)?(?:man|woman|suspect|teen)|"
+    r"\bdeportation\s+(?:case|hearing|order)\b|\bimmigration\s+(?:court|judge|hearing)\b|\babrego\s+garcia\b|"
     r"prison\s+sentence|bail\s+hearing|extremism\s+trial|propaganda\s+trial|material\s+support\s+to\s+(?:isis|terror)|"
     r"سزای\s+\d+\s+ساڵ\s+زیندان|دادگای\s+فیدراڵی\s+ئەمریکا|تۆمەتی\s+درۆکردن\s+بۆ\s+ئێف\s*بی\s*ئای|"
     r"پڕوپاگەندەی\s+داعش.{0,40}دادگای)",
@@ -143,7 +144,7 @@ SPORTS_PATTERN = re.compile(
     r"(?:world|africa|nations|champions|european|asian)\s+cup|\bolympics?\b|\bfifa\b|\buefa\b|"
     r"champions\s+league|premier\s+league|la\s+liga|serie\s+a|bundesliga|"
     r"\bnba\b|\bnfl\b|\bmlb\b|\bnhl\b|\bufc\b|\bwimbledon\b|grand\s+slam|"
-    r"\bgoalkeeper\b|\bstriker\b|\bmidfielder\b|\bpenalty\s+shootout\b|\bhat-trick\b|\bred\s+card\b|"
+    r"\bathlete\b|\bfootballer\b|\bgoalkeeper\b|\bstriker\b|\bmidfielder\b|\bpenalty\s+shootout\b|\bhat-trick\b|\bred\s+card\b|"
     r"\b(?:football|soccer|basketball|tennis|cricket|golf|rugby|hockey|baseball|swimming)\s+(?:match|player|star|club|team|coach|tournament|league|championship)\b|"
     r"\bformula\s+1\b|\bf1\s+(?:grand\s+prix|race)\b|\btransfer\s+window\b|"
     r"\bnational\s+(?:football|soccer|basketball)?\s*team\b|"
@@ -157,10 +158,13 @@ SPORTS_PATTERN = re.compile(
 )
 
 CULTURE_LIFESTYLE_PATTERN = re.compile(
-    r"(\bcelebrity\s+gossip\b|\bcelebrities\b|\bred\s+carpet\b|\bbox\s+office\b|\boscar\s+nominees?\b|"
+    r"(\bcelebrity\b|\bcelebrities\b|\bred\s+carpet\b|\bbox\s+office\b|\boscar(?:s)?\b|\bacademy\s+awards?\b|"
     r"\bgrammy\s+awards?\b|\bemmy\s+awards?\b|\bgolden\s+globe\b|\bfashion\s+week\b|"
-    r"\breality\s+tv\b|\breality\s+show\b|\bhollywood\b|\bbollywood\b|\bpop\s+star\b|"
-    r"\bmovie\s+review\b|\bfilm\s+review\b|\balbum\s+review\b|\bculinary\s+festival\b|"
+    r"\breality\s+tv\b|\breality\s+show\b|\bhollywood\b|\bbollywood\b|\bbroadway\b|"
+    r"\bpop\s+star\b|\bmovie\s+star\b|\bfilm\s+star\b|\btv\s+star\b|\btelevision\s+star\b|"
+    r"(?<!state\s)(?<!threat\s)(?<!bad\s)(?<!malicious\s)(?<!non-state\s)(?<!cyber\s)\bactors?\b|\bactress(?:es)?\b|"
+    r"\bsinger\b|\bsongwriter\b|\bmusician\b|\brapper\b|\bcomedian\b|\b(?:film|movie)\s+director\b|"
+    r"\bmovie\s+review\b|\bfilm\s+review\b|\balbum\s+review\b|\bculinary\s+festival\b|\bcinema\b|\bentertainment\b|"
     r"\bmusic\s+concert\b|\bart\s+exhibition\b|\bhoroscope\b|\bzodiac\s+sign\b|"
     r"\btravel\s+(?:guide|tips)\b|\btourist\s+destination\b|\bvacation\s+(?:spot|guide)\b|"
     r"\bbest\s+beaches\b|\bluxury\s+hotel\b|\bcruise\s+ship\b|\bweekend\s+getaway\b|"
@@ -169,15 +173,56 @@ CULTURE_LIFESTYLE_PATTERN = re.compile(
     r"\bios\s+update\b|\bapp\s+update\b|\bwhatsapp\s+update\b|\binstagram\s+feature\b|\btiktok\s+trend\b|"
     r"\bgadget\s+review\b|\bsmartwatch\b|\bearbuds\b|\bgaming\s+console\b|\bplaystation\b|\bxbox\b|\bnintendo\b|"
     r"\bviral\s+(?:video|clip)\b|\bpet\s+rescue\b|\blottery\s+winner\b|\bcooking\s+recipe\b|\bdiet\s+trend\b|"
-    r"شوێنی\s+گەشتیاری|فاشیۆن|گۆرانیبێژ|توقعات\s+الطقس\s+اليومية|مشاهير|عروض\s+سياحية|"
+    r"شوێنی\s+گەشتیاری|فاشیۆن|گۆرانیبێژ(?:ی|ان)?|توقعات\s+الطقس\s+اليومية|مشاهير|عروض\s+سياحية|"
+    r"هۆلیوود|ئەکتەر(?:ی|ێک|ێکی|ان)?|سینەماکار|ستێرەی\s+(?:سینەما|هۆلیوود)|سینەما|مۆسیقا|فیلم(?:ی|ەکان)?|"
+    r"هونەرمەند(?:ی|ێک|ێکی|ان)?|کۆچی\s+دوایی.{0,60}(?:ئەکتەر|هونەرمەند|گۆرانیبێژ|سینەما|هۆلیوود)|"
     r"[پب]ێشانگای?(?:ەک|ەکی)?(?:دا)?\s*(?:هونەری|وێنە|وێنەکێشان|شێوەکاری|کتێب|فۆتۆگرافی)|"
     r"[پب]ێشانگایەکدا.{0,40}(?:نمایش|تابلۆ|هونەر)|تابلۆی\s+(?:هونەری|شێوەکاری)|شێوەکار(?:ی|ان)|"
-    r"هونەرمەند(?:ان|ی)?\s+(?:تابلۆ|پێشانگا|کۆنسێرت|گۆرانی|سینەما|شانۆ)|"
-    r"ف[یێ]ستیڤاڵی?\s*(?:هونەری|کلتووری|فیلم|شانۆ|گۆرانی|شیعر)|کۆنسێرت|فیلمی\s+سینەمایی|شانۆگەری|"
+    r"ف[یێ]ستیڤاڵی?\s*(?:هونەری|کلتووری|فیلم|شانۆ|گۆرانی|شیعر)|کۆنسێرت|شانۆگەری|"
     r"ئاهەنگی\s+(?:گۆرانی|مۆسیقا)|وەرزشی\s+(?:تۆپی\s+پێ|وشتنی\s+باری|مەلەوانگە)|خولی\s+(?:نایاب|ئەستێرەکان)|"
     r"ڕووداو(?:ی|ێکی)\s+هاتوو?چۆ|پێکدادانی\s+ئۆتۆمبێل|پێشبینی\s+کەشوهەوا|"
     r"هونەری\s+(?:نمایش|پێشانگا)|فەستیڤاڵ|نمایشگەی\s+هونەری|معرض\s+فني|مهرجان\s+(?:فني|ثقافي)|"
+    r"هوليوود|ممثل(?:ة|ين)?|فنان(?:ة|ين)?|مغني(?:ة)?|نجم\s+(?:سينما|هوليوود)|وفاة\s+(?:الممثل|الفنان|المغني|النجم)|"
     r"حفل\s+(?:موسيقي|غنائي)|عرض\s+فيلم|مباراة\s+ودية|مسابقة\s+رياضية)",
+    re.IGNORECASE,
+)
+
+# Multi-story podcast / newsletter briefing & composite roundup rejection
+_ROUNDUP_URL_PATTERN = re.compile(
+    r"/(?:podcasts?|newsletters?|up-first|morning-briefing|evening-briefing|news-briefing|live-updates)(?:/|$|\?)",
+    re.IGNORECASE,
+)
+_ROUNDUP_TEXT_PATTERN = re.compile(
+    r"(\bup\s+first\b|\b(?:morning|evening|daily|weekend|midday|tonight'?s)\s+(?:briefing|roundup|digest|newsletter)\b|"
+    r"\bnews\s+(?:summary|roundup|digest|briefing)\b|\b(?:five|5|top)\s+things\s+(?:to\s+know|happening)\b|"
+    r"\bwhat\s+(?:to\s+know|happened)\s+today\b|^\s*live\s+updates\s*[:\-–]|"
+    r"\btoday\s+on\s+up\s+first\b|\bin\s+this\s+episode\b|\bfirst\s+up\b.{0,80}\balso\s+(?:today|ahead)\b|"
+    r"پوختەی\s+هەواڵەکانی\s+ڕۆژ)",
+    re.IGNORECASE,
+)
+_ROUNDUP_ALLCAPS_AND_TITLE_RE = re.compile(r"\S+(?:\s+\S+){2,}\s+AND\s+\S+(?:\s+\S+){2,}")
+_ROUNDUP_SEMICOLON_TITLE_RE = re.compile(r"\S+(?:\s+\S+){3,}\s*;\s+\S+(?:\s+\S+){3,}")
+
+# Publisher brand/signature stripping so outlet names (e.g. Kurdistan24) never trigger geographic classification
+_OUTLET_BRAND_STRIP_RE = re.compile(
+    r"(kurdistan\s*24(?:\s+(?:en|sorani|arabic|english))?|کوردستان\s*(?:24|٢٤)|#k24\b|"
+    r"rudaw\s*(?:digital|english|arabic|net)?|تۆڕی\s+میدیایی\s+رووداو|north\s+press(?:\s+agency)?|نۆرس\s+پرێس|"
+    r"pukmedia|nrttvofficial|sabereen\s+(?:news|plus))",
+    re.IGNORECASE,
+)
+
+_ECONOMY_TOPIC_RE = re.compile(
+    r"(\beconom|\btrade\b|\btariff|\bmarket|\bstock\b|\boil\b|\bgas\b|\bopec\b|\binflation\b|\bbank\b|"
+    r"بازرگانی|ئابووری|نەوت|گاز|بانک|بۆرسە|گومرگ|هەڵاوسان|هەناردە|دۆلار)",
+    re.IGNORECASE,
+)
+_MILITARY_TOPIC_RE = re.compile(
+    r"(\bwar\b|\bmilitary\b|\bairstrike|\bmissile|\bdrone|\bdefense|\btroops|\bshelling|\battack|"
+    r"شەڕ|سەربازی|هێرش|درۆن|موشەک|بۆردومان|ئەمنی)",
+    re.IGNORECASE,
+)
+_CYBER_TOPIC_RE = re.compile(
+    r"(\bcyber|\bransomware|\bhack|\bmalware|\bzero-day|سایبەری|ئەلیکترۆنی|هاک)",
     re.IGNORECASE,
 )
 
@@ -269,8 +314,9 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "- \"science_space\": Space missions, astronomy, NASA/SpaceX, scientific breakthroughs, major medical discoveries.\n\n"
     "IMPORTANT Geographic & Categorization Accuracy:\n"
     "- Determine geography strictly from WHERE the actual event took place and whose government, territory, or forces are directly involved.\n"
-    "- NEVER classify an article as \"kurdistan\" merely because it was published by a Kurdish/regional outlet (e.g., North Press Agency, Rudaw, Kurdistan24), "
-    "because of an agency dateline (e.g., 'Qamishli, Syria (North Press) –', 'Erbil -'), or because it mentions ISIS/داعش in a foreign/non-Kurdistan context.\n"
+    "- NEVER classify an article as \"kurdistan\" merely because it was published by a Kurdish/regional outlet (e.g., North Press Agency, Rudaw, Kurdistan24, NRT), "
+    "because of an agency dateline (e.g., 'Qamishli, Syria (North Press) –', 'Erbil -'), or because it mentions ISIS/داعش in a foreign/non-Kurdistan context. "
+    "If a Kurdish outlet reports international news (e.g., China-US trade, Russia-Ukraine, Gaza, Europe), classify it strictly by its true topic (\"economy_markets\", \"politics_world\", \"military_conflict\", or \"cybersecurity\") and NEVER \"kurdistan\".\n"
     "- Classify strictly by actual subject, NOT the publisher name (e.g., Nvidia stock news from Al Jazeera is \"economy_markets\" or \"ai_tech\"; US court/FBI news published by North Press is NOT \"kurdistan\").\n\n"
     "STRICT Breaking News Rule (`is_breaking`):\n"
     "- Set \"is_breaking\": true ONLY for sudden, unfolding, emergency, high-impact events happening right now (and ONLY when score >= 9): "
@@ -286,9 +332,11 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "- 8 (HIGH PASS): Genuine political, security, economic (salaries/مووچە, oil/energy, official decrees), or human-rights development taking place in ANY of the 4 parts of Kurdistan; "
     "regional geopolitics (Iraq, Iran, Turkey, Syria, US, Middle East); major macroeconomic crises/sanctions/central banks or critical state-level cyberattacks.\n"
     "- 7 (PASS): Notable international diplomacy, cross-border crises, or ICJ/ICC international court rulings.\n"
-    "- 1 to 6 (STRICTLY REJECT): Domestic crime, FBI arrests, individual extremism/propaganda trials, local police reports, personal prison sentences (EVEN if ISIS/terrorism is mentioned in a foreign domestic court); "
-    "ALL sports/tournaments/athletes (football/soccer, World Cup, Olympics, matches, players, clubs, scores); "
-    "ALL entertainment, celebrities, culture, travel/tourism fluff, weather trivia/routine forecasts, consumer phones/gadgets/apps, routine human-interest fluff, traffic/municipal outage notices, and advertisements.\n\n"
+    "- 1 to 6 (STRICTLY REJECT): Domestic crime, FBI arrests, single-person immigration/deportation court cases with no state-level geopolitical impact, individual extremism/propaganda trials, local police reports, personal prison sentences (EVEN if ISIS/terrorism is mentioned in a foreign domestic court); "
+    "ALL sports/tournaments/athletes; "
+    "ALL celebrity/actor/actress/Hollywood/cinema/music/singer/athlete obituaries or entertainment news (whether English, Arabic, or Kurdish); "
+    "ALL multi-story news roundups or podcast/newsletter briefings (e.g., Up First, Morning Briefing, composite headlines joining unrelated stories); "
+    "travel/tourism fluff, weather trivia/routine forecasts, consumer phones/gadgets/apps, routine human-interest fluff, traffic/municipal outage notices, and advertisements.\n\n"
     "Cross-Language Event Identification & Live Threading:\n"
     "- Include concise standardized ENGLISH `event_key` (lowercase snake_case identifying the SPECIFIC incident, e.g. \"erbil_airport_drone_attack\", \"baghdad_krg_salary_agreement\", \"trump_iran_war_funding\" — never just a country/city), `event_entities` (3 to 5 lowercase English entity/location/topic tokens), and optional `update_type` (`\"new_story\"`, `\"casualties_update\"`, `\"official_response\"`, `\"retaliation\"`, `\"ceasefire\"`, `\"investigation_result\"`, or `\"repeat_coverage\"`).\n\n"
     "Respond ONLY with valid JSON (no markdown fences, no commentary):\n"
@@ -327,13 +375,37 @@ class RelevanceEvaluation:
 
 def clean_article_event_text(article: Article) -> str:
     """
-    Extract normalized event text from an article after stripping leading agency
-    datelines (e.g., 'Qamishli, Syria (North Press) –') so datelines and publisher
-    headers cannot spoof geographic classification.
+    Extract normalized event text strictly from actual article content
+    (title, summary, translated content, event_entities) after stripping leading
+    agency datelines and publisher brand names (`Kurdistan24`, `Rudaw`, etc.)
+    so source names and feed metadata never spoof geographic classification.
     """
-    clean_title = strip_news_dateline(article.original_title or "")
-    clean_summary = strip_news_dateline(article.original_summary or "")
-    return f"{clean_title} {clean_summary}".strip()
+    clean_title = _OUTLET_BRAND_STRIP_RE.sub(" ", strip_news_dateline(article.original_title or ""))
+    clean_summary = _OUTLET_BRAND_STRIP_RE.sub(" ", strip_news_dateline(article.original_summary or ""))
+    tr_title = _OUTLET_BRAND_STRIP_RE.sub(" ", strip_news_dateline(getattr(article, "translated_title", "") or ""))
+    tr_summary = _OUTLET_BRAND_STRIP_RE.sub(" ", strip_news_dateline(getattr(article, "translated_summary", "") or ""))
+    ents = " ".join(str(e) for e in (getattr(article, "event_entities", None) or []))
+    return re.sub(r"\s+", " ", f"{clean_title} {clean_summary} {tr_title} {tr_summary} {ents}").strip()
+
+
+def is_multi_story_roundup(article: Article) -> bool:
+    """
+    Return True for podcast briefings (e.g., NPR Up First), newsletters, or composite
+    multi-story roundups joining unrelated topics into one feed item.
+    """
+    url = (getattr(article, "original_url", "") or getattr(article, "canonical_url", "") or "").strip()
+    if url and _ROUNDUP_URL_PATTERN.search(url):
+        return True
+
+    title = (getattr(article, "original_title", "") or "").strip()
+    summary = (getattr(article, "original_summary", "") or "").strip()
+    if title and (_ROUNDUP_ALLCAPS_AND_TITLE_RE.search(title) or _ROUNDUP_SEMICOLON_TITLE_RE.search(title)):
+        return True
+
+    combined = f"{title} {summary}".strip()
+    if combined and _ROUNDUP_TEXT_PATTERN.search(combined):
+        return True
+    return False
 
 
 def is_genuine_kurdistan_event(article: Article) -> bool:
@@ -350,12 +422,16 @@ def is_genuine_kurdistan_event(article: Article) -> bool:
 def check_blocked_topic(article: Article) -> Optional[str]:
     """
     Deterministic second-layer guard rejecting domestic crime/individual court trials,
-    sports/tournaments, and culture/lifestyle fluff before classification or publishing.
+    celebrity/Hollywood obituaries, sports/tournaments, multi-story roundups,
+    and culture/lifestyle fluff before classification or publishing.
     Returns rejection reason string if blocked, else None.
     """
     cat = (getattr(article, "category", "") or "").strip().lower()
     if cat in BLOCKED_CATEGORY_NAMES:
         return f"Blocked category: {article.category}"
+
+    if is_multi_story_roundup(article):
+        return "Blocked topic: multi-story news roundup or podcast briefing excluded"
 
     clean_text = clean_article_event_text(article)
     if not clean_text:
@@ -368,7 +444,7 @@ def check_blocked_topic(article: Article) -> Optional[str]:
         return "Blocked topic: foreign/domestic crime or individual court sentencing"
 
     if CULTURE_LIFESTYLE_PATTERN.search(clean_text):
-        return "Blocked topic: culture/lifestyle/entertainment fluff"
+        return "Blocked topic: culture/lifestyle/celebrity/entertainment fluff"
 
     if TRAFFIC_MUNICIPAL_AD_PATTERN.search(clean_text):
         return "Blocked topic: traffic/municipal-service notice or advertisement"
@@ -470,13 +546,19 @@ def select_top_candidates_for_gemini(
 
 def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
     """Map any category string strictly onto one of the 7 canonical category keys."""
-    cleaned_hint = strip_news_dateline(text_hint or "")
+    cleaned_hint = _OUTLET_BRAND_STRIP_RE.sub(" ", strip_news_dateline(text_hint or "")).strip()
     if raw_category:
         cleaned = raw_category.strip().lower()
-        if cleaned == "kurdistan" or "kurd" in cleaned:
-            # If event text is supplied, keep 'kurdistan' ONLY when actual content involves Kurdistan
+        if cleaned in {"kurdistan", "کوردستان", "كردستان"} or "kurd" in cleaned:
+            # Keep 'kurdistan' ONLY when actual content involves Kurdistan/Kurdish entities
             if not cleaned_hint or KURDISTAN_PATTERN.search(cleaned_hint):
                 return "kurdistan"
+            if _CYBER_TOPIC_RE.search(cleaned_hint):
+                return "cybersecurity"
+            if _ECONOMY_TOPIC_RE.search(cleaned_hint):
+                return "economy_markets"
+            if _MILITARY_TOPIC_RE.search(cleaned_hint):
+                return "military_conflict"
             return "politics_world"
         if cleaned in CANONICAL_CATEGORIES:
             return cleaned
@@ -489,13 +571,15 @@ def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
             return "cybersecurity"
         if "ai" in cleaned or "tech" in cleaned:
             return "ai_tech"
-        if "econom" in cleaned or "market" in cleaned or "business" in cleaned or "oil" in cleaned:
+        if "econom" in cleaned or "market" in cleaned or "business" in cleaned or "oil" in cleaned or "ئابووری" in cleaned:
             return "economy_markets"
         if "science" in cleaned or "space" in cleaned:
             return "science_space"
 
     if cleaned_hint and KURDISTAN_PATTERN.search(cleaned_hint):
         return "kurdistan"
+    if cleaned_hint and _ECONOMY_TOPIC_RE.search(cleaned_hint) and not _MILITARY_TOPIC_RE.search(cleaned_hint):
+        return "economy_markets"
     return "politics_world"
 
 
@@ -688,7 +772,7 @@ class ImportanceRanker:
             scaled_score = max(8, scaled_score)
             passed = True
         elif cat == "kurdistan":
-            cat = "politics_world"
+            cat = normalize_category("kurdistan", text_hint=clean_text or "politics")
 
         # Never let Kurdistan focus boost or Priority.CRITICAL flip is_breaking to True.
         # Only mark breaking on genuine sudden-emergency keywords without statement/interview markers.
@@ -730,12 +814,10 @@ class ImportanceRanker:
         if "score" not in data:
             raise GeminiAPIError("Missing 'score' field in Gemini classifier response.")
 
-        clean_title = strip_news_dateline(article.original_title or "")
-        snippet = strip_news_dateline(article.original_summary or "").strip()[:500]
         score = max(1, min(10, int(round(float(data["score"])))))
         raw_is_breaking = bool(data.get("is_breaking", False))
         raw_category = str(data.get("category", "")).strip()
-        clean_hint = f"{clean_title} {snippet}".strip()
+        clean_hint = clean_article_event_text(article)
         category = normalize_category(raw_category, text_hint=clean_hint)
 
         # Enforce high priority ONLY for genuine Kurdistan events scoring >= threshold
