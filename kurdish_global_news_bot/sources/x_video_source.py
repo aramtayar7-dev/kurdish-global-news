@@ -130,14 +130,13 @@ class XVideoSource(BaseSource):
         self._max_age_hours: float = float(
             max_age_hours if max_age_hours is not None else getattr(config, "X_MAX_VIDEO_AGE_HOURS", 6.0)
         )
-        self._max_videos_per_cycle: int = max(
-            1,
-            int(
-                max_videos_per_cycle
-                if max_videos_per_cycle is not None
-                else getattr(config, "X_MAX_VIDEOS_PER_CYCLE", 4)
-            ),
-        )
+        if max_videos_per_cycle is not None:
+            default_cap = int(max_videos_per_cycle)
+        elif getattr(config, "ENABLE_BATCH_PACING_ENGINE", True):
+            default_cap = int(getattr(config, "X_MAX_CANDIDATE_VIDEOS_PER_CYCLE", 10))
+        else:
+            default_cap = int(getattr(config, "X_MAX_VIDEOS_PER_CYCLE", 4))
+        self._max_videos_per_cycle: int = max(1, default_cap)
         self._session: Optional[aiohttp.ClientSession] = None
         self._semaphore = asyncio.Semaphore(4)
         self._account_by_handle: dict[str, dict[str, Any]] = {
@@ -476,8 +475,8 @@ class XVideoSource(BaseSource):
             )
         )
 
-        # Limit metadata lookups while allowing enough headroom to hit cycle cap
-        probe_limit = max(self._max_videos_per_cycle * 3, 12)
+        # Limit metadata lookups while allowing enough headroom to hit candidate cap
+        probe_limit = max(self._max_videos_per_cycle * 2, 16)
         probe_pool = fresh_candidates[:probe_limit]
         meta_results = await asyncio.gather(
             *[self._resolve_video_metadata(c["handle"], c["status_id"]) for c in probe_pool],

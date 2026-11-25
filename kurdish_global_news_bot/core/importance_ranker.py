@@ -21,6 +21,7 @@ from storage.utils import normalize_event_entities, normalize_event_key
 from processing.extractor import ArticleExtractor
 from processing.gemini_client import GeminiClient, GeminiAPIError, GeminiQuotaExhaustedError
 from processing.translator import strip_news_dateline
+import config
 from config import (
     CANONICAL_CATEGORIES,
     GEMINI_API_KEY,
@@ -507,6 +508,8 @@ def select_top_candidates_for_gemini(
     """
     Filter out locally off-topic articles BEFORE Gemini and cap the remaining pool to the
     `max_candidates` freshest and most relevant candidates (Kurdistan & Politics/War first).
+    When the 4:4:2 Batch Pacing Engine is active across multiple source buckets, preserves
+    balanced headroom across telegram / x / search buckets before filling remaining capacity.
     Returns `(selected_candidates, rejected_with_reasons)`.
     """
     if not articles:
@@ -536,11 +539,59 @@ def select_top_candidates_for_gemini(
         return (kurd_rank, pol_rank, reg_rank, cred, ts)
 
     ordered = sorted(kept, key=_fresh_relevance_key)
-    selected = ordered[:max_candidates]
-    for overflow in ordered[max_candidates:]:
-        rejected.append(
-            (overflow, f"Deferred: exceeded max {max_candidates} Gemini candidates per cycle")
-        )
+    if (
+        len(ordered) <= max_candidates
+        or not getattr(config, "ENABLE_BATCH_PACING_ENGINE", True)
+        or max_candidates < 10
+    ):
+        selected = ordered[:max_candidates]
+        for overflow in ordered[max_candidates:]:
+            rejected.append(
+                (overflow, f"Deferred: exceeded max {max_candidates} Gemini candidates per cycle")
+            )
+        return selected, rejected
+
+    # Reserve balanced multi-bucket representation (telegram / x / search) when overflowing
+    from core.balancer import get_source_bucket
+
+    by_bucket: dict[str, list[Article]] = {"telegram": [], "x": [], "search": []}
+    for art in ordered:
+        b = get_source_bucket(art)
+        by_bucket.setdefault(b, []).append(art)
+
+    non_empty_buckets = sum(1 for v in by_bucket.values() if v)
+    if non_empty_buckets < 2:
+        selected = ordered[:max_candidates]
+        for overflow in ordered[max_candidates:]:
+            rejected.append(
+                (overflow, f"Deferred: exceeded max {max_candidates} Gemini candidates per cycle")
+            )
+        return selected, rejected
+
+    mix = getattr(config, "BATCH_SOURCE_MIX", {"telegram": 4, "x": 4, "search": 2})
+    selected: list[Article] = []
+    selected_ids: set[int] = set()
+    for bucket in ("telegram", "x", "search"):
+        reserve = max(int(mix.get(bucket, 0)), 3)
+        for art in by_bucket.get(bucket, [])[:reserve]:
+            if len(selected) >= max_candidates:
+                break
+            selected.append(art)
+            selected_ids.add(id(art))
+
+    for art in ordered:
+        if len(selected) >= max_candidates:
+            break
+        if id(art) not in selected_ids:
+            selected.append(art)
+            selected_ids.add(id(art))
+
+    selected.sort(key=_fresh_relevance_key)
+    for overflow in ordered:
+        if id(overflow) not in selected_ids:
+            rejected.append(
+                (overflow, f"Deferred: exceeded max {max_candidates} Gemini candidates per cycle")
+            )
     return selected, rejected
 
 

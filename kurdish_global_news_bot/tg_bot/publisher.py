@@ -227,33 +227,38 @@ class TelegramPublisher:
         disable_notification = not breaking
         reply_root_id = getattr(article, "thread_root_message_id", None)
 
-        is_official = is_official_media_source(
-            getattr(article, "source_name", "") or "",
-            getattr(article, "original_url", "") or "",
-        )
-        is_x = is_x_source_url(getattr(article, "original_url", "") or "")
-        text_hint = (
-            f"{getattr(article, 'original_title', '') or ''} "
-            f"{getattr(article, 'original_summary', '') or ''} "
-            f"{getattr(article, 'original_url', '') or ''}"
-        )
-        ctx_token = _WATERMARK_POLICY_CTX.set(
-            {
-                "is_official_media": is_official,
-                "check_watermarks": bool(is_x or not is_official),
-                "text_hint": text_hint,
-            }
-        )
-        try:
-            branded_video_path = await download_and_brand_video(article.video_url)
-        except WatermarkRejectedError as exc:
-            article._watermark_rejected_reason = str(exc)  # type: ignore[attr-defined]
-            logger.info("Video rejected by watermark policy: %s", exc)
-            return None
-        finally:
-            _WATERMARK_POLICY_CTX.reset(ctx_token)
-        if not branded_video_path:
-            return None
+        pre_branded = getattr(article, "_prepared_branded_video_path", None)
+        if pre_branded and Path(pre_branded).is_file():
+            branded_video_path = str(pre_branded)
+            article._prepared_branded_video_path = None  # type: ignore[attr-defined]
+        else:
+            is_official = is_official_media_source(
+                getattr(article, "source_name", "") or "",
+                getattr(article, "original_url", "") or "",
+            )
+            is_x = is_x_source_url(getattr(article, "original_url", "") or "")
+            text_hint = (
+                f"{getattr(article, 'original_title', '') or ''} "
+                f"{getattr(article, 'original_summary', '') or ''} "
+                f"{getattr(article, 'original_url', '') or ''}"
+            )
+            ctx_token = _WATERMARK_POLICY_CTX.set(
+                {
+                    "is_official_media": is_official,
+                    "check_watermarks": bool(is_x or not is_official),
+                    "text_hint": text_hint,
+                }
+            )
+            try:
+                branded_video_path = await download_and_brand_video(article.video_url)
+            except WatermarkRejectedError as exc:
+                article._watermark_rejected_reason = str(exc)  # type: ignore[attr-defined]
+                logger.info("Video rejected by watermark policy: %s", exc)
+                return None
+            finally:
+                _WATERMARK_POLICY_CTX.reset(ctx_token)
+            if not branded_video_path:
+                return None
 
         reply_markup = build_source_button_markup(article=article)
         caption = self._trim_caption_at_sentence(

@@ -207,6 +207,11 @@ class TestSmartPacingConfig:
 
 
 class TestSmartPacingAndQueueDrain:
+    @pytest.fixture(autouse=True)
+    def _legacy_smart_pacing_mode(self, monkeypatch):
+        """Isolate Idea-2 3-post/25s legacy Smart Pacing tests from the 10-post 4:4:2 batch engine."""
+        monkeypatch.setattr(config, "ENABLE_BATCH_PACING_ENGINE", False)
+
     @pytest.mark.asyncio
     async def test_burst_cap_intra_delay_and_zero_gemini_queue_drain(self, temp_db, tmp_path, monkeypatch):
         """

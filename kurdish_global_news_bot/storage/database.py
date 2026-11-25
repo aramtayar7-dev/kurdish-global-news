@@ -739,6 +739,32 @@ class Database:
             return filtered
         return rows
 
+    async def get_last_batch_completed_at(self) -> Optional[datetime]:
+        """Return UTC timestamp of the most recently completed paced batch, or None."""
+        rows = await self.get_recent_system_logs(component="BATCH_COOLDOWN", limit=1)
+        if not rows:
+            return None
+        return self._parse_utc_timestamp(rows[0].get("timestamp"))
+
+    async def record_batch_completed_at(
+        self,
+        timestamp: Optional[datetime] = None,
+        published_count: int = 0,
+    ) -> datetime:
+        """Persist completion timestamp of a paced batch into existing `system_logs` table."""
+        dt = timestamp or datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        await self.log_system_event(
+            level="INFO",
+            component="BATCH_COOLDOWN",
+            message=f"Batch completed ({int(published_count)} post(s))",
+            timestamp=dt.isoformat(),
+        )
+        return dt
+
     async def get_sources_status(self) -> list[dict]:
         """Return enabled sources and their failure counters for watchdog health monitoring."""
         async with self.conn.execute(

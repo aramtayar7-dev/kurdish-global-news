@@ -133,6 +133,7 @@ class WatchdogCycleMetrics:
     supabase_error: str = ""
     storage_backend: str = "SQLite"
     discovery_ran: bool = True
+    in_cooldown: bool = False
     extra_notes: list[str] = field(default_factory=list)
 
 
@@ -548,8 +549,12 @@ class AdminWatchdog:
 
             # Remaining DB-backed checks
             if self._db is not None:
-                # 3. Publish drought check
-                if cycle_metrics.discovery_ran and hasattr(self._db, "get_watchdog_article_metrics"):
+                # 3. Publish drought check (never trigger false alerts while intentionally resting)
+                if (
+                    not getattr(cycle_metrics, "in_cooldown", False)
+                    and cycle_metrics.discovery_ran
+                    and hasattr(self._db, "get_watchdog_article_metrics")
+                ):
                     try:
                         art_metrics = await self._db.get_watchdog_article_metrics(hours=24, now=now_utc)
                         total_articles = int(art_metrics.get("total_articles") or 0)

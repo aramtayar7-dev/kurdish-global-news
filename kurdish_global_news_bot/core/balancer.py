@@ -16,8 +16,9 @@ articles per 8 published articles (62.5% Bashur / 37.5% Global) with:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 import config
 from config import (
@@ -38,8 +39,123 @@ from core.importance_ranker import (
     is_regional_geopolitics,
     is_strict_breaking,
 )
-from core.source_verifier import get_source_group, get_source_tier, TIER_3
+from core.source_verifier import get_source_group, get_source_tier, is_x_source_url, TIER_3
 from storage.models import Article
+
+_TELEGRAM_BUCKET_DOMAINS = {"t.me", "telegram.me", "telegram.dog"}
+_TELEGRAM_ONLY_NAMES = {"sabereen", "sabereen news", "sabereen plus", "sabrennewss", "sabren_news1"}
+_X_ONLY_NAMES = {
+    "centcom",
+    "rawafid",
+    "rawafiid",
+    "aurora intel",
+    "auroraintel",
+    "osinttechnical",
+    "faytuks news",
+    "faytuks",
+    "intel crab",
+    "intelcrab",
+    "osintdefender",
+    "sentdefender",
+    "elint news",
+    "elintnews",
+    "rudawkurdish",
+    "rudawenglish",
+    "kurdistan24tv",
+    "kurdistan24_en",
+    "englishbasnews",
+    "shafaqnews",
+}
+
+
+def get_source_bucket(article: Article) -> str:
+    """
+    Deterministically classify an article into its source mix bucket:
+      - "telegram": TelegramSource articles (`t.me/` URLs or `source_type == "telegram"`)
+      - "x": XVideoSource articles (`x.com/` / `twitter.com/` URLs or `source_type in ("x", "x_video")`)
+      - "search": DuckDuckGo / GDELT / RSS / web news articles
+    Zero Gemini calls.
+    """
+    src_type = str(getattr(article, "source_type", "") or "").strip().lower()
+    if src_type == "telegram":
+        return "telegram"
+    if src_type in ("x", "x_video", "twitter"):
+        return "x"
+    if src_type in ("search", "rss", "duckduckgo", "gdelt"):
+        return "search"
+
+    urls = (
+        getattr(article, "original_url", None),
+        getattr(article, "canonical_url", None),
+        getattr(article, "url", None),
+    )
+    has_http_host = False
+    for u in urls:
+        if not u or not isinstance(u, str):
+            continue
+        if is_x_source_url(u):
+            return "x"
+        try:
+            host = (urlparse(u.strip()).hostname or "").lower().lstrip("www.")
+        except Exception:
+            host = ""
+        if host:
+            if host in _TELEGRAM_BUCKET_DOMAINS or any(
+                host.endswith(f".{dom}") for dom in _TELEGRAM_BUCKET_DOMAINS
+            ):
+                return "telegram"
+            has_http_host = True
+
+    src_name = str(getattr(article, "source_name", "") or "").strip().lower()
+    if src_name in _TELEGRAM_ONLY_NAMES:
+        return "telegram"
+    if src_name in _X_ONLY_NAMES:
+        return "x"
+
+    # Web articles (Reuters, BBC, Kurdistan24.net, Rudaw.net, DDG, GDELT) default to "search"
+    if has_http_host:
+        return "search"
+    return "search"
+
+
+def _interleave_buckets(bucket_queues: dict[str, list[Article]]) -> list[Article]:
+    """
+    Interleave picked articles across ("telegram", "x", "search") using smooth weighted
+    round-robin so 4:4:2 yields balanced alternating minute-by-minute posts (e.g.,
+    telegram -> x -> search -> telegram -> x -> telegram -> x -> search -> telegram -> x)
+    instead of posting 4 identical sources in a row.
+    """
+    order = ("telegram", "x", "search")
+    queues = {b: list(bucket_queues.get(b, [])) for b in order}
+    weights = {b: len(queues[b]) for b in order}
+    remaining = sum(weights.values())
+    if remaining == 0:
+        return []
+
+    current = {b: 0 for b in order}
+    interleaved: list[Article] = []
+    last_bucket: Optional[str] = None
+
+    while remaining > 0:
+        active = [b for b in order if queues[b]]
+        if not active:
+            break
+        for b in active:
+            current[b] += max(1, weights[b])
+
+        # Prefer a bucket different from last_bucket if weights are non-empty and score ties
+        chosen = max(
+            active,
+            key=lambda b: (current[b], 1 if b != last_bucket else 0, -order.index(b)),
+        )
+        total_active_weight = sum(max(1, weights[b]) for b in active)
+        current[chosen] -= total_active_weight
+
+        interleaved.append(queues[chosen].pop(0))
+        last_bucket = chosen
+        remaining -= 1
+
+    return interleaved
 
 
 def _normalized_article_score(article: Article) -> float:
@@ -73,7 +189,7 @@ def _qualifies_for_econ_cyber_slot(article: Article) -> bool:
 
 @dataclass
 class BalanceSelectionResult:
-    """Structured result of 5-of-8 Bashur + 7-of-8 Politics/War balanced batch selection."""
+    """Structured result of 5-of-8 Bashur + 7-of-8 Politics/War + 4:4:2 bucket selection."""
     selected: list[Article]
     deferred: list[Article]
     bashur_selected: int
@@ -82,6 +198,9 @@ class BalanceSelectionResult:
     reason: str
     politics_war_selected: int = 0
     econ_cyber_selected: int = 0
+    bucket_counts: dict[str, int] = field(
+        default_factory=lambda: {"telegram": 0, "x": 0, "search": 0}
+    )
 
 
 def batch_publish_sort_key(article: Article) -> tuple:
@@ -445,4 +564,219 @@ class QuotaBalancer:
             reason=reason,
             politics_war_selected=pw_count,
             econ_cyber_selected=ec_count,
+            bucket_counts={
+                "telegram": sum(1 for a in ordered_selected if get_source_bucket(a) == "telegram"),
+                "x": sum(1 for a in ordered_selected if get_source_bucket(a) == "x"),
+                "search": sum(1 for a in ordered_selected if get_source_bucket(a) == "search"),
+            },
         )
+
+    def select_paced_batch(
+        self,
+        candidates: list[Article],
+        target_posts: Optional[int] = None,
+        source_mix: Optional[dict[str, int]] = None,
+        recent_published: Optional[list[Article]] = None,
+    ) -> BalanceSelectionResult:
+        """
+        Select up to `target_posts` (default 10) unique, non-duplicate articles enforcing:
+          1. 4:4:2 Source Mix (`4 telegram + 4 x + 2 search`) when available
+          2. Graceful non-duplicate backfill from remaining eligible high-priority candidates
+             when any bucket is short (never pads with duplicates or banned/junk items)
+          3. 5-of-8 Southern Kurdistan priority, 7:1 Politics/War limit (max 1 Econ/Cyber
+             per batch), and rolling per-source-group dominance cap (strict Tier-3 cap)
+          4. Balanced round-robin interleaving across buckets for 1-post/minute publishing
+        """
+        effective_limit = (
+            int(getattr(config, "BATCH_TARGET_POSTS", 10))
+            if target_posts is None
+            else max(0, int(target_posts))
+        )
+        if not candidates or effective_limit == 0:
+            return BalanceSelectionResult(
+                selected=[],
+                deferred=list(candidates),
+                bashur_selected=0,
+                global_selected=0,
+                bashur_quota_target=0,
+                reason="No eligible candidates or zero batch target",
+                politics_war_selected=0,
+                econ_cyber_selected=0,
+                bucket_counts={"telegram": 0, "x": 0, "search": 0},
+            )
+
+        mix = dict(
+            getattr(config, "BATCH_SOURCE_MIX", {"telegram": 4, "x": 4, "search": 2})
+            if source_mix is None
+            else source_mix
+        )
+        bashur_budget = self.compute_bashur_budget(effective_limit, recent_published=recent_published)
+        ec_budget = max(0, self.compute_econ_cyber_budget(min(effective_limit, 8), recent_published=recent_published))
+
+        dom_cap_enabled = bool(getattr(config, "ENABLE_SOURCE_DOMINANCE_CAP", ENABLE_SOURCE_DOMINANCE_CAP))
+        dom_cap = max(
+            0,
+            int(getattr(config, "MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW", MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW)),
+        )
+        window_hist_len = max(0, 8 - min(effective_limit, 8))
+        history_slice = (recent_published or [])[:window_hist_len]
+        group_counts: dict[str, int] = {}
+        for hist_art in history_slice:
+            grp = get_source_group(getattr(hist_art, "source_name", "") or "")
+            if grp and grp != "unknown":
+                group_counts[grp] = group_counts.get(grp, 0) + 1
+
+        # Defensive URL/object uniqueness guard across buckets
+        unique_candidates: list[Article] = []
+        seen_urls: set[str] = set()
+        seen_obj_ids: set[int] = set()
+        for art in candidates:
+            if id(art) in seen_obj_ids:
+                continue
+            can_url = (getattr(art, "canonical_url", "") or "").strip()
+            if can_url and can_url in seen_urls:
+                continue
+            seen_obj_ids.add(id(art))
+            if can_url:
+                seen_urls.add(can_url)
+            unique_candidates.append(art)
+
+        bucket_pools: dict[str, list[Article]] = {"telegram": [], "x": [], "search": []}
+        for art in unique_candidates:
+            bucket_pools[get_source_bucket(art)].append(art)
+
+        for b_name in bucket_pools:
+            bucket_pools[b_name].sort(key=article_selection_sort_key)
+
+        selected: list[Article] = []
+        selected_ids: set[int] = set()
+        picked_by_bucket: dict[str, list[Article]] = {"telegram": [], "x": [], "search": []}
+        ec_selected_count = 0
+        bashur_selected_count = 0
+
+        def _can_admit(art: Article, allow_tier12_scarcity_overflow: bool = False) -> bool:
+            if id(art) in selected_ids:
+                return False
+            topic = classify_topic_bucket(art)
+            if topic in ("economy", "cybersecurity"):
+                if not _qualifies_for_econ_cyber_slot(art):
+                    return False
+                if ec_selected_count >= ec_budget:
+                    return False
+            if not dom_cap_enabled or dom_cap <= 0:
+                return True
+            if _is_dominance_cap_exempt(art):
+                return True
+            grp = get_source_group(getattr(art, "source_name", "") or "")
+            if not grp or grp == "unknown":
+                return True
+            if group_counts.get(grp, 0) < dom_cap:
+                return True
+            if allow_tier12_scarcity_overflow and get_source_tier(getattr(art, "source_name", "") or "") != TIER_3:
+                return True
+            return False
+
+        def _admit(art: Article, bucket_name: str) -> None:
+            nonlocal ec_selected_count, bashur_selected_count
+            selected.append(art)
+            selected_ids.add(id(art))
+            picked_by_bucket[bucket_name].append(art)
+            if classify_topic_bucket(art) in ("economy", "cybersecurity"):
+                ec_selected_count += 1
+            if is_bashur_article(art):
+                bashur_selected_count += 1
+            grp = get_source_group(getattr(art, "source_name", "") or "")
+            if grp and grp != "unknown":
+                group_counts[grp] = group_counts.get(grp, 0) + 1
+
+        # Pass 1: Fill explicit 4:4:2 bucket targets (preferring Politics/War and Bashur first)
+        for bucket_name in ("telegram", "x", "search"):
+            quota = max(0, int(mix.get(bucket_name, 0)))
+            if quota <= 0 or len(selected) >= effective_limit:
+                continue
+            pool_ordered = sorted(
+                bucket_pools[bucket_name],
+                key=lambda a: (
+                    0 if classify_topic_bucket(a) == "politics_war" else 1,
+                    0 if (bashur_selected_count < bashur_budget and is_bashur_article(a)) else 1,
+                    *article_selection_sort_key(a),
+                ),
+            )
+            taken = 0
+            for art in pool_ordered:
+                if taken >= quota or len(selected) >= effective_limit:
+                    break
+                if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                    _admit(art, bucket_name)
+                    taken += 1
+
+        # Pass 2: Graceful backfill from remaining highest-priority unique items across all buckets
+        if len(selected) < effective_limit:
+            remaining_pool = [a for a in unique_candidates if id(a) not in selected_ids]
+            remaining_ordered = sorted(
+                remaining_pool,
+                key=lambda a: (
+                    0 if classify_topic_bucket(a) == "politics_war" else 1,
+                    0 if (bashur_selected_count < bashur_budget and is_bashur_article(a)) else 1,
+                    *article_selection_sort_key(a),
+                ),
+            )
+            for allow_scarcity in (False, True):
+                if len(selected) >= effective_limit:
+                    break
+                for art in remaining_ordered:
+                    if len(selected) >= effective_limit:
+                        break
+                    if _can_admit(art, allow_tier12_scarcity_overflow=allow_scarcity):
+                        _admit(art, get_source_bucket(art))
+
+        # Order items cleanly inside each bucket, then interleave across buckets (e.g. TG -> X -> Search)
+        for b_name in picked_by_bucket:
+            picked_by_bucket[b_name].sort(key=batch_publish_sort_key)
+
+        interleaved = _interleave_buckets(picked_by_bucket)
+        deferred = [a for a in unique_candidates if id(a) not in selected_ids]
+
+        bashur_count = sum(1 for a in interleaved if is_bashur_article(a))
+        global_count = len(interleaved) - bashur_count
+        pw_count = sum(1 for a in interleaved if classify_topic_bucket(a) == "politics_war")
+        ec_count = sum(1 for a in interleaved if classify_topic_bucket(a) in ("economy", "cybersecurity"))
+        b_counts = {b: len(picked_by_bucket[b]) for b in ("telegram", "x", "search")}
+
+        reason = (
+            f"Paced Batch {len(interleaved)}/{effective_limit} "
+            f"[TG={b_counts['telegram']}, X={b_counts['x']}, Search={b_counts['search']}] | "
+            f"{bashur_count} Bashur + {global_count} Global | "
+            f"Topics: {pw_count} Politics/War + {ec_count} Econ/Cyber"
+        )
+        return BalanceSelectionResult(
+            selected=interleaved,
+            deferred=deferred,
+            bashur_selected=bashur_count,
+            global_selected=global_count,
+            bashur_quota_target=bashur_budget,
+            reason=reason,
+            politics_war_selected=pw_count,
+            econ_cyber_selected=ec_count,
+            bucket_counts=b_counts,
+        )
+
+
+def select_paced_batch(
+    candidates: list[Article],
+    target_posts: Optional[int] = None,
+    source_mix: Optional[dict[str, int]] = None,
+    recent_published: Optional[list[Article]] = None,
+) -> BalanceSelectionResult:
+    """Module-level helper to select an interleaved 4:4:2 paced batch up to `target_posts`."""
+    limit = (
+        int(getattr(config, "BATCH_TARGET_POSTS", 10))
+        if target_posts is None
+        else max(0, int(target_posts))
+    )
+    return QuotaBalancer(batch_limit=max(1, limit)).select_paced_batch(
+        candidates,
+        target_posts=target_posts,
+        source_mix=source_mix,
+        recent_published=recent_published,
+    )

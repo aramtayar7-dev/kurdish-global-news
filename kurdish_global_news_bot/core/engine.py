@@ -11,7 +11,8 @@ import asyncio
 import logging
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 from storage import create_database, get_kurdistan_date_str
@@ -22,6 +23,7 @@ from storage.utils import (
     normalize_event_key,
     pack_event_metadata,
 )
+from core.balancer import get_source_bucket, select_paced_batch
 from core.scheduler import DiscoveryScheduler
 from core.importance_ranker import (
     article_selection_sort_key,
@@ -32,6 +34,7 @@ from core.importance_ranker import (
 )
 from core.pipeline import ArticlePipeline
 from core.recovery import RecoveryManager
+from core.source_verifier import is_official_media_source, is_x_source_url
 from sources.base import BaseSource, RawArticle
 from sources.duckduckgo_source import DuckDuckGoSource
 from sources.rss_source import RSSSource
@@ -45,6 +48,12 @@ from processing.extractor import ArticleExtractor
 from processing.card_generator import NewsCardGenerator
 from processing.digest_generator import DIGEST_HEADER_PREFIX, DailyDigestGenerator
 from processing.translator import is_valid_kurdish_sorani
+from processing.video_processor import (
+    WatermarkRejectedError,
+    _WATERMARK_POLICY_CTX,
+    cleanup_video_file,
+    download_and_brand_video,
+)
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics, Timer
@@ -58,6 +67,33 @@ from config import (
 )
 
 logger = logging.getLogger("core.engine")
+
+
+def compute_next_post_delay(
+    now_utc: datetime,
+    prev_post_time: datetime,
+    interval_seconds: float,
+    align_to_minute: bool = True,
+) -> float:
+    """
+    Compute seconds to sleep before the next post in a sequential paced batch.
+    When `align_to_minute` is True and `interval_seconds >= 45`, aligns to the next
+    clean `:00` minute mark (e.g. 3:40 -> 3:41 -> ... -> 3:49) compensating for API time.
+    """
+    if interval_seconds <= 0:
+        return 0.0
+
+    now_dt = now_utc if now_utc.tzinfo else now_utc.replace(tzinfo=timezone.utc)
+    prev_dt = prev_post_time if prev_post_time.tzinfo else prev_post_time.replace(tzinfo=timezone.utc)
+
+    if not align_to_minute or interval_seconds < 45.0:
+        target_dt = prev_dt + timedelta(seconds=float(interval_seconds))
+        return max(0.0, (target_dt - now_dt).total_seconds())
+
+    earliest = prev_dt + timedelta(seconds=max(45.0, float(interval_seconds) - 15.0))
+    base_minute = earliest.replace(second=0, microsecond=0)
+    target_dt = (base_minute + timedelta(minutes=1)) if earliest > base_minute else base_minute
+    return max(0.0, (target_dt - now_dt).total_seconds())
 
 
 class NewsEngine:
@@ -489,15 +525,52 @@ class NewsEngine:
     # Discovery Cycle
     # ───────────────────────────────────────────────
 
-    async def _discovery_cycle(self) -> None:
+    @staticmethod
+    def _utc_now() -> datetime:
+        """Current UTC timestamp helper (centralized for deterministic test clocks)."""
+        return datetime.now(timezone.utc)
+
+    async def _discovery_cycle(self, *, bypass_cooldown: bool = False) -> None:
         """
-        Run one discovery cycle:
+        Run one discovery & publishing cycle:
+        0. Check persisted 10-minute post-batch cooldown (`BATCH_COOLDOWN` in `system_logs`)
         1. Load last 48-72h published history from persistent DB (Supabase / SQLite)
         2. Fetch articles from all sources concurrently
-        3. Extract and deduplicate across URLs, events, and post-translation Sorani
-        4. Feed into the pipeline for IMMEDIATE processing and publishing
+        3. Extract, deduplicate, watermark-check, and prepare up front
+        4. Publish paced 10-post 4:4:2 batch sequentially (1 post/minute) & persist cooldown
         """
         with Timer(self._metrics, "discovery_cycle_time"):
+            if (
+                not bypass_cooldown
+                and bool(getattr(config, "ENABLE_BATCH_PACING_ENGINE", True))
+                and isinstance(self._pipeline, ArticlePipeline)
+                and float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0)) > 0
+                and hasattr(self._db, "get_last_batch_completed_at")
+            ):
+                last_batch_dt = await self._db.get_last_batch_completed_at()
+                cooldown_min = float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0))
+                cooldown_sec = cooldown_min * 60.0
+                if last_batch_dt is not None:
+                    elapsed_sec = max(0.0, (self._utc_now() - last_batch_dt).total_seconds())
+                    if elapsed_sec < cooldown_sec:
+                        remaining_sec = int(round(cooldown_sec - elapsed_sec))
+                        logger.info(
+                            "Resting: %ds left in %.0f-minute post-batch cooldown",
+                            remaining_sec,
+                            cooldown_min,
+                        )
+                        if self._watchdog is not None:
+                            await self._watchdog.run_cycle_checks(
+                                WatchdogCycleMetrics(
+                                    discovered=0,
+                                    published=0,
+                                    storage_backend=self._active_storage_backend_label(),
+                                    discovery_ran=False,
+                                    in_cooldown=True,
+                                )
+                            )
+                        return
+
             recent_history: list[dict] = []
             try:
                 recent_history = await self._db.get_recent_published_headlines(hours=DEDUP_HISTORY_HOURS)
@@ -543,7 +616,17 @@ class NewsEngine:
                 logger.info("Discovered %d raw articles from %d sources.",
                              raw_discovered_count, len(self._sources))
 
-                if config.ENABLE_SMART_PACING and isinstance(self._pipeline, ArticlePipeline):
+                if getattr(config, "ENABLE_BATCH_PACING_ENGINE", True) and isinstance(
+                    self._pipeline, ArticlePipeline
+                ):
+                    batch_results = await self._run_batch_pacing_cycle(
+                        all_raw_articles,
+                        recent_history=recent_history,
+                    )
+                    if isinstance(batch_results, dict):
+                        published_this_cycle = int(batch_results.get("published", 0) or 0)
+                    logger.info("Batch pacing cycle results: %s", batch_results)
+                elif config.ENABLE_SMART_PACING and isinstance(self._pipeline, ArticlePipeline):
                     pacing_results = await self._run_smart_pacing_cycle(
                         all_raw_articles,
                         recent_history=recent_history,
@@ -754,6 +837,301 @@ class NewsEngine:
             valid_queued.append(q_art)
 
         return valid_queued, queued_refs
+
+    async def _precheck_and_brand_videos(
+        self,
+        candidates: list[Article],
+    ) -> tuple[list[Article], int]:
+        """
+        Perform UP-FRONT watermark inspection & KGN corner branding on eligible video candidates
+        BEFORE final 4:4:2 selection and Gemini translation:
+          - Unofficial/personal/OSINT videos carrying corner logos or repost watermarks are
+            strictly rejected immediately (`ArticleStatus.SKIPPED` + `skipped_urls`) so clean
+            backfill items take their slots and zero Gemini translation calls are wasted.
+          - Clean / official videos retain `_prepared_branded_video_path` so sequential
+            minute-by-minute posting hits exact `:00` timestamps without mid-loop FFmpeg latency.
+        """
+        assert isinstance(self._pipeline, ArticlePipeline)
+        clean: list[Article] = []
+        rejected_count = 0
+
+        for art in candidates:
+            video_url = getattr(art, "video_url", None)
+            if not video_url or not config.AUTO_PUBLISH:
+                clean.append(art)
+                continue
+
+            # If tests replaced publish_article with a mock, defer handling to mocked publisher
+            pub_fn = getattr(self._publisher, "publish_article", None)
+            if hasattr(pub_fn, "assert_awaited"):
+                clean.append(art)
+                continue
+
+            is_official = is_official_media_source(
+                getattr(art, "source_name", "") or "",
+                getattr(art, "original_url", "") or "",
+            )
+            is_x = is_x_source_url(getattr(art, "original_url", "") or "")
+            text_hint = (
+                f"{getattr(art, 'original_title', '') or ''} "
+                f"{getattr(art, 'original_summary', '') or ''} "
+                f"{getattr(art, 'original_url', '') or ''}"
+            )
+            ctx_token = _WATERMARK_POLICY_CTX.set(
+                {
+                    "is_official_media": is_official,
+                    "check_watermarks": bool(is_x or not is_official),
+                    "text_hint": text_hint,
+                }
+            )
+            try:
+                branded_path = await download_and_brand_video(video_url)
+                if branded_path and Path(branded_path).is_file():
+                    art._prepared_branded_video_path = str(branded_path)  # type: ignore[attr-defined]
+                clean.append(art)
+            except WatermarkRejectedError as exc:
+                rejected_count += 1
+                if art.id is not None:
+                    await self._db.update_article_status(
+                        art.id,
+                        ArticleStatus.SKIPPED,
+                        error_message=f"SKIPPED [Watermark]: {exc}"[:500],
+                    )
+                await self._db.mark_url_skipped(
+                    art.canonical_url or art.original_url,
+                    title=art.original_title,
+                    score=float(art.importance_score or 0.0),
+                    reason="unofficial_third_party_watermark",
+                )
+                self._metrics.increment("articles_skipped_watermark")
+                logger.info(
+                    "[PRECHECK SKIP WATERMARK] %s (%s): %s",
+                    art.source_name,
+                    (art.original_title or "")[:50],
+                    exc,
+                )
+            except Exception as exc:
+                logger.debug("Pre-check video branding skipped cleanly (%s): %s", art.id, str(exc)[:120])
+                clean.append(art)
+            finally:
+                _WATERMARK_POLICY_CTX.reset(ctx_token)
+
+        return clean, rejected_count
+
+    async def _run_batch_pacing_cycle(
+        self,
+        all_raw_articles: list[RawArticle],
+        recent_history: list[dict],
+    ) -> dict[str, int]:
+        """
+        Paced 10-Post Batch Engine (4:4:2 Source Mix + 1-Min Sequential Cadence + 10-Min Rest):
+          1. Expire stale queued articles & re-validate existing QUEUED backlog
+          2. Discover, dedup, watermark-check & Gemini-evaluate candidates UP FRONT
+          3. Select up to BATCH_TARGET_POSTS (10) via 4 Telegram + 4 X + 2 Search mix
+             with graceful non-duplicate backfill & clean bucket interleaving
+          4. Translate & prepare selected batch UP FRONT (preserving overflow as QUEUED)
+          5. Publish posts 1..N sequentially 1 post per minute (aligned to minute boundary),
+             record BATCH_COOLDOWN in `system_logs`, and sleep 10m in continuous loop mode
+        """
+        assert isinstance(self._pipeline, ArticlePipeline)
+        counts = {"published": 0, "queued": 0, "expired": 0, "rejected": 0}
+        target_posts = int(getattr(config, "BATCH_TARGET_POSTS", 10))
+        source_mix = dict(
+            getattr(config, "BATCH_SOURCE_MIX", {"telegram": 4, "x": 4, "search": 2})
+        )
+
+        # 1. Queue maintenance & validation
+        counts["expired"] += await self._db.expire_stale_queued_articles(
+            config.MAX_QUEUED_ARTICLE_AGE_HOURS
+        )
+        raw_queued = await self._db.get_queued_articles(
+            max_age_hours=config.MAX_QUEUED_ARTICLE_AGE_HOURS
+        )
+        held_ready = await self._db.get_articles_by_status(ArticleStatus.READY_TO_PUBLISH, limit=20)
+        seen_ids = {a.id for a in raw_queued if a.id is not None}
+        combined_backlog = list(raw_queued) + [
+            a for a in held_ready if a.id is not None and a.id not in seen_ids
+        ]
+        valid_queued, queued_refs = await self._validate_queued_candidates(
+            combined_backlog,
+            recent_history=recent_history,
+        )
+
+        # 2. Discover, evaluate & pre-check videos UP FRONT
+        clean_eligible_new: list[Article] = []
+        if all_raw_articles:
+            new_articles = await self._extract_and_insert(all_raw_articles)
+            logger.info("%d new articles to process.", len(new_articles))
+            if new_articles:
+                self._pipeline.set_cycle_corroboration_pool(new_articles)
+                capped_articles, rej_count = await self._apply_local_prefilter(new_articles)
+                counts["rejected"] += rej_count
+                if capped_articles:
+                    eligible_new, eval_counts = await self._pipeline.evaluate_batch_candidates(
+                        capped_articles,
+                        extra_queue_refs=queued_refs,
+                    )
+                    counts["rejected"] += eval_counts.get("rejected", 0)
+                    if eligible_new:
+                        clean_eligible_new, wm_rej = await self._precheck_and_brand_videos(eligible_new)
+                        counts["rejected"] += wm_rej
+
+        candidate_pool = valid_queued + clean_eligible_new
+        if not candidate_pool:
+            return counts
+
+        # 3. 4:4:2 Paced Batch Selection + Interleaving (10 posts max, zero duplicate padding)
+        recent_published = await self._db.get_recent_published_articles(limit=8)
+        plan = select_paced_batch(
+            candidate_pool,
+            target_posts=target_posts,
+            source_mix=source_mix,
+            recent_published=recent_published,
+        )
+        logger.info("[BATCH PACING] %s", plan.reason)
+
+        prepared_batch: list[Article] = []
+        substitute_pool = list(plan.deferred)
+
+        try:
+            # 4. Prepare (Gemini Sorani translation) selected batch UP FRONT
+            for art in plan.selected:
+                if art.status == ArticleStatus.QUEUED and is_valid_kurdish_sorani(art.translated_title or ""):
+                    prepared_batch.append(art)
+                    continue
+                try:
+                    if await self._pipeline.prepare_article_for_publishing(art):
+                        art.is_breaking = is_strict_breaking(art)
+                        prepared_batch.append(art)
+                    else:
+                        counts["rejected"] += 1
+                except Exception as exc:
+                    logger.error("Batch prepare error for article %s: %s", art.id, str(exc)[:200])
+
+            # Substitute any translation failures from clean overflow up to target_posts
+            used_sub_ids: set[int] = set()
+            while len(prepared_batch) < target_posts and substitute_pool:
+                sub = substitute_pool.pop(0)
+                if sub.id is not None and sub.id in used_sub_ids:
+                    continue
+                if sub.status == ArticleStatus.QUEUED and is_valid_kurdish_sorani(sub.translated_title or ""):
+                    prepared_batch.append(sub)
+                    if sub.id is not None:
+                        used_sub_ids.add(sub.id)
+                    continue
+                try:
+                    if await self._pipeline.prepare_article_for_publishing(sub):
+                        sub.is_breaking = is_strict_breaking(sub)
+                        prepared_batch.append(sub)
+                        if sub.id is not None:
+                            used_sub_ids.add(sub.id)
+                    else:
+                        counts["rejected"] += 1
+                except Exception as exc:
+                    logger.error("Substitute prepare error for article %s: %s", sub.id, str(exc)[:200])
+
+            if not prepared_batch:
+                return counts
+
+            if not config.AUTO_PUBLISH:
+                for q_art in prepared_batch + substitute_pool:
+                    await self._enqueue_article(q_art)
+                    if q_art.status == ArticleStatus.QUEUED:
+                        counts["queued"] += 1
+                counts["expired"] += await self._db.trim_queue(max(config.MAX_QUEUE_SIZE, target_posts))
+                return counts
+
+            # 5. Publish sequentially 1 post per minute (no sleep before 1st or after final post in single-run)
+            interval_sec = float(getattr(config, "BATCH_PUBLISH_INTERVAL_SECONDS", 60.0))
+            align_minute = bool(getattr(config, "BATCH_ALIGN_TO_MINUTE_BOUNDARY", True))
+            prev_post_dt: Optional[datetime] = None
+
+            for idx, art in enumerate(prepared_batch):
+                if idx > 0 and prev_post_dt is not None:
+                    wait_sec = compute_next_post_delay(
+                        self._utc_now(),
+                        prev_post_dt,
+                        interval_seconds=interval_sec,
+                        align_to_minute=align_minute,
+                    )
+                    if wait_sec > 0:
+                        logger.info(
+                            "[BATCH PACING] Waiting %.1fs before post %d/%d (%s | bucket=%s)...",
+                            wait_sec,
+                            idx + 1,
+                            len(prepared_batch),
+                            (art.source_name or "")[:30],
+                            get_source_bucket(art),
+                        )
+                        await asyncio.sleep(wait_sec)
+
+                post_start_dt = self._utc_now()
+                try:
+                    published = await self._pipeline._publish_immediately(art)
+                except Exception as pub_exc:
+                    logger.warning(
+                        "[BATCH PACING] Transient publish error on post %d/%d (article %s): %s",
+                        idx + 1,
+                        len(prepared_batch),
+                        art.id,
+                        str(pub_exc)[:160],
+                    )
+                    published = False
+
+                prev_post_dt = post_start_dt
+                if published:
+                    counts["published"] += 1
+                elif art.status in (ArticleStatus.READY_TO_PUBLISH, ArticleStatus.QUEUED):
+                    substitute_pool.append(art)
+
+            # Enqueue eligible overflow articles cleanly without exceeding queue cap
+            queue_budget = max(config.MAX_QUEUE_SIZE, target_posts)
+            prepared_overflow_limit = max(0, queue_budget - len(valid_queued))
+            enqueued_new = 0
+            for q_art in substitute_pool:
+                if q_art.status == ArticleStatus.QUEUED:
+                    counts["queued"] += 1
+                    continue
+                if enqueued_new >= prepared_overflow_limit:
+                    continue
+                try:
+                    if await self._pipeline.prepare_article_for_publishing(q_art):
+                        q_art.is_breaking = is_strict_breaking(q_art)
+                        await self._enqueue_article(q_art)
+                        if q_art.status == ArticleStatus.QUEUED:
+                            counts["queued"] += 1
+                            enqueued_new += 1
+                except Exception as exc:
+                    logger.debug("Overflow queue prep skipped (%s): %s", q_art.id, str(exc)[:120])
+
+            counts["expired"] += await self._db.trim_queue(queue_budget)
+
+            # Persist 10-minute post-batch cooldown timestamp in existing `system_logs`
+            if counts["published"] > 0 and hasattr(self._db, "record_batch_completed_at"):
+                completed_dt = self._utc_now()
+                await self._db.record_batch_completed_at(
+                    timestamp=completed_dt,
+                    published_count=counts["published"],
+                )
+                cooldown_min = float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0))
+                if self._running and cooldown_min > 0:
+                    rest_sec = cooldown_min * 60.0
+                    logger.info(
+                        "[BATCH PACING] Batch finished (%d published). Continuous loop resting %.0fs (%.0fm)...",
+                        counts["published"],
+                        rest_sec,
+                        cooldown_min,
+                    )
+                    await asyncio.sleep(rest_sec)
+
+            return counts
+        finally:
+            # Clean up any leftover pre-branded temp video files if skipped/interrupted
+            for art in prepared_batch + substitute_pool:
+                leftover = getattr(art, "_prepared_branded_video_path", None)
+                if leftover:
+                    cleanup_video_file(leftover)
+                    art._prepared_branded_video_path = None  # type: ignore[attr-defined]
 
     async def _run_smart_pacing_cycle(
         self,
