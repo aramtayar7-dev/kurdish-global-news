@@ -17,7 +17,14 @@ from typing import Optional
 
 import aiosqlite
 
-from config import BACKUP_DIR, DATABASE_PATH, DEDUP_HISTORY_HOURS
+from config import (
+    ArticleStatus,
+    BACKUP_DIR,
+    DATABASE_PATH,
+    DEDUP_HISTORY_HOURS,
+    MAX_QUEUE_SIZE,
+    MAX_QUEUED_ARTICLE_AGE_HOURS,
+)
 from storage.models import Article, Event, Source
 from storage.utils import (
     compute_url_hash as _compute_url_hash,
@@ -27,6 +34,8 @@ from storage.utils import (
     pack_event_metadata as _pack_event_metadata,
     parse_utc_timestamp as _parse_utc_timestamp_util,
     prioritize_digest_articles as _prioritize_digest_articles,
+    select_queue_overflow as _select_queue_overflow,
+    split_queued_by_age as _split_queued_by_age,
     unpack_event_metadata as _unpack_event_metadata,
 )
 
@@ -111,7 +120,8 @@ class Database:
                 region TEXT DEFAULT '',
                 named_entities TEXT DEFAULT '',
                 event_key TEXT DEFAULT '',
-                event_entities TEXT DEFAULT ''
+                event_entities TEXT DEFAULT '',
+                is_breaking INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS sources (
@@ -185,6 +195,8 @@ class Database:
             await self.conn.execute("ALTER TABLE articles ADD COLUMN event_entities TEXT DEFAULT ''")
         if "thread_root_message_id" not in existing_cols:
             await self.conn.execute("ALTER TABLE articles ADD COLUMN thread_root_message_id INTEGER DEFAULT NULL")
+        if "is_breaking" not in existing_cols:
+            await self.conn.execute("ALTER TABLE articles ADD COLUMN is_breaking INTEGER DEFAULT 0")
         await self.conn.commit()
         logger.info("Database schema initialized.")
 
@@ -210,8 +222,9 @@ class Database:
                         status, content_hash, event_fingerprint, retry_count,
                         error_message, telegram_message_id, thread_root_message_id,
                         image_url, video_url,
-                        country, region, named_entities, event_key, event_entities
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        country, region, named_entities, event_key, event_entities,
+                        is_breaking
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     article.canonical_url, article.original_url, article.original_title,
                     article.normalized_title, article.translated_title, article.original_summary,
@@ -223,6 +236,7 @@ class Database:
                     article.thread_root_message_id,
                     article.image_url, article.video_url, article.country, article.region,
                     named_entities_val, ev_key, ev_entities_json,
+                    int(bool(getattr(article, "is_breaking", False))),
                 ))
                 await self.conn.commit()
                 article.id = cursor.lastrowid
@@ -248,9 +262,11 @@ class Database:
             if status == "PUBLISHED" and "published_at" not in normalized_extra:
                 sets.append("published_at = ?")
                 vals.append(datetime.now(timezone.utc).isoformat())
-            if status == "PROCESSING" and "processed_at" not in normalized_extra:
+            if status in ("PROCESSING", ArticleStatus.QUEUED) and "processed_at" not in normalized_extra:
                 sets.append("processed_at = ?")
                 vals.append(datetime.now(timezone.utc).isoformat())
+            if "is_breaking" in normalized_extra:
+                normalized_extra["is_breaking"] = int(bool(normalized_extra["is_breaking"]))
             for key, value in normalized_extra.items():
                 sets.append(f"{key} = ?")
                 vals.append(value)
@@ -306,7 +322,7 @@ class Database:
         if only_published:
             query += " AND status = 'PUBLISHED'"
         else:
-            query += " AND status NOT IN ('DISCOVERED', 'REJECTED_DUPLICATE', 'FAILED', 'SKIPPED')"
+            query += " AND status NOT IN ('DISCOVERED', 'REJECTED_DUPLICATE', 'FAILED', 'SKIPPED', 'EXPIRED')"
         if exclude_id is not None:
             query += " AND id != ?"
             params.append(exclude_id)
@@ -515,6 +531,69 @@ class Database:
             return [self._row_to_article(row) for row in rows]
 
     # ───────────────────────────────────────────────
+    # Smart Pacing & Persistent Queue
+    # ───────────────────────────────────────────────
+
+    async def get_queued_articles(
+        self, max_age_hours: int = MAX_QUEUED_ARTICLE_AGE_HOURS
+    ) -> list[Article]:
+        """Fetch non-expired QUEUED articles ordered by priority and recency."""
+        all_queued = await self.get_articles_by_status(ArticleStatus.QUEUED, limit=200)
+        fresh, _ = _split_queued_by_age(all_queued, max_age_hours=max_age_hours)
+        return fresh
+
+    async def expire_stale_queued_articles(
+        self, max_age_hours: int = MAX_QUEUED_ARTICLE_AGE_HOURS
+    ) -> int:
+        """Mark QUEUED articles older than `max_age_hours` as EXPIRED and return count."""
+        all_queued = await self.get_articles_by_status(ArticleStatus.QUEUED, limit=200)
+        _, stale = _split_queued_by_age(all_queued, max_age_hours=max_age_hours)
+        expired_count = 0
+        for art, age_hours in stale:
+            if art.id is None:
+                continue
+            await self.update_article_status(
+                art.id,
+                ArticleStatus.EXPIRED,
+                error_message=f"Expired from queue (age {age_hours:.1f}h > {max_age_hours}h)",
+            )
+            expired_count += 1
+        return expired_count
+
+    async def trim_queue(self, max_size: int = MAX_QUEUE_SIZE) -> int:
+        """Keep top `max_size` highest-priority/freshest QUEUED articles and expire the rest."""
+        all_queued = await self.get_articles_by_status(ArticleStatus.QUEUED, limit=200)
+        overflow = _select_queue_overflow(all_queued, max_size=max_size)
+        trimmed_count = 0
+        for art in overflow:
+            if art.id is None:
+                continue
+            await self.update_article_status(
+                art.id,
+                ArticleStatus.EXPIRED,
+                error_message=f"Expired from queue: exceeded MAX_QUEUE_SIZE={max_size}",
+            )
+            trimmed_count += 1
+        return trimmed_count
+
+    async def get_last_normal_published_at(self) -> Optional[datetime]:
+        """Return UTC timestamp of the most recent non-breaking PUBLISHED article, or None."""
+        async with self.conn.execute(
+            """SELECT published_at FROM articles
+               WHERE status = 'PUBLISHED'
+               AND COALESCE(is_breaking, 0) = 0
+               AND published_at IS NOT NULL
+               ORDER BY published_at DESC, id DESC LIMIT 20"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+        timestamps = [
+            dt
+            for row in rows
+            if (dt := self._parse_utc_timestamp(row["published_at"])) is not None
+        ]
+        return max(timestamps) if timestamps else None
+
+    # ───────────────────────────────────────────────
     # Event CRUD
     # ───────────────────────────────────────────────
 
@@ -673,6 +752,11 @@ class Database:
             row["event_key"] if "event_key" in row_keys else "",
             row["event_entities"] if "event_entities" in row_keys else None,
         )
+        thread_root_val = (
+            row["thread_root_message_id"]
+            if "thread_root_message_id" in row_keys
+            else None
+        )
         return Article(
             id=row["id"],
             canonical_url=row["canonical_url"],
@@ -696,11 +780,7 @@ class Database:
             retry_count=row["retry_count"],
             error_message=row["error_message"] or "",
             telegram_message_id=row["telegram_message_id"],
-            thread_root_message_id=(
-                row["thread_root_message_id"]
-                if "thread_root_message_id" in row_keys
-                else None
-            ),
+            thread_root_message_id=thread_root_val,
             image_url=row["image_url"] or "",
             video_url=(row["video_url"] or None) if "video_url" in row_keys else None,
             country=row["country"] or "",
@@ -708,4 +788,6 @@ class Database:
             named_entities=row["named_entities"] or "",
             event_key=ev_key,
             event_entities=ev_entities,
+            is_breaking=bool(row["is_breaking"]) if "is_breaking" in row_keys else False,
+            is_thread_update=(thread_root_val is not None),
         )

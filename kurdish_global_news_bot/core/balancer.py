@@ -69,23 +69,38 @@ class BalanceSelectionResult:
 def batch_publish_sort_key(article: Article) -> tuple:
     """
     Sort selected batch strictly for Telegram publishing order:
-      1. Genuine breaking emergencies (`is_breaking=True` and `score >= 9.0`)
-      2. Selected Southern Kurdistan (Bashur) articles — Politics & War (1A) first, then 1B
-      3. Selected Global articles — Politics & War (Priority 2, regional first),
-         then Economy/Cybersecurity slot (Priority 3)
+      1. Genuine breaking emergencies (`is_breaking=True` and `score >= 9.0`), Kurdistan first
+      2. Material THREAD_UPDATEs & Tier 1 Southern Kurdistan (Bashur) Politics & War
+      3. Other Bashur stories, then Global Politics & War (regional first), then Economy/Cyber
     """
     breaking_rank = 0 if is_strict_breaking(article) else 1
     bashur_rank = 0 if is_bashur_article(article) else 1
+    is_thread = bool(
+        getattr(article, "is_thread_update", False)
+        or getattr(article, "thread_root_message_id", None) is not None
+    )
     tier = classify_priority_tier(article)
     bucket = classify_topic_bucket(article)
     if bucket == "politics_war":
         tier_rank = 0 if tier == PRIORITY_TIER_1A else (1 if bashur_rank == 0 else 2)
     else:
         tier_rank = 1 if bashur_rank == 0 and bucket not in ("economy", "cybersecurity") else 3
+
+    if breaking_rank == 0:
+        band_rank = 0
+    elif is_thread or (bashur_rank == 0 and tier_rank == 0):
+        band_rank = 0
+    elif bashur_rank == 0:
+        band_rank = 1
+    elif tier_rank <= 2:
+        band_rank = 2
+    else:
+        band_rank = 3
+
     regional_rank = 0 if is_regional_geopolitics(article) else 1
     score = -float(getattr(article, "importance_score", 0.0) or 0.0)
     pub = getattr(article, "published_at", "") or getattr(article, "publication_date", "") or ""
-    return (breaking_rank, bashur_rank, tier_rank, regional_rank, score, pub)
+    return (breaking_rank, band_rank, bashur_rank, tier_rank, regional_rank, score, pub)
 
 
 class QuotaBalancer:

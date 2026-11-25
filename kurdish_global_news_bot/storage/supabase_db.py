@@ -20,7 +20,14 @@ from typing import Any, Optional
 
 import httpx
 
-from config import ArticleStatus, DEDUP_HISTORY_HOURS, SUPABASE_KEY, SUPABASE_URL
+from config import (
+    ArticleStatus,
+    DEDUP_HISTORY_HOURS,
+    MAX_QUEUE_SIZE,
+    MAX_QUEUED_ARTICLE_AGE_HOURS,
+    SUPABASE_KEY,
+    SUPABASE_URL,
+)
 from storage.models import Article, Event, Source
 from storage.utils import (
     compute_url_hash as _compute_url_hash,
@@ -30,6 +37,8 @@ from storage.utils import (
     pack_event_metadata,
     parse_utc_timestamp,
     prioritize_digest_articles,
+    select_queue_overflow,
+    split_queued_by_age,
     unpack_event_metadata,
 )
 
@@ -312,7 +321,7 @@ class SupabaseDatabase:
         normalized_extra = dict(extra_fields)
         if status == ArticleStatus.PUBLISHED and "published_at" not in normalized_extra:
             patch_data["published_at"] = now_iso
-        if status == ArticleStatus.PROCESSING and "processed_at" not in normalized_extra:
+        if status in (ArticleStatus.PROCESSING, ArticleStatus.QUEUED) and "processed_at" not in normalized_extra:
             patch_data["processed_at"] = now_iso
         if "event_entities" in normalized_extra:
             ents = normalize_event_entities(normalized_extra["event_entities"])
@@ -430,7 +439,7 @@ class SupabaseDatabase:
         if only_published:
             params["status"] = "eq.PUBLISHED"
         else:
-            params["status"] = "not.in.(DISCOVERED,REJECTED_DUPLICATE,FAILED,SKIPPED)"
+            params["status"] = "not.in.(DISCOVERED,REJECTED_DUPLICATE,FAILED,SKIPPED,EXPIRED)"
         if exclude_id is not None:
             params["id"] = f"neq.{exclude_id}"
         resp = await self._request("GET", "articles", params=params)
@@ -735,6 +744,95 @@ class SupabaseDatabase:
         return [self._row_to_article(r) for r in (resp.json() if resp.content else [])]
 
     # ───────────────────────────────────────────────
+    # Smart Pacing & Persistent Queue
+    # ───────────────────────────────────────────────
+
+    async def get_queued_articles(
+        self, max_age_hours: int = MAX_QUEUED_ARTICLE_AGE_HOURS
+    ) -> list[Article]:
+        """Fetch non-expired QUEUED articles ordered by priority and recency."""
+        all_queued = await self.get_articles_by_status(ArticleStatus.QUEUED, limit=200)
+        fresh, _ = split_queued_by_age(all_queued, max_age_hours=max_age_hours)
+        return fresh
+
+    async def expire_stale_queued_articles(
+        self, max_age_hours: int = MAX_QUEUED_ARTICLE_AGE_HOURS
+    ) -> int:
+        """Mark QUEUED articles older than `max_age_hours` as EXPIRED and return count."""
+        all_queued = await self.get_articles_by_status(ArticleStatus.QUEUED, limit=200)
+        _, stale = split_queued_by_age(all_queued, max_age_hours=max_age_hours)
+        expired_count = 0
+        for art, age_hours in stale:
+            if art.id is None:
+                continue
+            await self.update_article_status(
+                art.id,
+                ArticleStatus.EXPIRED,
+                error_message=f"Expired from queue (age {age_hours:.1f}h > {max_age_hours}h)",
+            )
+            expired_count += 1
+        return expired_count
+
+    async def trim_queue(self, max_size: int = MAX_QUEUE_SIZE) -> int:
+        """Keep top `max_size` highest-priority/freshest QUEUED articles and expire the rest."""
+        all_queued = await self.get_articles_by_status(ArticleStatus.QUEUED, limit=200)
+        overflow = select_queue_overflow(all_queued, max_size=max_size)
+        trimmed_count = 0
+        for art in overflow:
+            if art.id is None:
+                continue
+            await self.update_article_status(
+                art.id,
+                ArticleStatus.EXPIRED,
+                error_message=f"Expired from queue: exceeded MAX_QUEUE_SIZE={max_size}",
+            )
+            trimmed_count += 1
+        return trimmed_count
+
+    async def get_last_normal_published_at(self) -> Optional[datetime]:
+        """Return UTC timestamp of the most recent non-breaking PUBLISHED article, or None."""
+        try:
+            resp = await self._request(
+                "GET",
+                "articles",
+                params={
+                    "select": "published_at,is_breaking",
+                    "status": "eq.PUBLISHED",
+                    "is_breaking": "eq.false",
+                    "published_at": "not.is.null",
+                    "order": "published_at.desc,id.desc",
+                    "limit": "20",
+                },
+            )
+            rows = resp.json() if resp.content else []
+        except SupabaseAPIError as exc:
+            if "is_breaking" not in str(exc) and "HTTP 400" not in str(exc):
+                raise
+            # Fallback if an older schema lacks is_breaking
+            resp = await self._request(
+                "GET",
+                "articles",
+                params={
+                    "select": "published_at,priority",
+                    "status": "eq.PUBLISHED",
+                    "published_at": "not.is.null",
+                    "order": "published_at.desc,id.desc",
+                    "limit": "20",
+                },
+            )
+            rows = [
+                r for r in (resp.json() if resp.content else [])
+                if (r.get("priority") or "").upper() != "CRITICAL"
+            ]
+
+        timestamps = [
+            dt
+            for row in rows
+            if (dt := parse_utc_timestamp(row.get("published_at"))) is not None
+        ]
+        return max(timestamps) if timestamps else None
+
+    # ───────────────────────────────────────────────
     # Event & Source CRUD
     # ───────────────────────────────────────────────
 
@@ -921,4 +1019,5 @@ class SupabaseDatabase:
             event_key=ev_key,
             event_entities=ev_entities,
             is_breaking=bool(row.get("is_breaking", False)),
+            is_thread_update=(row.get("thread_root_message_id") is not None),
         )

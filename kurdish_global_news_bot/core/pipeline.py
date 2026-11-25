@@ -129,8 +129,8 @@ class ArticlePipeline:
             return self._cycle_published_history
         return await self._db.get_recent_published_headlines(hours=DEDUP_HISTORY_HOURS)
 
-    def _record_cycle_published_article(self, article: Article) -> None:
-        """Record a newly translated/published article into same-cycle dedup state."""
+    def _record_cycle_published_article(self, article: Article, is_published: bool = True) -> None:
+        """Record a prepared or published article into same-cycle dedup state."""
         ev_key = normalize_event_key(getattr(article, "event_key", ""))
         ev_entities = normalize_event_entities(getattr(article, "event_entities", []))
         ref = {
@@ -143,13 +143,17 @@ class ArticlePipeline:
             "published_at": article.published_at or datetime.now(timezone.utc).isoformat(),
             "telegram_message_id": getattr(article, "telegram_message_id", None),
             "thread_root_message_id": getattr(article, "thread_root_message_id", None),
-            "is_published": True,
+            "is_published": is_published,
             "event_key": ev_key,
             "event_entities": ev_entities,
             "named_entities": article.named_entities or pack_event_metadata(ev_key, ev_entities),
         }
+        if article.id is not None:
+            self._cycle_accepted_refs = [
+                r for r in self._cycle_accepted_refs if r.get("id") != article.id
+            ]
         self._cycle_accepted_refs.append(ref)
-        if self._cycle_published_history is not None:
+        if is_published and self._cycle_published_history is not None:
             self._cycle_published_history.insert(0, ref)
 
     async def _reject_duplicate_event(
@@ -475,12 +479,12 @@ class ArticlePipeline:
         relevance = await self._ranker.evaluate_global_relevance(article)
         return await self._apply_relevance_evaluation(article, relevance)
 
-    async def _scrape_translate_and_publish(
-        self,
-        article: Article,
-        check_category_balancer: bool = True,
-    ) -> bool:
-        """Run full-article scraping, translation, DB ready update, and Telegram delivery."""
+    async def prepare_article_for_publishing(self, article: Article) -> bool:
+        """
+        Run full-article scraping, Sorani Kurdish translation, neutrality normalization,
+        post-translation dedup/threading checks, and persist READY_TO_PUBLISH state.
+        Returns True if the article is ready to publish/queue cleanly.
+        """
         article_id = article.id
         priority = article.priority
 
@@ -631,6 +635,8 @@ class ArticlePipeline:
             "image_url": article.image_url,
             "importance_score": article.importance_score,
             "priority": priority,
+            "is_breaking": bool(getattr(article, "is_breaking", False)),
+            "region": article.region,
             "named_entities": article.named_entities,
             "event_key": article.event_key,
             "event_entities": article.event_entities,
@@ -643,6 +649,20 @@ class ArticlePipeline:
             ArticleStatus.READY_TO_PUBLISH,
             **update_fields,
         )
+        article.status = ArticleStatus.READY_TO_PUBLISH
+        self._record_cycle_published_article(article, is_published=False)
+        return True
+
+    async def _scrape_translate_and_publish(
+        self,
+        article: Article,
+        check_category_balancer: bool = True,
+    ) -> bool:
+        """Run full-article scraping, translation, DB ready update, and Telegram delivery."""
+        article_id = article.id
+        prepared = await self.prepare_article_for_publishing(article)
+        if not prepared:
+            return False
 
         # ── Step 6b: Publish immediately ──
         if AUTO_PUBLISH:
@@ -779,11 +799,14 @@ class ArticlePipeline:
                 # Success — Telegram confirmed delivery; record message_id & optional thread root anchor
                 article.telegram_message_id = message_id
                 article.published_at = datetime.now(timezone.utc).isoformat()
+                article.status = ArticleStatus.PUBLISHED
                 await self._db.update_article_status(
                     article_id,
                     ArticleStatus.PUBLISHED,
+                    published_at=article.published_at,
                     telegram_message_id=message_id,
                     thread_root_message_id=article.thread_root_message_id,
+                    is_breaking=bool(getattr(article, "is_breaking", False)),
                 )
 
                 # Track published story & message_id in current cycle history for zero-duplicate & live threading
@@ -825,27 +848,21 @@ class ArticlePipeline:
             self._metrics.increment("publish_failures")
             return False
 
-    async def process_batch(
+    async def evaluate_batch_candidates(
         self,
         articles: list[Article],
-        max_publish: Optional[int] = None,
-    ) -> dict[str, int]:
+        extra_queue_refs: Optional[list[dict]] = None,
+    ) -> tuple[list[Article], dict[str, int]]:
         """
-        Evaluate candidates (filtering + cross-source batch dedup), enforce the
-        elastic 5-of-8 Southern Kurdistan (Bashur) / Global quota, and publish
-        selected winners in strict order:
-          1. Genuine breaking emergencies
-          2. Southern Kurdistan (Bashur) — Politics & War first
-          3. Global & regional news
+        Pass 1 (zero-API validation, topic pre-filter, cross-source dedup) +
+        Pass 2 (batched Gemini relevance scoring & three-way event matching).
+        Returns `(eligible_articles, status_counts)`.
         """
         results = {"published": 0, "rejected": 0, "failed": 0}
         if not articles:
-            return results
+            return [], results
 
-        self._cycle_accepted_refs = []
-        effective_limit = BATCH_PUBLISH_LIMIT if max_publish is None else max(0, max_publish)
-
-        # Evaluate highest-priority candidates first so duplicate outlets lose cleanly
+        seed_refs = list(extra_queue_refs or [])
         prioritized = sorted(articles, key=article_selection_sort_key)
         pre_screened: list[Article] = []
         accepted_batch_refs: list[dict] = []
@@ -854,7 +871,9 @@ class ArticlePipeline:
         for art in prioritized:
             try:
                 ok = await self._local_pre_screen_candidate(
-                    art, extra_recent=accepted_batch_refs, use_off_topic_prefilter=True
+                    art,
+                    extra_recent=seed_refs + accepted_batch_refs,
+                    use_off_topic_prefilter=True,
                 )
                 if ok:
                     pre_screened.append(art)
@@ -876,7 +895,7 @@ class ArticlePipeline:
                 results["failed"] += 1
 
         if not pre_screened:
-            return results
+            return [], results
 
         # Cap candidates sent to Gemini to freshest & highest-priority items
         gemini_candidates, capped_overflow = select_top_candidates_for_gemini(
@@ -896,7 +915,7 @@ class ArticlePipeline:
             results["rejected"] += 1
 
         if not gemini_candidates:
-            return results
+            return [], results
 
         # Pass 2: Batched Gemini Importance Evaluation (10-15 articles per single JSON call)
         eligible: list[Article] = []
@@ -907,7 +926,11 @@ class ArticlePipeline:
             )
             for art, relevance in zip(gemini_candidates, evaluations):
                 try:
-                    if await self._apply_relevance_evaluation(art, relevance, extra_recent=accepted_event_refs):
+                    if await self._apply_relevance_evaluation(
+                        art,
+                        relevance,
+                        extra_recent=seed_refs + accepted_event_refs,
+                    ):
                         eligible.append(art)
                         accepted_event_refs.append({
                             "id": art.id,
@@ -931,8 +954,30 @@ class ArticlePipeline:
         except Exception as exc:
             logger.error("Batch relevance evaluation failed: %s", str(exc)[:200])
             results["failed"] += len(gemini_candidates)
-            return results
+            return [], results
 
+        return eligible, results
+
+    async def process_batch(
+        self,
+        articles: list[Article],
+        max_publish: Optional[int] = None,
+    ) -> dict[str, int]:
+        """
+        Evaluate candidates (filtering + cross-source batch dedup), enforce the
+        elastic 5-of-8 Southern Kurdistan (Bashur) / Global quota, and publish
+        selected winners in strict order:
+          1. Genuine breaking emergencies
+          2. Southern Kurdistan (Bashur) — Politics & War first
+          3. Global & regional news
+        """
+        if not articles:
+            return {"published": 0, "rejected": 0, "failed": 0}
+
+        self._cycle_accepted_refs = []
+        effective_limit = BATCH_PUBLISH_LIMIT if max_publish is None else max(0, max_publish)
+
+        eligible, results = await self.evaluate_batch_candidates(articles)
         if not eligible:
             return results
 

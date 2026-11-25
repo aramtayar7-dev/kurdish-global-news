@@ -141,6 +141,16 @@ THREAD_UPDATE_COOLDOWN_MINUTES: int = _int(os.getenv("THREAD_UPDATE_COOLDOWN_MIN
 MAX_UPDATES_PER_THREAD: int = _int(os.getenv("MAX_UPDATES_PER_THREAD"), 3)
 
 # ═══════════════════════════════════════════════════
+# Smart Pacing & Persistent Publish Queue
+# ═══════════════════════════════════════════════════
+ENABLE_SMART_PACING: bool = _bool(os.getenv("ENABLE_SMART_PACING"), True)
+MAX_NORMAL_POSTS_PER_CYCLE: int = max(1, _int(os.getenv("MAX_NORMAL_POSTS_PER_CYCLE"), 3))
+INTRA_CYCLE_POST_DELAY_SECONDS: float = max(0.0, _float(os.getenv("INTRA_CYCLE_POST_DELAY_SECONDS"), 25.0))
+MIN_MINUTES_BETWEEN_NORMAL_POSTS: float = max(0.0, _float(os.getenv("MIN_MINUTES_BETWEEN_NORMAL_POSTS"), 5.0))
+MAX_QUEUED_ARTICLE_AGE_HOURS: int = max(1, _int(os.getenv("MAX_QUEUED_ARTICLE_AGE_HOURS"), 4))
+MAX_QUEUE_SIZE: int = max(1, _int(os.getenv("MAX_QUEUE_SIZE"), 12))
+
+# ═══════════════════════════════════════════════════
 # News Prioritization & Balancer (5-of-8 Bashur Quota + 60/40 Category Ratio)
 # ═══════════════════════════════════════════════════
 PRIMARY_CATEGORY_RATIO: float = _float(os.getenv("PRIMARY_CATEGORY_RATIO"), 0.60)
@@ -389,12 +399,14 @@ class ArticleStatus:
     PROCESSING = "PROCESSING"
     TRANSLATING = "TRANSLATING"
     READY_TO_PUBLISH = "READY_TO_PUBLISH"
+    QUEUED = "QUEUED"
     PUBLISHING = "PUBLISHING"
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
     RETRY_PENDING = "RETRY_PENDING"
     REJECTED_DUPLICATE = "REJECTED_DUPLICATE"
     SKIPPED = "SKIPPED"
+    EXPIRED = "EXPIRED"
 
 
 # ═══════════════════════════════════════════════════

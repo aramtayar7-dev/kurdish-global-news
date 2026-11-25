@@ -16,9 +16,17 @@ from typing import Optional
 
 from storage import create_database, get_kurdistan_date_str
 from storage.migrations import run_migrations
+from storage.models import Article
+from storage.utils import (
+    normalize_event_entities,
+    normalize_event_key,
+    pack_event_metadata,
+)
 from core.scheduler import DiscoveryScheduler
 from core.importance_ranker import (
+    article_selection_sort_key,
     check_blocked_topic,
+    is_bashur_article,
     is_strict_breaking,
     select_top_candidates_for_gemini,
 )
@@ -31,12 +39,15 @@ from sources.gdelt_source import GDELTSource
 from sources.official_sources import OfficialSourcesAdapter
 from sources.kurdistan_source import KurdistanNewsSource
 from sources.telegram_source import TelegramSource
+from processing.deduplicator import OUTCOME_THREAD_UPDATE
 from processing.extractor import ArticleExtractor
 from processing.card_generator import NewsCardGenerator
 from processing.digest_generator import DIGEST_HEADER_PREFIX, DailyDigestGenerator
+from processing.translator import is_valid_kurdish_sorani
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics, Timer
+import config
 from config import (
     ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, ENABLE_TELEGRAM, CHANNEL_HANDLE,
     MAX_CONCURRENT_SOURCES, ArticleStatus, BACKUP_INTERVAL_HOURS,
@@ -434,9 +445,10 @@ class NewsEngine:
         4. Feed into the pipeline for IMMEDIATE processing and publishing
         """
         with Timer(self._metrics, "discovery_cycle_time"):
+            recent_history: list[dict] = []
             try:
                 recent_history = await self._db.get_recent_published_headlines(hours=DEDUP_HISTORY_HOURS)
-                if self._pipeline is not None:
+                if self._pipeline is not None and hasattr(self._pipeline, "set_cycle_published_history"):
                     self._pipeline.set_cycle_published_history(recent_history)
                 logger.info(
                     "Loaded %d published story records from the last %dh for cross-run deduplication.",
@@ -449,7 +461,7 @@ class NewsEngine:
                     DEDUP_HISTORY_HOURS,
                     str(hist_exc)[:150],
                 )
-                if self._pipeline is not None:
+                if self._pipeline is not None and hasattr(self._pipeline, "set_cycle_published_history"):
                     self._pipeline.set_cycle_published_history(None)
 
             try:
@@ -474,60 +486,359 @@ class NewsEngine:
                 logger.info("Discovered %d raw articles from %d sources.",
                              len(all_raw_articles), len(self._sources))
 
-                published_this_cycle = 0
-                if all_raw_articles:
-                    # Extract and prepare articles
-                    new_articles = await self._extract_and_insert(all_raw_articles)
-                    logger.info("%d new articles to process.", len(new_articles))
+                if config.ENABLE_SMART_PACING and isinstance(self._pipeline, ArticlePipeline):
+                    pacing_results = await self._run_smart_pacing_cycle(
+                        all_raw_articles,
+                        recent_history=recent_history,
+                    )
+                    logger.info("Smart pacing cycle results: %s", pacing_results)
+                else:
+                    published_this_cycle = 0
+                    if all_raw_articles:
+                        new_articles = await self._extract_and_insert(all_raw_articles)
+                        logger.info("%d new articles to process.", len(new_articles))
 
-                    if new_articles:
-                        # Pre-filter obvious off-topic items & cap fresh relevant candidates BEFORE Gemini
-                        capped_articles, locally_rejected = select_top_candidates_for_gemini(
-                            new_articles, max_candidates=MAX_GEMINI_CANDIDATES_PER_CYCLE
-                        )
-                        for rej_art, rej_reason in locally_rejected:
-                            try:
-                                await self._db.update_article_status(
-                                    rej_art.id,
-                                    ArticleStatus.SKIPPED,
-                                    error_message=f"SKIPPED [Pre-Filter]: {rej_reason}",
+                        if new_articles:
+                            capped_articles, _ = await self._apply_local_prefilter(new_articles)
+                            if capped_articles:
+                                # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
+                                pipeline_results = await self._pipeline.process_batch(
+                                    capped_articles, max_publish=BATCH_PUBLISH_LIMIT
                                 )
-                                if rej_reason.startswith(("Blocked", "Pre-filtered")):
-                                    await self._db.mark_url_skipped(
-                                        rej_art.canonical_url or rej_art.original_url,
-                                        title=rej_art.original_title,
-                                        score=2.0,
-                                        reason=rej_reason,
-                                    )
-                            except Exception:
-                                pass
+                                published_this_cycle = pipeline_results.get("published", 0)
+                                logger.info("Pipeline results: %s", pipeline_results)
 
-                        if len(locally_rejected) > 0:
-                            logger.info(
-                                "Local pre-filter/cap: %d -> %d candidates forwarded to pipeline (%d filtered locally with 0 Gemini calls).",
-                                len(new_articles),
-                                len(capped_articles),
-                                len(locally_rejected),
-                            )
-
-                        if capped_articles:
-                            # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
-                            pipeline_results = await self._pipeline.process_batch(
-                                capped_articles, max_publish=BATCH_PUBLISH_LIMIT
-                            )
-                            published_this_cycle = pipeline_results.get("published", 0)
-                            logger.info("Pipeline results: %s", pipeline_results)
-
-                # Check and publish held articles within remaining cycle capacity
-                remaining_capacity = max(0, BATCH_PUBLISH_LIMIT - published_this_cycle)
-                if remaining_capacity > 0:
-                    await self._publish_held_articles(max_additional=remaining_capacity)
+                    # Check and publish held articles within remaining cycle capacity
+                    remaining_capacity = max(0, BATCH_PUBLISH_LIMIT - published_this_cycle)
+                    if remaining_capacity > 0:
+                        await self._publish_held_articles(max_additional=remaining_capacity)
 
                 # Cold start protection completed after first discovery pass
-                self._pipeline.set_cold_start(False)
+                if self._pipeline is not None and hasattr(self._pipeline, "set_cold_start"):
+                    self._pipeline.set_cold_start(False)
             finally:
-                if self._pipeline is not None:
+                if self._pipeline is not None and hasattr(self._pipeline, "set_cycle_published_history"):
                     self._pipeline.set_cycle_published_history(None)
+
+    async def _apply_local_prefilter(self, new_articles: list[Article]) -> tuple[list[Article], int]:
+        """Pre-filter obvious off-topic items & cap fresh relevant candidates before Gemini."""
+        capped_articles, locally_rejected = select_top_candidates_for_gemini(
+            new_articles, max_candidates=MAX_GEMINI_CANDIDATES_PER_CYCLE
+        )
+        for rej_art, rej_reason in locally_rejected:
+            try:
+                await self._db.update_article_status(
+                    rej_art.id,
+                    ArticleStatus.SKIPPED,
+                    error_message=f"SKIPPED [Pre-Filter]: {rej_reason}",
+                )
+                if rej_reason.startswith(("Blocked", "Pre-filtered")):
+                    await self._db.mark_url_skipped(
+                        rej_art.canonical_url or rej_art.original_url,
+                        title=rej_art.original_title,
+                        score=2.0,
+                        reason=rej_reason,
+                    )
+            except Exception:
+                pass
+
+        if len(locally_rejected) > 0:
+            logger.info(
+                "Local pre-filter/cap: %d -> %d candidates forwarded to pipeline (%d filtered locally with 0 Gemini calls).",
+                len(new_articles),
+                len(capped_articles),
+                len(locally_rejected),
+            )
+        return capped_articles, len(locally_rejected)
+
+    @staticmethod
+    def _build_queue_dedup_ref(art: Article) -> dict:
+        """Build a normalized dedup reference dictionary for a pre-translated queued article."""
+        ev_key = normalize_event_key(getattr(art, "event_key", ""))
+        ev_entities = normalize_event_entities(getattr(art, "event_entities", []))
+        return {
+            "id": art.id,
+            "original_title": art.original_title or "",
+            "translated_title": art.translated_title or "",
+            "translated_summary": art.translated_summary or "",
+            "original_summary": art.original_summary or "",
+            "category": art.category or "",
+            "published_at": art.processed_at or art.discovered_at or "",
+            "telegram_message_id": getattr(art, "telegram_message_id", None),
+            "thread_root_message_id": getattr(art, "thread_root_message_id", None),
+            "is_published": False,
+            "event_key": ev_key,
+            "event_entities": ev_entities,
+            "named_entities": art.named_entities or pack_event_metadata(ev_key, ev_entities),
+        }
+
+    async def _enqueue_article(self, article: Article) -> None:
+        """Persist a prepared article as QUEUED without resetting an already-QUEUED timestamp."""
+        if article.status == ArticleStatus.QUEUED or article.id is None:
+            return
+        ev_key = normalize_event_key(getattr(article, "event_key", ""))
+        ev_entities = normalize_event_entities(getattr(article, "event_entities", []))
+        update_fields: dict[str, object] = {
+            "translated_title": article.translated_title,
+            "translated_summary": article.translated_summary,
+            "original_summary": article.original_summary,
+            "category": article.category,
+            "region": article.region,
+            "importance_score": article.importance_score,
+            "priority": article.priority,
+            "is_breaking": bool(getattr(article, "is_breaking", False)),
+            "image_url": article.image_url,
+            "named_entities": article.named_entities or pack_event_metadata(ev_key, ev_entities),
+            "event_key": ev_key,
+            "event_entities": ev_entities,
+            "thread_root_message_id": article.thread_root_message_id,
+        }
+        if getattr(article, "video_url", None):
+            update_fields["video_url"] = article.video_url
+        await self._db.update_article_status(
+            article.id,
+            ArticleStatus.QUEUED,
+            error_message="Queued by Smart Pacing",
+            **update_fields,
+        )
+        article.status = ArticleStatus.QUEUED
+
+    async def _validate_queued_candidates(
+        self,
+        raw_queued: list[Article],
+        recent_history: list[dict],
+    ) -> tuple[list[Article], list[dict]]:
+        """
+        Re-verify queued (and any held READY_TO_PUBLISH) articles using 0 Gemini calls:
+        blocked topic, Sorani Kurdish gate, and post-queue duplicate/thread-cap re-check.
+        """
+        assert self._pipeline is not None
+        valid_queued: list[Article] = []
+        queued_refs: list[dict] = []
+
+        for q_art in raw_queued:
+            if q_art.id is None:
+                continue
+            blocked_reason = check_blocked_topic(q_art)
+            if blocked_reason:
+                await self._pipeline._reject_blocked_topic(q_art, blocked_reason)
+                continue
+
+            if not is_valid_kurdish_sorani(q_art.translated_title or "") or (
+                (q_art.translated_summary or "").strip()
+                and not is_valid_kurdish_sorani(q_art.translated_summary or "")
+            ):
+                await self._db.update_article_status(
+                    q_art.id,
+                    ArticleStatus.EXPIRED,
+                    error_message="Expired from queue: failed strict Sorani gate",
+                )
+                logger.info("[QUEUE EXPIRED] Article %s failed Sorani gate; skipped.", q_art.id)
+                continue
+
+            q_art.is_breaking = is_strict_breaking(q_art)
+            q_art.is_thread_update = (q_art.thread_root_message_id is not None)
+
+            q_dup = await self._pipeline._semantic_dedup.check_post_translation_duplicate(
+                q_art,
+                extra_recent=queued_refs,
+                recent_history=recent_history,
+            )
+            if q_dup.is_duplicate:
+                if q_dup.stage == "thread_cooldown":
+                    queued_refs.append(self._build_queue_dedup_ref(q_art))
+                    continue
+                await self._db.update_article_status(
+                    q_art.id,
+                    ArticleStatus.EXPIRED,
+                    error_message=f"Expired from queue: {q_dup.reason[:400]}",
+                )
+                logger.info(
+                    "[QUEUE EXPIRED] Article %s invalidated while queued (%s).",
+                    q_art.id,
+                    q_dup.reason[:100],
+                )
+                continue
+
+            if q_dup.classification == OUTCOME_THREAD_UPDATE and q_dup.thread_root_message_id is not None:
+                q_art.thread_root_message_id = int(q_dup.thread_root_message_id)
+                q_art.is_thread_update = True
+
+            ref = self._build_queue_dedup_ref(q_art)
+            queued_refs.append(ref)
+            self._pipeline._cycle_accepted_refs.append(ref)
+            valid_queued.append(q_art)
+
+        return valid_queued, queued_refs
+
+    async def _run_smart_pacing_cycle(
+        self,
+        all_raw_articles: list[RawArticle],
+        recent_history: list[dict],
+    ) -> dict[str, int]:
+        """
+        Execute Smart Pacing & Persistent Queue orchestration:
+          1. Expire stale queued articles (> MAX_QUEUED_ARTICLE_AGE_HOURS) & re-validate backlog
+          2. Discover, evaluate, and translate eligible new stories (queued URLs skipped automatically)
+          3. Publish breaking emergencies immediately (0 delay, bypass caps/cooldown)
+          4. Publish up to MAX_NORMAL_POSTS_PER_CYCLE balanced normal posts with intra-cycle delay
+          5. Persist remaining normal posts as QUEUED (capped at MAX_QUEUE_SIZE) for next cycle
+        """
+        assert isinstance(self._pipeline, ArticlePipeline)
+        counts = {"published": 0, "queued": 0, "expired": 0, "rejected": 0}
+
+        # 1. Queue maintenance at cycle start
+        counts["expired"] += await self._db.expire_stale_queued_articles(
+            config.MAX_QUEUED_ARTICLE_AGE_HOURS
+        )
+        raw_queued = await self._db.get_queued_articles(
+            max_age_hours=config.MAX_QUEUED_ARTICLE_AGE_HOURS
+        )
+        held_ready = await self._db.get_articles_by_status(ArticleStatus.READY_TO_PUBLISH, limit=20)
+        seen_ids = {a.id for a in raw_queued if a.id is not None}
+        combined_backlog = list(raw_queued) + [
+            a for a in held_ready if a.id is not None and a.id not in seen_ids
+        ]
+        valid_queued, queued_refs = await self._validate_queued_candidates(
+            combined_backlog,
+            recent_history=recent_history,
+        )
+
+        # 2. Discover & prepare eligible newly discovered articles
+        newly_ready: list[Article] = []
+        if all_raw_articles:
+            new_articles = await self._extract_and_insert(all_raw_articles)
+            logger.info("%d new articles to process.", len(new_articles))
+            if new_articles:
+                capped_articles, rej_count = await self._apply_local_prefilter(new_articles)
+                counts["rejected"] += rej_count
+                if capped_articles:
+                    eligible_new, eval_counts = await self._pipeline.evaluate_batch_candidates(
+                        capped_articles,
+                        extra_queue_refs=queued_refs,
+                    )
+                    counts["rejected"] += eval_counts.get("rejected", 0)
+
+                    sorted_eligible = sorted(
+                        eligible_new,
+                        key=lambda a: (0 if is_strict_breaking(a) else 1, *article_selection_sort_key(a)),
+                    )
+                    non_breaking_prep_cap = max(
+                        BATCH_PUBLISH_LIMIT,
+                        config.MAX_NORMAL_POSTS_PER_CYCLE + config.MAX_QUEUE_SIZE - len(valid_queued),
+                    )
+                    to_prepare: list[Article] = []
+                    non_breaking_seen = 0
+                    for art in sorted_eligible:
+                        if is_strict_breaking(art):
+                            to_prepare.append(art)
+                        elif non_breaking_seen < non_breaking_prep_cap:
+                            to_prepare.append(art)
+                            non_breaking_seen += 1
+                        else:
+                            await self._db.update_article_status(
+                                art.id,
+                                ArticleStatus.SKIPPED,
+                                error_message="Deferred: cycle queue capacity full",
+                                importance_score=art.importance_score,
+                                priority=art.priority,
+                            )
+                            counts["rejected"] += 1
+
+                    for art in to_prepare:
+                        try:
+                            if await self._pipeline.prepare_article_for_publishing(art):
+                                art.is_breaking = is_strict_breaking(art)
+                                newly_ready.append(art)
+                            else:
+                                counts["rejected"] += 1
+                        except Exception as exc:
+                            logger.error("Prepare error for article %s: %s", art.id, str(exc)[:200])
+
+        # 3. Merge & partition publishing pool (Breaking fast-lane vs Normal paced posts)
+        combined_pool = valid_queued + newly_ready
+        if not combined_pool:
+            return counts
+
+        breaking_pool = sorted(
+            [a for a in combined_pool if is_strict_breaking(a)],
+            key=lambda a: (
+                0 if is_bashur_article(a) else 1,
+                -float(getattr(a, "importance_score", 0.0) or 0.0),
+                a.published_at or a.discovered_at or "",
+            ),
+        )
+        normal_pool = [a for a in combined_pool if not is_strict_breaking(a)]
+
+        # 4a. Breaking Fast-Lane: publish immediately with ZERO delay, bypassing cycle cap & cooldown
+        for brk_art in breaking_pool:
+            if not config.AUTO_PUBLISH:
+                await self._enqueue_article(brk_art)
+                counts["queued"] += 1
+                continue
+            if await self._pipeline._publish_immediately(brk_art):
+                counts["published"] += 1
+
+        # 4b. Paced Normal Posts (and non-breaking THREAD_UPDATEs)
+        if normal_pool:
+            to_queue: list[Article] = []
+            selected_normals: list[Article] = []
+
+            if not config.AUTO_PUBLISH:
+                to_queue = list(normal_pool)
+            else:
+                last_normal_dt = await self._db.get_last_normal_published_at()
+                cooldown_active = False
+                elapsed_min = 0.0
+                if last_normal_dt is not None:
+                    elapsed_min = max(
+                        0.0, (datetime.now(timezone.utc) - last_normal_dt).total_seconds() / 60.0
+                    )
+                    cooldown_active = elapsed_min < config.MIN_MINUTES_BETWEEN_NORMAL_POSTS
+
+                if cooldown_active:
+                    logger.info(
+                        "[PACING] Cross-cycle cooldown active (%.1fm < %.1fm since last normal post); "
+                        "deferring %d normal article(s) to persistent queue.",
+                        elapsed_min,
+                        config.MIN_MINUTES_BETWEEN_NORMAL_POSTS,
+                        len(normal_pool),
+                    )
+                    to_queue = list(normal_pool)
+                else:
+                    recent_published = await self._db.get_recent_published_articles(limit=8)
+                    plan = self._pipeline._quota_balancer.select_batch(
+                        normal_pool,
+                        limit=config.MAX_NORMAL_POSTS_PER_CYCLE,
+                        recent_published=recent_published,
+                    )
+                    logger.info("[BALANCER/PACING] %s", plan.reason)
+                    selected_normals = list(plan.selected)
+                    to_queue = list(plan.deferred)
+
+            for idx, norm_art in enumerate(selected_normals):
+                if idx > 0 and config.INTRA_CYCLE_POST_DELAY_SECONDS > 0:
+                    logger.info(
+                        "[PACING] Delaying %.0fs before normal post %d/%d...",
+                        config.INTRA_CYCLE_POST_DELAY_SECONDS,
+                        idx + 1,
+                        len(selected_normals),
+                    )
+                    await asyncio.sleep(config.INTRA_CYCLE_POST_DELAY_SECONDS)
+                published = await self._pipeline._publish_immediately(norm_art)
+                if published:
+                    counts["published"] += 1
+                elif norm_art.status in (ArticleStatus.READY_TO_PUBLISH, ArticleStatus.QUEUED):
+                    to_queue.append(norm_art)
+
+            for q_art in to_queue:
+                await self._enqueue_article(q_art)
+                if q_art.status == ArticleStatus.QUEUED:
+                    counts["queued"] += 1
+
+            counts["expired"] += await self._db.trim_queue(config.MAX_QUEUE_SIZE)
+
+        return counts
 
     async def _publish_held_articles(self, max_additional: int = BATCH_PUBLISH_LIMIT) -> None:
         """Evaluate held READY_TO_PUBLISH articles against 5-of-8 balancer and publish if eligible."""
@@ -615,7 +926,12 @@ class NewsEngine:
         all_to_process = discovered + ready + retry
         if all_to_process:
             logger.info("Processing %d recovered articles.", len(all_to_process))
-            await self._pipeline.process_batch(all_to_process)
+            max_rec = (
+                config.MAX_NORMAL_POSTS_PER_CYCLE
+                if config.ENABLE_SMART_PACING
+                else BATCH_PUBLISH_LIMIT
+            )
+            await self._pipeline.process_batch(all_to_process, max_publish=max_rec)
 
     # ───────────────────────────────────────────────
     # Background Tasks

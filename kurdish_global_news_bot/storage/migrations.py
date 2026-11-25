@@ -51,6 +51,9 @@ MIGRATIONS: list[tuple[int, str, str]] = [
     (8, "Add thread_root_message_id column for Live Event Threading", """
         ALTER TABLE articles ADD COLUMN thread_root_message_id INTEGER DEFAULT NULL;
     """),
+    (9, "Add is_breaking column for Smart Pacing normal vs breaking tracking", """
+        ALTER TABLE articles ADD COLUMN is_breaking INTEGER DEFAULT 0;
+    """),
 ]
 
 

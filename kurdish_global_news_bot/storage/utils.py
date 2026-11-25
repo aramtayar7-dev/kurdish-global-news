@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from storage.models import Article
@@ -163,3 +163,86 @@ def prioritize_digest_articles(articles: list[Article], limit: int = 10) -> list
 
     sorted_articles = sorted(articles, key=_sort_key, reverse=True)
     return sorted_articles[:limit]
+
+
+_PRIORITY_ORDER: dict[str, int] = {
+    "CRITICAL": 0,
+    "HIGH": 1,
+    "NORMAL": 2,
+    "LOW": 3,
+}
+
+
+def get_queued_timestamp(article: Article) -> Optional[datetime]:
+    """Return the reference UTC timestamp for queue age checks (`processed_at` fallback `discovered_at`)."""
+    return parse_utc_timestamp(
+        getattr(article, "processed_at", None)
+        or getattr(article, "discovered_at", None)
+        or getattr(article, "publication_date", None)
+    )
+
+
+def queue_keep_sort_key(article: Article) -> tuple:
+    """
+    Order QUEUED articles so the highest-priority and freshest items come first:
+      1. Genuine breaking emergencies (`is_breaking=True` and `importance_score >= 9`)
+      2. Threaded updates & Kurdistan / War & Politics categories
+      3. Priority tier (`CRITICAL` -> `HIGH` -> `NORMAL` -> `LOW`)
+      4. Higher importance score
+      5. Fresher queue/discovery timestamp (descending epoch)
+    """
+    score = float(getattr(article, "importance_score", 0.0) or 0.0)
+    breaking_rank = 0 if (getattr(article, "is_breaking", False) and score >= 9.0) else 1
+    thread_rank = (
+        0
+        if (getattr(article, "is_thread_update", False) or getattr(article, "thread_root_message_id", None) is not None)
+        else 1
+    )
+    cat = (getattr(article, "category", "") or "").strip().lower()
+    if cat == "kurdistan":
+        cat_rank = 0
+    elif cat in ("military_conflict", "politics_world"):
+        cat_rank = 1
+    else:
+        cat_rank = 2
+    prio_rank = _PRIORITY_ORDER.get((getattr(article, "priority", "") or "NORMAL").upper(), 2)
+    dt = get_queued_timestamp(article)
+    epoch = dt.timestamp() if dt is not None else 0.0
+    return (breaking_rank, thread_rank, cat_rank, prio_rank, -score, -epoch)
+
+
+def split_queued_by_age(
+    articles: list[Article],
+    max_age_hours: int,
+    now: Optional[datetime] = None,
+) -> tuple[list[Article], list[tuple[Article, float]]]:
+    """
+    Partition QUEUED articles into `(valid_fresh, stale_with_age_hours)` using
+    `processed_at` (falling back to `discovered_at`) against `max_age_hours`.
+    """
+    ref_now = now or datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
+    cutoff = ref_now - timedelta(hours=max(1, int(max_age_hours)))
+
+    fresh: list[Article] = []
+    stale: list[tuple[Article, float]] = []
+    for art in articles:
+        q_dt = get_queued_timestamp(art)
+        if q_dt is not None and q_dt < cutoff:
+            age_hours = max(0.0, (ref_now - q_dt).total_seconds() / 3600.0)
+            stale.append((art, age_hours))
+        else:
+            fresh.append(art)
+
+    fresh.sort(key=queue_keep_sort_key)
+    return fresh, stale
+
+
+def select_queue_overflow(articles: list[Article], max_size: int) -> list[Article]:
+    """Return excess lowest-priority/oldest QUEUED articles beyond `max_size`."""
+    cap = max(0, int(max_size))
+    if len(articles) <= cap:
+        return []
+    ordered = sorted(articles, key=queue_keep_sort_key)
+    return ordered[cap:]
