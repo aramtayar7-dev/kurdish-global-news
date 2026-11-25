@@ -19,12 +19,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import config
 from config import (
     BASHUR_QUOTA_PER_8,
     BASHUR_TARGET_RATIO,
     BATCH_PUBLISH_LIMIT,
     ECON_CYBER_MAX_PER_8,
     ECON_CYBER_MIN_SCORE,
+    ENABLE_SOURCE_DOMINANCE_CAP,
+    MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW,
 )
 from core.importance_ranker import (
     PRIORITY_TIER_1A,
@@ -35,6 +38,7 @@ from core.importance_ranker import (
     is_regional_geopolitics,
     is_strict_breaking,
 )
+from core.source_verifier import get_source_group, get_source_tier, TIER_3
 from storage.models import Article
 
 
@@ -44,6 +48,20 @@ def _normalized_article_score(article: Article) -> float:
     if 0.0 < raw <= 1.0:
         return raw * 10.0
     return raw
+
+
+def _is_dominance_cap_exempt(article: Article) -> bool:
+    """
+    Corroborated Tier-1 / Tier-2 genuine breaking emergencies may bypass the rolling
+    per-source-group dominance cap. Tier-3 sources (e.g. Sabereen) are NEVER exempt.
+    """
+    if not is_strict_breaking(article):
+        return False
+    if get_source_tier(getattr(article, "source_name", "") or "") == TIER_3:
+        return False
+    if getattr(article, "_is_uncorroborated_tier3", False):
+        return False
+    return True
 
 
 def _qualifies_for_econ_cyber_slot(article: Article) -> bool:
@@ -202,6 +220,19 @@ class QuotaBalancer:
         bashur_budget = self.compute_bashur_budget(effective_limit, recent_published=recent_published)
         ec_budget = self.compute_econ_cyber_budget(effective_limit, recent_published=recent_published)
 
+        dom_cap_enabled = bool(getattr(config, "ENABLE_SOURCE_DOMINANCE_CAP", ENABLE_SOURCE_DOMINANCE_CAP))
+        dom_cap = max(
+            0,
+            int(getattr(config, "MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW", MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW)),
+        )
+        window_hist_len = max(0, 8 - min(effective_limit, 8))
+        history_slice = (recent_published or [])[:window_hist_len]
+        group_counts: dict[str, int] = {}
+        for hist_art in history_slice:
+            grp = get_source_group(getattr(hist_art, "source_name", "") or "")
+            if grp and grp != "unknown":
+                group_counts[grp] = group_counts.get(grp, 0) + 1
+
         pw_bashur_pool = sorted(
             [a for a in candidates if classify_topic_bucket(a) == "politics_war" and is_bashur_article(a)],
             key=article_selection_sort_key,
@@ -232,61 +263,143 @@ class QuotaBalancer:
 
         picked_bashur: list[Article] = []
         picked_global: list[Article] = []
+        selected: list[Article] = []
+        selected_ids: set[int] = set()
 
-        # 1. Fill Bashur slots (Politics & War strictly first; Bashur Econ only if Bashur P&W < quota)
-        picked_bashur.extend(pw_bashur_pool[:bashur_budget])
-        if len(picked_bashur) < bashur_budget and ec_bashur:
-            picked_bashur.extend(ec_bashur[: bashur_budget - len(picked_bashur)])
+        def _can_admit(art: Article, allow_tier12_scarcity_overflow: bool = False) -> bool:
+            if id(art) in selected_ids:
+                return False
+            if not dom_cap_enabled or dom_cap <= 0:
+                return True
+            if _is_dominance_cap_exempt(art):
+                return True
+            grp = get_source_group(getattr(art, "source_name", "") or "")
+            if not grp or grp == "unknown":
+                return True
+            if group_counts.get(grp, 0) < dom_cap:
+                return True
+            # Tier-3 (e.g. Sabereen) is STRICTLY hard-capped at `dom_cap` even during scarcity.
+            if allow_tier12_scarcity_overflow and get_source_tier(getattr(art, "source_name", "") or "") != TIER_3:
+                return True
+            return False
 
-        # 2. Allocate Global slots: up to 1 slot reserved for strongest qualifying Econ/Cyber if budget permits
+        def _admit(art: Article, is_bashur: bool) -> None:
+            selected.append(art)
+            selected_ids.add(id(art))
+            if is_bashur:
+                picked_bashur.append(art)
+            else:
+                picked_global.append(art)
+            grp = get_source_group(getattr(art, "source_name", "") or "")
+            if grp and grp != "unknown":
+                group_counts[grp] = group_counts.get(grp, 0) + 1
+
+        # 1. Fill Bashur slots respecting dominance cap (P&W strictly first; Bashur Econ if needed)
+        for art in pw_bashur_pool:
+            if len(picked_bashur) >= bashur_budget:
+                break
+            if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                _admit(art, is_bashur=True)
+
+        if len(picked_bashur) < bashur_budget:
+            for art in ec_bashur:
+                if len(picked_bashur) >= bashur_budget:
+                    break
+                if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                    _admit(art, is_bashur=True)
+
+        # 2. Allocate Global slots respecting dominance cap & max 1 Econ/Cyber budget
         global_budget = max(0, effective_limit - bashur_budget)
+        current_ec_count = sum(
+            1 for a in selected if classify_topic_bucket(a) in ("economy", "cybersecurity")
+        )
         global_ec_taken: list[Article] = []
-        already_picked_ec = any(classify_topic_bucket(a) in ("economy", "cybersecurity") for a in picked_bashur)
-        if not already_picked_ec and ec_global and (global_budget >= 1 or len(pw_bashur_pool) < bashur_budget):
-            global_ec_taken = ec_global[:1]
+        if current_ec_count < ec_budget and (global_budget >= 1 or len(pw_bashur_pool) < bashur_budget):
+            for art in ec_global:
+                if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                    global_ec_taken = [art]
+                    break
 
         pw_global_needed = max(0, global_budget - len(global_ec_taken))
-        picked_global.extend(pw_global_pool[:pw_global_needed])
-        picked_global.extend(global_ec_taken)
+        pw_global_taken_count = 0
+        for art in pw_global_pool:
+            if pw_global_taken_count >= pw_global_needed or len(selected) >= effective_limit:
+                break
+            if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                _admit(art, is_bashur=False)
+                pw_global_taken_count += 1
 
-        selected = picked_bashur + picked_global
-        selected_ids = {id(a) for a in selected}
+        for art in global_ec_taken:
+            if len(selected) < effective_limit and _can_admit(art, allow_tier12_scarcity_overflow=False):
+                _admit(art, is_bashur=False)
 
-        # 3. Elastic backfill: empty slots are filled with Politics & War first (Global then extra Bashur)
-        remaining_slots = effective_limit - len(selected)
-        if remaining_slots > 0:
-            extra_pw_global = [a for a in pw_global_pool if id(a) not in selected_ids]
-            take = extra_pw_global[:remaining_slots]
-            picked_global.extend(take)
-            selected.extend(take)
-            selected_ids.update(id(a) for a in take)
-            remaining_slots = effective_limit - len(selected)
+        # 3. Elastic backfill while still enforcing rolling dominance cap across all groups
+        for art in pw_global_pool:
+            if len(selected) >= effective_limit:
+                break
+            if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                _admit(art, is_bashur=False)
 
-        if remaining_slots > 0:
-            extra_pw_bashur = [a for a in pw_bashur_pool if id(a) not in selected_ids]
-            take = extra_pw_bashur[:remaining_slots]
-            picked_bashur.extend(take)
-            selected.extend(take)
-            selected_ids.update(id(a) for a in take)
-            remaining_slots = effective_limit - len(selected)
+        for art in pw_bashur_pool:
+            if len(selected) >= effective_limit:
+                break
+            if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                _admit(art, is_bashur=True)
 
-        # If a Global slot couldn't take chosen Econ/Cyber earlier and space opened via scarcity, admit at most 1
-        current_ec_count = sum(1 for a in selected if classify_topic_bucket(a) in ("economy", "cybersecurity"))
-        if remaining_slots > 0 and current_ec_count < ec_budget:
+        current_ec_count = sum(
+            1 for a in selected if classify_topic_bucket(a) in ("economy", "cybersecurity")
+        )
+        if len(selected) < effective_limit and current_ec_count < ec_budget:
             for art in chosen_ec:
-                if id(art) not in selected_ids and remaining_slots > 0:
-                    picked_global.append(art) if not is_bashur_article(art) else picked_bashur.append(art)
-                    selected.append(art)
-                    selected_ids.add(id(art))
-                    remaining_slots -= 1
+                if len(selected) >= effective_limit:
                     break
+                if _can_admit(art, allow_tier12_scarcity_overflow=False):
+                    _admit(art, is_bashur=is_bashur_article(art))
+                    break
+
+        # 4. Scarcity-only backfill for Tier-1 / Tier-2 (NEVER Tier-3!) if slots remain empty
+        if len(selected) < effective_limit:
+            for art in pw_bashur_pool:
+                if len(picked_bashur) >= bashur_budget or len(selected) >= effective_limit:
+                    break
+                if _can_admit(art, allow_tier12_scarcity_overflow=True):
+                    _admit(art, is_bashur=True)
+
+            for art in pw_global_pool:
+                if len(selected) >= effective_limit:
+                    break
+                if _can_admit(art, allow_tier12_scarcity_overflow=True):
+                    _admit(art, is_bashur=False)
+
+            for art in pw_bashur_pool:
+                if len(selected) >= effective_limit:
+                    break
+                if _can_admit(art, allow_tier12_scarcity_overflow=True):
+                    _admit(art, is_bashur=True)
+
+            current_ec_count = sum(
+                1 for a in selected if classify_topic_bucket(a) in ("economy", "cybersecurity")
+            )
+            if len(selected) < effective_limit and current_ec_count < ec_budget:
+                for art in chosen_ec:
+                    if len(selected) >= effective_limit:
+                        break
+                    if _can_admit(art, allow_tier12_scarcity_overflow=True):
+                        _admit(art, is_bashur=is_bashur_article(art))
+                        break
 
         deferred = [a for a in candidates if id(a) not in selected_ids]
 
-        # Genuine breaking emergencies (from Politics/War, or Econ/Cyber if EC budget permits) never stay suppressed
+        # Genuine corroborated Tier-1/2 breaking emergencies never stay suppressed
         deferred_breaking = [
             a for a in deferred
-            if is_strict_breaking(a) and (
+            if is_strict_breaking(a)
+            and (
+                not dom_cap_enabled
+                or dom_cap <= 0
+                or _is_dominance_cap_exempt(a)
+            )
+            and (
                 classify_topic_bucket(a) == "politics_war"
                 or (
                     classify_topic_bucket(a) in ("economy", "cybersecurity")
@@ -302,9 +415,15 @@ class QuotaBalancer:
                 )
                 if non_breaking_idx is not None:
                     evicted = selected.pop(non_breaking_idx)
+                    ev_grp = get_source_group(getattr(evicted, "source_name", "") or "")
+                    if ev_grp in group_counts and group_counts[ev_grp] > 0:
+                        group_counts[ev_grp] -= 1
                     deferred.append(evicted)
                     deferred.remove(brk)
                     selected.append(brk)
+                    brk_grp = get_source_group(getattr(brk, "source_name", "") or "")
+                    if brk_grp and brk_grp != "unknown":
+                        group_counts[brk_grp] = group_counts.get(brk_grp, 0) + 1
 
         ordered_selected = sorted(selected, key=batch_publish_sort_key)
         bashur_count = sum(1 for a in ordered_selected if is_bashur_article(a))

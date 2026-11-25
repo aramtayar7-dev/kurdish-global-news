@@ -411,7 +411,7 @@ class Database:
         """
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
         async with self.conn.execute(
-            """SELECT id, original_title, translated_title, translated_summary,
+            """SELECT id, source_name, original_title, translated_title, translated_summary,
                       original_summary, category, published_at, discovered_at,
                       telegram_message_id, thread_root_message_id,
                       named_entities, event_key, event_entities

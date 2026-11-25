@@ -547,20 +547,20 @@ class SupabaseDatabase:
         """
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
         full_select = (
-            "id,original_title,translated_title,translated_summary,category,"
+            "id,source_name,original_title,translated_title,translated_summary,category,"
             "published_at,discovered_at,telegram_message_id,thread_root_message_id,"
             "named_entities,event_key,event_entities"
         )
         no_thread_select = (
-            "id,original_title,translated_title,translated_summary,category,"
+            "id,source_name,original_title,translated_title,translated_summary,category,"
             "published_at,discovered_at,named_entities,event_key,event_entities"
         )
         fallback_select = (
-            "id,original_title,translated_title,translated_summary,category,"
+            "id,source_name,original_title,translated_title,translated_summary,category,"
             "published_at,discovered_at,named_entities"
         )
         minimal_select = (
-            "id,original_title,translated_title,category,published_at,discovered_at"
+            "id,source_name,original_title,translated_title,category,published_at,discovered_at"
         )
 
         if self._supports_thread_columns is False and self._supports_event_columns is False:

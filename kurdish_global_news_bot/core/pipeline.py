@@ -33,6 +33,12 @@ from core.importance_ranker import (
 )
 from core.balancer import QuotaBalancer
 from core.duplicate_detector import DuplicateDetector
+from core.source_verifier import (
+    TIER_3,
+    apply_verification_guard,
+    compute_corroboration,
+    get_source_tier,
+)
 from processing.deduplicator import (
     OUTCOME_DUPLICATE,
     OUTCOME_NEW_STORY,
@@ -42,10 +48,15 @@ from processing.deduplicator import (
 from processing.extractor import ArticleExtractor
 from processing.validator import ArticleValidator
 from processing.translator import TranslationEngine, TranslationError, is_valid_kurdish_sorani
-from processing.content_formatter import ContentFormatter, normalize_neutral_terminology
+from processing.content_formatter import (
+    ContentFormatter,
+    normalize_neutral_terminology,
+    prepend_tier3_attribution,
+)
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics, Timer
+import config
 from config import (
     ArticleStatus, Priority, MAX_RETRIES, AUTO_PUBLISH,
     MAX_CONCURRENT_ARTICLES, PRIMARY_CATEGORIES,
@@ -113,6 +124,7 @@ class ArticlePipeline:
         self._cold_start: Optional[bool] = None
         self._cycle_published_history: Optional[list[dict]] = None
         self._cycle_accepted_refs: list[dict] = []
+        self._cycle_corroboration_pool: Optional[list[Article]] = None
 
     def set_cold_start(self, enabled: bool) -> None:
         """Set whether cold start protection is active."""
@@ -122,6 +134,10 @@ class ArticlePipeline:
         """Cache the 48-72h persistent published history for the active cycle."""
         self._cycle_published_history = list(history) if history is not None else None
         self._cycle_accepted_refs = []
+
+    def set_cycle_corroboration_pool(self, articles: Optional[list[Article]]) -> None:
+        """Cache full pre-dedup candidate articles for zero-API cross-source corroboration."""
+        self._cycle_corroboration_pool = list(articles) if articles is not None else None
 
     async def _get_published_history(self) -> list[dict]:
         """Return cached cycle history or load last 72h published history from storage."""
@@ -135,6 +151,7 @@ class ArticlePipeline:
         ev_entities = normalize_event_entities(getattr(article, "event_entities", []))
         ref = {
             "id": article.id,
+            "source_name": getattr(article, "source_name", "") or "",
             "original_title": article.original_title or "",
             "translated_title": article.translated_title or "",
             "translated_summary": article.translated_summary or "",
@@ -357,15 +374,44 @@ class ArticlePipeline:
 
         return True
 
+    @staticmethod
+    def _populate_relevance_fields(article: Article, relevance: RelevanceEvaluation) -> None:
+        """Populate score, strict breaking gate, event metadata, and priority from relevance output."""
+        if getattr(article, "_relevance_populated", False):
+            return
+        article.importance_score = float(relevance.score)
+        if not relevance.used_fallback:
+            article.category = relevance.category
+        article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
+
+        ev_key = normalize_event_key(getattr(relevance, "event_key", ""))
+        ev_entities = normalize_event_entities(getattr(relevance, "event_entities", []))
+        if ev_key:
+            article.event_key = ev_key
+        if ev_entities:
+            article.event_entities = ev_entities
+        if getattr(relevance, "update_type", ""):
+            article.update_type = relevance.update_type  # type: ignore[attr-defined]
+        if article.event_key or article.event_entities:
+            article.named_entities = pack_event_metadata(article.event_key, article.event_entities)
+
+        if article.is_breaking and not relevance.used_fallback:
+            article.priority = Priority.CRITICAL
+        elif not relevance.used_fallback and article.category == "kurdistan":
+            if article.priority in (Priority.CRITICAL, Priority.NORMAL):
+                article.priority = Priority.HIGH
+        elif not article.is_breaking and article.priority == Priority.CRITICAL and not relevance.used_fallback:
+            article.priority = Priority.HIGH
+        article._relevance_populated = True  # type: ignore[attr-defined]
+
     async def _apply_relevance_evaluation(
         self,
         article: Article,
         relevance: RelevanceEvaluation,
         extra_recent: Optional[list[dict]] = None,
     ) -> bool:
-        """Apply Gemini relevance threshold, event_key metadata, strict breaking gate, and blocked-topic check."""
+        """Apply Gemini relevance threshold, event_key metadata, verification guard, and blocked-topic check."""
         article_id = article.id
-        priority = article.priority
 
         if not relevance.passed:
             reason_text = relevance.reason or "Below global relevance threshold"
@@ -390,39 +436,20 @@ class ArticlePipeline:
             self._metrics.increment("articles_low_global_relevance")
             return False
 
-        # Strict breaking gate: only breaking when BOTH is_breaking is True AND score >= 9.0
-        article.importance_score = float(relevance.score)
-        if not relevance.used_fallback:
-            article.category = relevance.category
-        article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
-
-        # Store Gemini's lightweight standardized English event fingerprint & update hint (0 extra API calls)
-        ev_key = normalize_event_key(getattr(relevance, "event_key", ""))
-        ev_entities = normalize_event_entities(getattr(relevance, "event_entities", []))
-        if ev_key:
-            article.event_key = ev_key
-        if ev_entities:
-            article.event_entities = ev_entities
-        if getattr(relevance, "update_type", ""):
-            article.update_type = relevance.update_type  # type: ignore[attr-defined]
-        if article.event_key or article.event_entities:
-            article.named_entities = pack_event_metadata(article.event_key, article.event_entities)
-
-        if article.is_breaking and not relevance.used_fallback:
-            priority = Priority.CRITICAL
-            article.priority = Priority.CRITICAL
-        elif not relevance.used_fallback and article.category == "kurdistan":
-            if article.priority in (Priority.CRITICAL, Priority.NORMAL):
-                priority = Priority.HIGH
-                article.priority = Priority.HIGH
-        elif not article.is_breaking and article.priority == Priority.CRITICAL and not relevance.used_fallback:
-            priority = Priority.HIGH
-            article.priority = Priority.HIGH
+        self._populate_relevance_fields(article, relevance)
 
         # Second-layer deterministic blocked topic guard behind Gemini & before scraping
         post_blocked = check_blocked_topic(article)
         if post_blocked:
             return await self._reject_blocked_topic(article, post_blocked)
+
+        # Single-source verification guard (blocks uncorroborated Tier-3 breaking alerts, ZERO API calls)
+        if getattr(config, "ENABLE_SOURCE_VERIFICATION", True) and not getattr(article, "_verification_checked", False):
+            recent_hist = await self._get_published_history()
+            combined_hist = list(extra_recent or []) + list(self._cycle_accepted_refs) + recent_hist
+            pool = list(self._cycle_corroboration_pool or [article])
+            corrob = compute_corroboration(article, batch_articles=pool, recent_history=combined_hist)
+            apply_verification_guard(article, corrob)
 
         # Zero-extra-API three-way check (NEW_STORY | THREAD_UPDATE | DUPLICATE) using
         # Gemini's English event_key/event_entities & final score/is_breaking cooldown rules
@@ -553,6 +580,16 @@ class ArticlePipeline:
             article.translated_title = normalize_neutral_terminology(article.translated_title)
             if article.translated_summary:
                 article.translated_summary = normalize_neutral_terminology(article.translated_summary)
+
+            # Uncorroborated Tier-3 preliminary attribution (only when Tier-3 has no corroboration)
+            if getattr(config, "ENABLE_SOURCE_VERIFICATION", True):
+                if not getattr(article, "_verification_checked", False) and get_source_tier(article.source_name) == TIER_3:
+                    recent_hist = await self._get_published_history()
+                    pool = list(self._cycle_corroboration_pool or [article])
+                    corrob = compute_corroboration(article, batch_articles=pool, recent_history=recent_hist)
+                    apply_verification_guard(article, corrob)
+                if getattr(article, "_is_uncorroborated_tier3", False) and article.translated_summary:
+                    article.translated_summary = prepend_tier3_attribution(article.translated_summary)
 
             # Final Sorani re-check after terminology normalization
             if not is_valid_kurdish_sorani(article.translated_title or "") or (
@@ -863,7 +900,13 @@ class ArticlePipeline:
             return [], results
 
         seed_refs = list(extra_queue_refs or [])
-        prioritized = sorted(articles, key=article_selection_sort_key)
+        if getattr(config, "ENABLE_SOURCE_VERIFICATION", True):
+            prioritized = sorted(
+                articles,
+                key=lambda a: (get_source_tier(a.source_name), *article_selection_sort_key(a)),
+            )
+        else:
+            prioritized = sorted(articles, key=article_selection_sort_key)
         pre_screened: list[Article] = []
         accepted_batch_refs: list[dict] = []
 
@@ -879,6 +922,7 @@ class ArticlePipeline:
                     pre_screened.append(art)
                     accepted_batch_refs.append({
                         "id": art.id,
+                        "source_name": art.source_name or "",
                         "original_title": art.original_title or "",
                         "original_summary": art.original_summary or "",
                         "translated_title": art.translated_title or "",
@@ -924,7 +968,28 @@ class ArticlePipeline:
             evaluations = await self._ranker.evaluate_batch_relevance(
                 gemini_candidates, batch_size=GEMINI_RANK_BATCH_SIZE
             )
-            for art, relevance in zip(gemini_candidates, evaluations):
+            evaluated_pairs = list(zip(gemini_candidates, evaluations))
+
+            if getattr(config, "ENABLE_SOURCE_VERIFICATION", True):
+                for art, relevance in evaluated_pairs:
+                    if relevance.passed:
+                        self._populate_relevance_fields(art, relevance)
+                recent_hist = await self._get_published_history()
+                batch_pool = list(self._cycle_corroboration_pool or articles)
+                combined_hist = seed_refs + list(self._cycle_accepted_refs) + recent_hist
+                for art, relevance in evaluated_pairs:
+                    if relevance.passed:
+                        corrob = compute_corroboration(
+                            art,
+                            batch_articles=batch_pool,
+                            recent_history=combined_hist,
+                        )
+                        apply_verification_guard(art, corrob)
+                evaluated_pairs.sort(
+                    key=lambda pair: (get_source_tier(pair[0].source_name), *article_selection_sort_key(pair[0]))
+                )
+
+            for art, relevance in evaluated_pairs:
                 try:
                     if await self._apply_relevance_evaluation(
                         art,
@@ -934,6 +999,7 @@ class ArticlePipeline:
                         eligible.append(art)
                         accepted_event_refs.append({
                             "id": art.id,
+                            "source_name": art.source_name or "",
                             "original_title": art.original_title or "",
                             "translated_title": art.translated_title or "",
                             "translated_summary": art.translated_summary or "",

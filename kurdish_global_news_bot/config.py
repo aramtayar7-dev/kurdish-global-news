@@ -315,9 +315,24 @@ RSS_FEEDS: list[dict[str, str]] = [
 # Public Telegram News Channels (https://t.me/s/{username})
 # ═══════════════════════════════════════════════════
 TELEGRAM_SOURCE_CHANNELS: list[dict[str, str]] = [
-    {"username": "SabrenNewss", "name": "Sabereen News", "region_hint": "iraq_region", "lang": "ar"},
-    {"username": "Sabren_News1", "name": "Sabereen Plus", "region_hint": "iraq_region", "lang": "ar"},
+    # Southern Kurdistan (Sorani Kurdish — lang="ckb", credibility_tier=2)
+    {"username": "rudawdigital", "name": "Rudaw", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "rudaw"},
+    {"username": "Kurdistan24news", "name": "Kurdistan24", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "kurdistan24"},
+    {"username": "nrttvofficial", "name": "NRT", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "nrt"},
+    # Neutral Conflict / OSINT (English — credibility_tier=2)
+    {"username": "liveuamap", "name": "Liveuamap", "region_hint": "global", "lang": "en", "credibility_tier": "2", "source_group": "liveuamap"},
+    {"username": "ClashReport", "name": "Clash Report", "region_hint": "global", "lang": "en", "credibility_tier": "2", "source_group": "clashreport"},
+    # Regional Factional / Unverified (Arabic — credibility_tier=3)
+    {"username": "SabrenNewss", "name": "Sabereen News", "region_hint": "iraq_region", "lang": "ar", "credibility_tier": "3", "source_group": "sabereen"},
+    {"username": "Sabren_News1", "name": "Sabereen Plus", "region_hint": "iraq_region", "lang": "ar", "credibility_tier": "3", "source_group": "sabereen"},
 ]
+
+# ═══════════════════════════════════════════════════
+# Source Verification & Dominance Caps
+# ═══════════════════════════════════════════════════
+ENABLE_SOURCE_VERIFICATION: bool = _bool(os.getenv("ENABLE_SOURCE_VERIFICATION"), True)
+ENABLE_SOURCE_DOMINANCE_CAP: bool = _bool(os.getenv("ENABLE_SOURCE_DOMINANCE_CAP"), True)
+MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW: int = _int(os.getenv("MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW"), 2)
 
 # ═══════════════════════════════════════════════════
 # Source Credibility Scores
@@ -343,6 +358,11 @@ SOURCE_CREDIBILITY: dict[str, float] = {
     "who": 0.92,
     "kurdistan24": 0.86,
     "rudaw": 0.86,
+    "rudaw digital": 0.86,
+    "nrt": 0.84,
+    "nrt tv": 0.84,
+    "liveuamap": 0.80,
+    "clash report": 0.78,
     "pukmedia": 0.78,
     "north press agency": 0.82,
     "rojava information center": 0.82,

@@ -991,18 +991,18 @@ class TestTelegramPipelineAndEngineIntegration:
         assert "باکووری عێراق" not in saved_row.translated_title
         assert "ئەمریکای دوژمن" not in saved_row.translated_title
 
-        # Case 2B: Score 9.5 + is_breaking=True sudden military attack -> loud delivery + 🔴 بەپەلە |
+        # Case 2B: Score 9.5 + is_breaking=True from Tier-2 Telegram channel (Rudaw) -> loud delivery + 🔴 بەپەلە |
         mock_bot.send_photo.reset_mock()
         breaking_tg = Article(
-            original_url="https://t.me/Sabren_News1/9003",
-            canonical_url="https://t.me/Sabren_News1/9003",
+            original_url="https://t.me/rudawdigital/9003",
+            canonical_url="https://t.me/rudawdigital/9003",
             original_title="Ballistic missile strikes hit major airbase in central region",
             original_summary=(
                 "Multiple ballistic missiles struck a major airbase overnight triggering explosions and "
                 "air defense sirens across surrounding districts. Military officials confirmed emergency "
                 "deployments and casualty assessment teams at the site."
             ),
-            source_name="Sabereen Plus",
+            source_name="Rudaw",
             category="military_conflict",
             image_url="https://cdn4.telegram-cdn.org/file/breaking9003.jpg",
             publication_date=_iso_hours_ago(0.1),

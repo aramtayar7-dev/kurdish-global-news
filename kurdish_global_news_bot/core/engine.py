@@ -499,6 +499,8 @@ class NewsEngine:
                         logger.info("%d new articles to process.", len(new_articles))
 
                         if new_articles:
+                            if self._pipeline is not None and hasattr(self._pipeline, "set_cycle_corroboration_pool"):
+                                self._pipeline.set_cycle_corroboration_pool(new_articles)
                             capped_articles, _ = await self._apply_local_prefilter(new_articles)
                             if capped_articles:
                                 # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
@@ -519,6 +521,8 @@ class NewsEngine:
             finally:
                 if self._pipeline is not None and hasattr(self._pipeline, "set_cycle_published_history"):
                     self._pipeline.set_cycle_published_history(None)
+                if self._pipeline is not None and hasattr(self._pipeline, "set_cycle_corroboration_pool"):
+                    self._pipeline.set_cycle_corroboration_pool(None)
 
     async def _apply_local_prefilter(self, new_articles: list[Article]) -> tuple[list[Article], int]:
         """Pre-filter obvious off-topic items & cap fresh relevant candidates before Gemini."""
@@ -558,6 +562,7 @@ class NewsEngine:
         ev_entities = normalize_event_entities(getattr(art, "event_entities", []))
         return {
             "id": art.id,
+            "source_name": art.source_name or "",
             "original_title": art.original_title or "",
             "translated_title": art.translated_title or "",
             "translated_summary": art.translated_summary or "",
@@ -710,6 +715,7 @@ class NewsEngine:
             new_articles = await self._extract_and_insert(all_raw_articles)
             logger.info("%d new articles to process.", len(new_articles))
             if new_articles:
+                self._pipeline.set_cycle_corroboration_pool(new_articles)
                 capped_articles, rej_count = await self._apply_local_prefilter(new_articles)
                 counts["rejected"] += rej_count
                 if capped_articles:

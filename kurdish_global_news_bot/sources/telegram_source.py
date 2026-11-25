@@ -58,6 +58,11 @@ _SIGNATURE_LINE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^\s*(?:للمزيد|للاشتراك|تابعونا|انضموا\s+إلى|اشترك\s+في)\b.*", re.IGNORECASE),
     re.compile(r"^\s*(?:منقول|عبر\s*:|تێلێگرام\s*:|تلغرام\s*:).*$", re.IGNORECASE),
     re.compile(r"^\s*(?:media\s+is\s+too\s+big|please\s+open\s+telegram\b.*)$", re.IGNORECASE),
+    # Kurdish-language channel signatures (Rudaw, Kurdistan24, NRT, general)
+    re.compile(r"^\s*(?:#Rudaw|#رووداو|تۆڕی\s+میدیایی\s+رووداو|رووداو\s*[-–]?\s*(?:ئەنقەرە|هەولێر|بەغدا|سلێمانی|دهۆک))\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:#Kurdistan24|#کوردستان24|#K24|بۆ\s+بینینی\s+زیاتر|بۆ\s+خوێندنەوەی\s+زیاتر)\b.*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:#NRT|#ئێن\.?\s*ئا[رڕ]\.?\s*تی|#nrttvofficial)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:سەرچاوە|بەدوادا\s+بچن|بۆ\s+زانیاری\s+زیاتر)\b.*$", re.IGNORECASE),
 ]
 
 _TRAFFIC_PROMO_MUNICIPAL_PATTERNS: list[re.Pattern[str]] = [
@@ -454,13 +459,19 @@ class TelegramSource(BaseSource):
         return self.parse_channel_html(html_text, channel_cfg)
 
     async def fetch_articles(self) -> list[RawArticle]:
-        """Fetch public posts from all configured Telegram channels concurrently."""
+        """Fetch public posts from all configured Telegram channels concurrently with bounded concurrency."""
         if not self._channels:
             return []
         if not self._session or self._session.closed:
             await self.initialize()
 
-        tasks = [self.fetch_channel(ch) for ch in self._channels]
+        semaphore = asyncio.Semaphore(5)  # Bounded concurrency: at most 5 channels at once
+
+        async def _fetch_bounded(ch: dict[str, str]) -> list[RawArticle]:
+            async with semaphore:
+                return await self.fetch_channel(ch)
+
+        tasks = [_fetch_bounded(ch) for ch in self._channels]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_articles: list[RawArticle] = []

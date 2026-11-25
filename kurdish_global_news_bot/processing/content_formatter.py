@@ -22,6 +22,12 @@ from storage.models import Article
 
 logger = logging.getLogger("processing.formatter")
 
+# Attribution qualifier for uncorroborated Tier-3 single-source claims
+TIER3_ATTRIBUTION_PREFIX = "بەپێی ڕاپۆرتە سەرەتاییەکان، "
+_ATTRIBUTION_PREFIXES = (
+    "بەپێی", "سەرچاوە", "میدیا", "لە ڕاپۆرتێکدا", "بەپێی ڕاپۆرتە",
+)
+
 # Central Kurdish (Sorani) category labels covering the 7 canonical keys + legacy aliases
 CATEGORY_LABELS_KURDISH: dict[str, str] = {
     # Canonical 7 categories
@@ -69,6 +75,28 @@ def resolve_category_display(category: Optional[str]) -> tuple[str, str]:
         emoji = CATEGORY_EMOJIS.get(category, "🌍")
         return label, emoji
     return "سیاسەت و جیهان", "🌍"
+
+
+def prepend_tier3_attribution(translated_summary: str) -> str:
+    """
+    Prepend neutral Kurdish preliminary-attribution qualifier to uncorroborated Tier-3 summaries.
+    Skips if the summary already starts with an attribution prefix.
+    Returns the modified summary, guaranteed <= 1024 chars.
+    """
+    if not translated_summary or not translated_summary.strip():
+        return translated_summary
+
+    stripped = translated_summary.strip()
+    # Check if already attributed
+    for prefix in _ATTRIBUTION_PREFIXES:
+        if stripped.startswith(prefix):
+            return translated_summary
+
+    result = TIER3_ATTRIBUTION_PREFIX + stripped
+    # Trim to <= 1024 chars if needed
+    if len(result) > 1024:
+        result = trim_at_sentence_boundary(result, max_len=1024)
+    return result
 
 
 # Unicode Arabic/Kurdish letter boundaries so punctuation (، ؛ ؟ .) separates cleanly

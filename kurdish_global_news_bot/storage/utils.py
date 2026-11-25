@@ -140,6 +140,7 @@ def filter_recent_headlines(rows: list[dict[str, Any]], cutoff: datetime) -> lis
             raw_root_id = row.get("thread_root_message_id")
             recent.append({
                 "id": row["id"],
+                "source_name": row.get("source_name") or "",
                 "original_title": row.get("original_title") or "",
                 "translated_title": row.get("translated_title") or "",
                 "translated_summary": row.get("translated_summary") or "",
