@@ -206,12 +206,12 @@ def _mock_publisher(tmp_path: Path) -> tuple[TelegramPublisher, MagicMock]:
 
 def test_batch_pacing_config_and_source_bucket_classification():
     assert config.ENABLE_BATCH_PACING_ENGINE is True
-    assert config.BATCH_TARGET_POSTS == 10
+    assert config.BATCH_TARGET_POSTS == 5
     assert config.BATCH_PUBLISH_INTERVAL_SECONDS == 60.0
-    assert config.BATCH_REST_COOLDOWN_MINUTES == 10.0
+    assert config.BATCH_REST_COOLDOWN_MINUTES == 15.0
     assert config.BATCH_ALIGN_TO_MINUTE_BOUNDARY is True
-    assert config.BATCH_SOURCE_MIX == {"telegram": 4, "x": 4, "search": 2}
-    assert config.X_MAX_CANDIDATE_VIDEOS_PER_CYCLE == 10
+    assert config.BATCH_SOURCE_MIX == {"telegram": 2, "x": 2, "search": 1}
+    assert config.X_MAX_CANDIDATE_VIDEOS_PER_CYCLE == 6
 
     # Same outlet ("Rudaw") routes accurately by URL/adapter rather than ambigous brand name
     assert get_source_bucket(Article(source_name="Rudaw", original_url="https://t.me/rudawdigital/10")) == "telegram"
@@ -221,11 +221,11 @@ def test_batch_pacing_config_and_source_bucket_classification():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 2. Exact 4:4:2 Mix Selection, Interleaving & Multi-Bucket Pre-Filter
+# 2. Exact 2:2:1 Mix Selection, Interleaving & Multi-Bucket Pre-Filter
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_exact_4_4_2_mix_selection_and_clean_interleaving(monkeypatch):
+def test_exact_2_2_1_mix_selection_and_clean_interleaving(monkeypatch):
     monkeypatch.setattr(config, "ENABLE_SOURCE_DOMINANCE_CAP", False)
 
     tg_items = [_make_art("telegram", i, score=9.0 - i * 0.1) for i in range(6)]
@@ -233,19 +233,15 @@ def test_exact_4_4_2_mix_selection_and_clean_interleaving(monkeypatch):
     search_items = [_make_art("search", 20 + i, score=8.8 - i * 0.1) for i in range(5)]
 
     all_cands = tg_items + x_items + search_items
-    result = select_paced_batch(all_cands, target_posts=10, source_mix={"telegram": 4, "x": 4, "search": 2})
+    result = select_paced_batch(all_cands)
 
-    assert len(result.selected) == 10
-    assert len(result.deferred) == 7
-    assert result.bucket_counts == {"telegram": 4, "x": 4, "search": 2}
+    assert len(result.selected) == 5
+    assert len(result.deferred) == 12
+    assert result.bucket_counts == {"telegram": 2, "x": 2, "search": 1}
 
     buckets_seq = [get_source_bucket(a) for a in result.selected]
-    assert buckets_seq == [
-        "telegram", "x", "search",
-        "telegram", "x", "telegram",
-        "x", "search", "telegram", "x",
-    ]
-    # Assert no two consecutive posts share a bucket in the 4:4:2 interleaved sequence
+    assert buckets_seq == ["telegram", "x", "search", "telegram", "x"]
+    # Assert no two consecutive posts share a bucket in the 2:2:1 interleaved sequence
     assert all(buckets_seq[i] != buckets_seq[i + 1] for i in range(len(buckets_seq) - 1))
 
     # Multi-bucket Gemini pre-filter cap preserves search/x representation alongside flooded telegram
@@ -256,7 +252,7 @@ def test_exact_4_4_2_mix_selection_and_clean_interleaving(monkeypatch):
         max_candidates=16,
     )
     assert len(pre_sel) == 16
-    assert sum(1 for a in pre_sel if get_source_bucket(a) == "x") >= 4
+    assert sum(1 for a in pre_sel if get_source_bucket(a) == "x") >= 3
     assert sum(1 for a in pre_sel if get_source_bucket(a) == "search") >= 3
 
 
@@ -268,30 +264,30 @@ def test_exact_4_4_2_mix_selection_and_clean_interleaving(monkeypatch):
 def test_graceful_backfill_when_x_short_and_no_junk_padding(monkeypatch):
     monkeypatch.setattr(config, "ENABLE_SOURCE_DOMINANCE_CAP", False)
 
-    # X has only 2 videos while TG has 6 and Search has 4 -> cleanly backfills to 10 unique posts
-    tg_items = [_make_art("telegram", i, score=8.8 - i * 0.05) for i in range(6)]
-    x_items = [_make_art("x", 10 + i, score=8.7 - i * 0.05) for i in range(2)]
-    search_items = [_make_art("search", 20 + i, score=8.6 - i * 0.05) for i in range(4)]
+    # X has only 1 video while TG has 4 and Search has 3 -> cleanly backfills to 5 unique posts
+    tg_items = [_make_art("telegram", i, score=8.8 - i * 0.05) for i in range(4)]
+    x_items = [_make_art("x", 10 + i, score=8.7 - i * 0.05) for i in range(1)]
+    search_items = [_make_art("search", 20 + i, score=8.6 - i * 0.05) for i in range(3)]
 
     res_backfill = select_paced_batch(
         tg_items + x_items + search_items,
-        target_posts=10,
-        source_mix={"telegram": 4, "x": 4, "search": 2},
+        target_posts=5,
+        source_mix={"telegram": 2, "x": 2, "search": 1},
     )
-    assert len(res_backfill.selected) == 10
-    assert res_backfill.bucket_counts["x"] == 2
-    assert res_backfill.bucket_counts["telegram"] + res_backfill.bucket_counts["search"] == 8
-    assert len({a.canonical_url for a in res_backfill.selected}) == 10
+    assert len(res_backfill.selected) == 5
+    assert res_backfill.bucket_counts["x"] == 1
+    assert res_backfill.bucket_counts["telegram"] + res_backfill.bucket_counts["search"] == 4
+    assert len({a.canonical_url for a in res_backfill.selected}) == 5
 
-    # When total unique eligible pool has only 6 items -> returns strictly 6 (no duplicate padding!)
-    tiny_pool = tg_items[:2] + x_items[:2] + search_items[:2]
+    # When total unique eligible pool has only 3 items -> returns strictly 3 (no duplicate padding!)
+    tiny_pool = tg_items[:1] + x_items[:1] + search_items[:1]
     res_small = select_paced_batch(
         tiny_pool + [tg_items[0]],  # include exact duplicate object -> ignored defensively
-        target_posts=10,
-        source_mix={"telegram": 4, "x": 4, "search": 2},
+        target_posts=5,
+        source_mix={"telegram": 2, "x": 2, "search": 1},
     )
-    assert len(res_small.selected) == 6
-    assert len({a.canonical_url for a in res_small.selected}) == 6
+    assert len(res_small.selected) == 3
+    assert len({a.canonical_url for a in res_small.selected}) == 3
 
 
 @pytest.mark.asyncio
@@ -379,21 +375,21 @@ def test_compute_next_post_delay_aligns_to_exact_minute_boundary():
 
 
 @pytest.mark.asyncio
-async def test_10_post_batch_1_minute_sequential_pacing_timestamps_and_resilience(tmp_path, monkeypatch):
+async def test_5_post_batch_1_minute_sequential_pacing_timestamps_and_resilience(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ENABLE_BATCH_PACING_ENGINE", True)
-    monkeypatch.setattr(config, "BATCH_TARGET_POSTS", 10)
+    monkeypatch.setattr(config, "BATCH_TARGET_POSTS", 5)
     monkeypatch.setattr(config, "BATCH_PUBLISH_INTERVAL_SECONDS", 60.0)
     monkeypatch.setattr(config, "BATCH_ALIGN_TO_MINUTE_BOUNDARY", True)
-    monkeypatch.setattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0)
+    monkeypatch.setattr(config, "BATCH_REST_COOLDOWN_MINUTES", 15.0)
     monkeypatch.setattr(config, "ENABLE_SOURCE_DOMINANCE_CAP", False)
 
-    db = Database(str(tmp_path / "batch_10.db"))
+    db = Database(str(tmp_path / "batch_5.db"))
     await db.connect()
 
     try:
-        raw_tg = [_make_raw("telegram", i) for i in range(5)]
-        raw_x = [_make_raw("x", 10 + i, video_url=f"https://video.twimg.com/x_{i}.mp4") for i in range(6)]
-        raw_search = [_make_raw("search", 20 + i) for i in range(3)]
+        raw_tg = [_make_raw("telegram", i) for i in range(4)]
+        raw_x = [_make_raw("x", 10 + i, video_url=f"https://video.twimg.com/x_{i}.mp4") for i in range(4)]
+        raw_search = [_make_raw("search", 20 + i) for i in range(2)]
 
         mock_src = MagicMock()
         mock_src.name = "MultiMock"
@@ -476,12 +472,12 @@ async def test_10_post_batch_1_minute_sequential_pacing_timestamps_and_resilienc
              patch("core.engine.asyncio.sleep", side_effect=_fake_sleep):
             await engine._discovery_cycle()
 
-        # Exactly 10 posts published across the 4:4:2 mix despite watermark rejection on x_0!
+        # Exactly 5 posts published across the 2:2:1 mix despite watermark rejection on x_0!
         total_sent = pub._bot.send_photo.await_count + pub._bot.send_video.await_count
-        assert total_sent == 10
-        # Exactly 9 sleeps of 60s (between posts 1->2..9->10), ZERO sleep after post 10!
-        assert sleep_calls == [60.0] * 9
-        assert post_timestamps == [f"03:4{i}:00" for i in range(10)]
+        assert total_sent == 5
+        # Exactly 4 sleeps of 60s (between posts 1->2..4->5), ZERO sleep after post 5!
+        assert sleep_calls == [60.0] * 4
+        assert post_timestamps == [f"03:4{i}:00" for i in range(5)]
 
         # Watermarked x_0 rejected up front & recorded cleanly
         assert await db.is_url_skipped(raw_x[0].url) is True
@@ -489,20 +485,20 @@ async def test_10_post_batch_1_minute_sequential_pacing_timestamps_and_resilienc
         # Cooldown timestamp persisted into existing `system_logs`
         cooldown_dt = await db.get_last_batch_completed_at()
         assert cooldown_dt is not None
-        assert cooldown_dt == datetime(2026, 11, 25, 3, 49, 0, tzinfo=timezone.utc)
+        assert cooldown_dt == datetime(2026, 11, 25, 3, 44, 0, tzinfo=timezone.utc)
     finally:
         await db.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5. 10-Minute Persisted Rest Cooldown (Stateless, Continuous & Watchdog)
+# 5. 15-Minute Persisted Rest Cooldown (Stateless, Continuous & Watchdog)
 # ═══════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
-async def test_10_minute_persisted_rest_cooldown_stateless_and_continuous(tmp_path, monkeypatch):
+async def test_15_minute_persisted_rest_cooldown_stateless_and_continuous(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ENABLE_BATCH_PACING_ENGINE", True)
-    monkeypatch.setattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0)
+    monkeypatch.setattr(config, "BATCH_REST_COOLDOWN_MINUTES", 15.0)
     monkeypatch.setattr(config, "BATCH_PUBLISH_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(config, "ENABLE_SOURCE_DOMINANCE_CAP", False)
 
@@ -510,8 +506,8 @@ async def test_10_minute_persisted_rest_cooldown_stateless_and_continuous(tmp_pa
     await db.connect()
 
     try:
-        t_batch_end = datetime(2026, 11, 25, 3, 49, 0, tzinfo=timezone.utc)
-        await db.record_batch_completed_at(timestamp=t_batch_end, published_count=10)
+        t_batch_end = datetime(2026, 11, 25, 3, 44, 0, tzinfo=timezone.utc)
+        await db.record_batch_completed_at(timestamp=t_batch_end, published_count=5)
 
         mock_src = MagicMock()
         mock_src.name = "MockRSS"
@@ -549,15 +545,15 @@ async def test_10_minute_persisted_rest_cooldown_stateless_and_continuous(tmp_pa
             )
         )
 
-        # 1) New run at T + 4 minutes -> MUST rest immediately (0 fetch, 0 publish, 0 watchdog alerts)
-        engine._utc_now = lambda: t_batch_end + timedelta(minutes=4)
+        # 1) New run at T + 12 minutes (< 15m) -> MUST rest immediately (0 fetch, 0 publish, 0 watchdog alerts)
+        engine._utc_now = lambda: t_batch_end + timedelta(minutes=12)
         await engine._discovery_cycle()
         mock_src.fetch_articles.assert_not_awaited()
         mock_bot.send_photo.assert_not_awaited()
         engine._watchdog.dispatch_alert.assert_not_awaited()
 
-        # 2) New run at T + 10m 5s in continuous loop (_running=True) -> executes & sleeps 600s after completion!
-        engine._utc_now = lambda: t_batch_end + timedelta(minutes=10, seconds=5)
+        # 2) New run at T + 15m 5s in continuous loop (_running=True) -> executes & sleeps 900s after completion!
+        engine._utc_now = lambda: t_batch_end + timedelta(minutes=15, seconds=5)
         engine._running = True
         cont_sleeps: list[float] = []
         with patch("core.engine.asyncio.sleep", side_effect=lambda s: cont_sleeps.append(s)):
@@ -565,7 +561,7 @@ async def test_10_minute_persisted_rest_cooldown_stateless_and_continuous(tmp_pa
 
         mock_src.fetch_articles.assert_awaited_once()
         mock_bot.send_photo.assert_awaited_once()
-        assert cont_sleeps == [600.0]
+        assert cont_sleeps == [900.0]
     finally:
         await db.close()
 
@@ -647,7 +643,7 @@ async def test_mid_batch_single_post_failure_continues_remaining_posts(tmp_path,
 @pytest.mark.asyncio
 async def test_supabase_batch_cooldown_system_logs_parity():
     recorded_bodies: list[dict] = []
-    saved_ts = "2026-11-25T03:49:00+00:00"
+    saved_ts = "2026-11-25T03:44:00+00:00"
 
     def _handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path.endswith("/system_logs"):
@@ -662,7 +658,7 @@ async def test_supabase_batch_cooldown_system_logs_parity():
                         "timestamp": saved_ts,
                         "level": "INFO",
                         "component": "BATCH_COOLDOWN",
-                        "message": "Batch completed (10 post(s))",
+                        "message": "Batch completed (5 post(s))",
                     }
                 ],
             )
@@ -671,8 +667,8 @@ async def test_supabase_batch_cooldown_system_logs_parity():
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     sb = SupabaseDatabase(url="https://example.supabase.co", key="anon-key", client=client)
 
-    ts = datetime(2026, 11, 25, 3, 49, 0, tzinfo=timezone.utc)
-    await sb.record_batch_completed_at(timestamp=ts, published_count=10)
+    ts = datetime(2026, 11, 25, 3, 44, 0, tzinfo=timezone.utc)
+    await sb.record_batch_completed_at(timestamp=ts, published_count=5)
     assert len(recorded_bodies) == 1
     assert recorded_bodies[0]["component"] == "BATCH_COOLDOWN"
 
@@ -696,6 +692,7 @@ async def test_batch_pacing_uses_zero_extra_gemini_calls():
         + [_make_art("search", 40 + i) for i in range(4)]
     )
     with patch.object(GeminiClient, "generate_json", new=AsyncMock()) as mock_gemini:
-        plan = select_paced_batch(cands, target_posts=10)
-        assert len(plan.selected) == 10
+        plan = select_paced_batch(cands)
+        assert len(plan.selected) == 5
+        assert plan.bucket_counts == {"telegram": 2, "x": 2, "search": 1}
         assert mock_gemini.await_count == 0

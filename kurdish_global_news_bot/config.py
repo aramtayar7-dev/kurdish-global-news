@@ -59,7 +59,7 @@ X_MAX_VIDEO_DURATION_SEC: int = _int(os.getenv("X_MAX_VIDEO_DURATION_SEC"), 120)
 X_MIN_VIDEO_WIDTH: int = _int(os.getenv("X_MIN_VIDEO_WIDTH"), 480)
 X_MAX_VIDEOS_PER_CYCLE: int = max(1, _int(os.getenv("X_MAX_VIDEOS_PER_CYCLE"), 4))
 X_MAX_CANDIDATE_VIDEOS_PER_CYCLE: int = max(
-    4, _int(os.getenv("X_MAX_CANDIDATE_VIDEOS_PER_CYCLE"), 10)
+    2, _int(os.getenv("X_MAX_CANDIDATE_VIDEOS_PER_CYCLE"), 6)
 )
 X_REQUIRE_CLEAN_NO_LOGO_FOR_UNOFFICIAL: bool = _bool(
     os.getenv("X_REQUIRE_CLEAN_NO_LOGO_FOR_UNOFFICIAL"), True
@@ -233,23 +233,23 @@ MAX_QUEUED_ARTICLE_AGE_HOURS: int = max(1, _int(os.getenv("MAX_QUEUED_ARTICLE_AG
 MAX_QUEUE_SIZE: int = max(1, _int(os.getenv("MAX_QUEUE_SIZE"), 12))
 
 # ═══════════════════════════════════════════════════
-# Paced 10-Post Batch Engine (4:4:2 Mix + 1-Min Cadence + 10-Min Rest Cooldown)
+# Paced 5-Post Batch Engine (2:2:1 Mix + 1-Min Cadence + 15-Min Rest Cooldown)
 # ═══════════════════════════════════════════════════
 ENABLE_BATCH_PACING_ENGINE: bool = _bool(os.getenv("ENABLE_BATCH_PACING_ENGINE"), True)
-BATCH_TARGET_POSTS: int = max(1, _int(os.getenv("BATCH_TARGET_POSTS"), 10))
+BATCH_TARGET_POSTS: int = max(1, _int(os.getenv("BATCH_TARGET_POSTS"), 5))
 BATCH_PUBLISH_INTERVAL_SECONDS: float = max(
     0.0, _float(os.getenv("BATCH_PUBLISH_INTERVAL_SECONDS"), 60.0)
 )
 BATCH_REST_COOLDOWN_MINUTES: float = max(
-    0.0, _float(os.getenv("BATCH_REST_COOLDOWN_MINUTES"), 10.0)
+    0.0, _float(os.getenv("BATCH_REST_COOLDOWN_MINUTES"), 15.0)
 )
 BATCH_ALIGN_TO_MINUTE_BOUNDARY: bool = _bool(
     os.getenv("BATCH_ALIGN_TO_MINUTE_BOUNDARY"), True
 )
 BATCH_SOURCE_MIX: dict[str, int] = {
-    "telegram": max(0, _int(os.getenv("BATCH_MIX_TELEGRAM"), 4)),
-    "x": max(0, _int(os.getenv("BATCH_MIX_X"), 4)),
-    "search": max(0, _int(os.getenv("BATCH_MIX_SEARCH"), 2)),
+    "telegram": max(0, _int(os.getenv("BATCH_MIX_TELEGRAM"), 2)),
+    "x": max(0, _int(os.getenv("BATCH_MIX_X"), 2)),
+    "search": max(0, _int(os.getenv("BATCH_MIX_SEARCH"), 1)),
 }
 
 # ═══════════════════════════════════════════════════

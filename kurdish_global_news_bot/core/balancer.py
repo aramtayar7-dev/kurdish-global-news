@@ -579,8 +579,8 @@ class QuotaBalancer:
         recent_published: Optional[list[Article]] = None,
     ) -> BalanceSelectionResult:
         """
-        Select up to `target_posts` (default 10) unique, non-duplicate articles enforcing:
-          1. 4:4:2 Source Mix (`4 telegram + 4 x + 2 search`) when available
+        Select up to `target_posts` (default 5) unique, non-duplicate articles enforcing:
+          1. 2:2:1 Source Mix (`2 telegram + 2 x + 1 search`) when available
           2. Graceful non-duplicate backfill from remaining eligible high-priority candidates
              when any bucket is short (never pads with duplicates or banned/junk items)
           3. 5-of-8 Southern Kurdistan priority, 7:1 Politics/War limit (max 1 Econ/Cyber
@@ -588,7 +588,7 @@ class QuotaBalancer:
           4. Balanced round-robin interleaving across buckets for 1-post/minute publishing
         """
         effective_limit = (
-            int(getattr(config, "BATCH_TARGET_POSTS", 10))
+            int(getattr(config, "BATCH_TARGET_POSTS", 5))
             if target_posts is None
             else max(0, int(target_posts))
         )
@@ -606,7 +606,7 @@ class QuotaBalancer:
             )
 
         mix = dict(
-            getattr(config, "BATCH_SOURCE_MIX", {"telegram": 4, "x": 4, "search": 2})
+            getattr(config, "BATCH_SOURCE_MIX", {"telegram": 2, "x": 2, "search": 1})
             if source_mix is None
             else source_mix
         )
@@ -768,9 +768,9 @@ def select_paced_batch(
     source_mix: Optional[dict[str, int]] = None,
     recent_published: Optional[list[Article]] = None,
 ) -> BalanceSelectionResult:
-    """Module-level helper to select an interleaved 4:4:2 paced batch up to `target_posts`."""
+    """Module-level helper to select an interleaved 2:2:1 paced batch up to `target_posts`."""
     limit = (
-        int(getattr(config, "BATCH_TARGET_POSTS", 10))
+        int(getattr(config, "BATCH_TARGET_POSTS", 5))
         if target_posts is None
         else max(0, int(target_posts))
     )

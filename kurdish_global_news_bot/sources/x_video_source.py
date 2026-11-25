@@ -133,7 +133,7 @@ class XVideoSource(BaseSource):
         if max_videos_per_cycle is not None:
             default_cap = int(max_videos_per_cycle)
         elif getattr(config, "ENABLE_BATCH_PACING_ENGINE", True):
-            default_cap = int(getattr(config, "X_MAX_CANDIDATE_VIDEOS_PER_CYCLE", 10))
+            default_cap = int(getattr(config, "X_MAX_CANDIDATE_VIDEOS_PER_CYCLE", 6))
         else:
             default_cap = int(getattr(config, "X_MAX_VIDEOS_PER_CYCLE", 4))
         self._max_videos_per_cycle: int = max(1, default_cap)

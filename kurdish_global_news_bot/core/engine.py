@@ -533,22 +533,22 @@ class NewsEngine:
     async def _discovery_cycle(self, *, bypass_cooldown: bool = False) -> None:
         """
         Run one discovery & publishing cycle:
-        0. Check persisted 10-minute post-batch cooldown (`BATCH_COOLDOWN` in `system_logs`)
+        0. Check persisted 15-minute post-batch cooldown (`BATCH_COOLDOWN` in `system_logs`)
         1. Load last 48-72h published history from persistent DB (Supabase / SQLite)
         2. Fetch articles from all sources concurrently
         3. Extract, deduplicate, watermark-check, and prepare up front
-        4. Publish paced 10-post 4:4:2 batch sequentially (1 post/minute) & persist cooldown
+        4. Publish paced 5-post 2:2:1 batch sequentially (1 post/minute) & persist cooldown
         """
         with Timer(self._metrics, "discovery_cycle_time"):
             if (
                 not bypass_cooldown
                 and bool(getattr(config, "ENABLE_BATCH_PACING_ENGINE", True))
                 and isinstance(self._pipeline, ArticlePipeline)
-                and float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0)) > 0
+                and float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 15.0)) > 0
                 and hasattr(self._db, "get_last_batch_completed_at")
             ):
                 last_batch_dt = await self._db.get_last_batch_completed_at()
-                cooldown_min = float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0))
+                cooldown_min = float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 15.0))
                 cooldown_sec = cooldown_min * 60.0
                 if last_batch_dt is not None:
                     elapsed_sec = max(0.0, (self._utc_now() - last_batch_dt).total_seconds())
@@ -924,20 +924,20 @@ class NewsEngine:
         recent_history: list[dict],
     ) -> dict[str, int]:
         """
-        Paced 10-Post Batch Engine (4:4:2 Source Mix + 1-Min Sequential Cadence + 10-Min Rest):
+        Paced 5-Post Batch Engine (2:2:1 Source Mix + 1-Min Sequential Cadence + 15-Min Rest):
           1. Expire stale queued articles & re-validate existing QUEUED backlog
           2. Discover, dedup, watermark-check & Gemini-evaluate candidates UP FRONT
-          3. Select up to BATCH_TARGET_POSTS (10) via 4 Telegram + 4 X + 2 Search mix
+          3. Select up to BATCH_TARGET_POSTS (5) via 2 Telegram + 2 X + 1 Search mix
              with graceful non-duplicate backfill & clean bucket interleaving
           4. Translate & prepare selected batch UP FRONT (preserving overflow as QUEUED)
           5. Publish posts 1..N sequentially 1 post per minute (aligned to minute boundary),
-             record BATCH_COOLDOWN in `system_logs`, and sleep 10m in continuous loop mode
+             record BATCH_COOLDOWN in `system_logs`, and sleep 15m in continuous loop mode
         """
         assert isinstance(self._pipeline, ArticlePipeline)
         counts = {"published": 0, "queued": 0, "expired": 0, "rejected": 0}
-        target_posts = int(getattr(config, "BATCH_TARGET_POSTS", 10))
+        target_posts = int(getattr(config, "BATCH_TARGET_POSTS", 5))
         source_mix = dict(
-            getattr(config, "BATCH_SOURCE_MIX", {"telegram": 4, "x": 4, "search": 2})
+            getattr(config, "BATCH_SOURCE_MIX", {"telegram": 2, "x": 2, "search": 1})
         )
 
         # 1. Queue maintenance & validation
@@ -1106,14 +1106,14 @@ class NewsEngine:
 
             counts["expired"] += await self._db.trim_queue(queue_budget)
 
-            # Persist 10-minute post-batch cooldown timestamp in existing `system_logs`
+            # Persist 15-minute post-batch cooldown timestamp in existing `system_logs`
             if counts["published"] > 0 and hasattr(self._db, "record_batch_completed_at"):
                 completed_dt = self._utc_now()
                 await self._db.record_batch_completed_at(
                     timestamp=completed_dt,
                     published_count=counts["published"],
                 )
-                cooldown_min = float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 10.0))
+                cooldown_min = float(getattr(config, "BATCH_REST_COOLDOWN_MINUTES", 15.0))
                 if self._running and cooldown_min > 0:
                     rest_sec = cooldown_min * 60.0
                     logger.info(

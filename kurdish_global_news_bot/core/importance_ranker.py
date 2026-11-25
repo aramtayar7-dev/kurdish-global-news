@@ -542,7 +542,7 @@ def select_top_candidates_for_gemini(
     if (
         len(ordered) <= max_candidates
         or not getattr(config, "ENABLE_BATCH_PACING_ENGINE", True)
-        or max_candidates < 10
+        or max_candidates < 5
     ):
         selected = ordered[:max_candidates]
         for overflow in ordered[max_candidates:]:
@@ -568,7 +568,7 @@ def select_top_candidates_for_gemini(
             )
         return selected, rejected
 
-    mix = getattr(config, "BATCH_SOURCE_MIX", {"telegram": 4, "x": 4, "search": 2})
+    mix = getattr(config, "BATCH_SOURCE_MIX", {"telegram": 2, "x": 2, "search": 1})
     selected: list[Article] = []
     selected_ids: set[int] = set()
     for bucket in ("telegram", "x", "search"):
