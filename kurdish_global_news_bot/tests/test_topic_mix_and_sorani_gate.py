@@ -296,9 +296,9 @@ class TestSevenPlusOneTopicMixBalancer:
         )
         batch.extend([major_econ, major_cyber])
 
-        # Verify neither major macro economy nor cybersecurity is dropped before Gemini
-        assert check_pre_filter_off_topic(major_econ) is None
-        assert check_pre_filter_off_topic(major_cyber) is None
+        # Under strict editorial policy: macro economy and routine cybersecurity are dropped before Gemini
+        assert check_pre_filter_off_topic(major_econ) is not None
+        assert check_pre_filter_off_topic(major_cyber) is not None
 
         for a in batch:
             a.id = await temp_db.insert_article(a)
@@ -372,10 +372,12 @@ class TestSevenPlusOneTopicMixBalancer:
 
         assert res["published"] == 8
         published_captions = [c.kwargs["caption"] for c in mock_bot.send_photo.call_args_list]
-        assert sum(1 for cap in published_captions if "ئاسایشی سایبەری" in cap) == 1
-        # IMF (8) lost to BleepingComputer (9), so IMF was deferred rather than publishing 2 non-P&W posts
+        # Under strict editorial policy: 0 cyber/econ published; all 8 are politics/war/kurdistan
+        assert sum(1 for cap in published_captions if "ئاسایشی سایبەری" in cap) == 0
         econ_db = await temp_db.get_article_by_canonical_url(major_econ.canonical_url)
         assert econ_db.status == ArticleStatus.SKIPPED
+        cyber_db = await temp_db.get_article_by_canonical_url(major_cyber.canonical_url)
+        assert cyber_db.status == ArticleStatus.SKIPPED
 
 
 class TestBannedSportsAndOrdinaryNews:

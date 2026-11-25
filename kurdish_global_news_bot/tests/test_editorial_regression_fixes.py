@@ -298,3 +298,129 @@ class TestBug3RssBoilerplateAndMultiStoryRoundups:
         )
         assert is_multi_story_roundup(diplomacy) is False
         assert check_blocked_topic(diplomacy) is None
+
+
+class TestBugTartousSyriaNotClassifiedAsKurdistan:
+    """
+    Ensure category classification ("کوردستان") is strictly determined by
+    verified news content/location (Southern Kurdistan focus), NEVER falsely
+    tagging non-Kurdistan Syrian locations (e.g., Tartous, Latakia, Damascus) as "کوردستان".
+    """
+
+    def test_tartous_airstrike_from_north_press_not_classified_as_kurdistan(self):
+        title = "Airstrikes hit military depot near Tartous port in western Syria"
+        summary = (
+            "QAMISHLI, Syria (North Press) - Explosions were reported on Wednesday near the port of Tartous "
+            "following suspected airstrikes targeting coastal ammunition warehouses."
+        )
+        art = _make_article(
+            title=title,
+            summary=summary,
+            source_name="North Press Agency",
+            category="kurdistan",
+            region="West Kurdistan",
+            url="https://npasyria.com/en/tartous-strike-1/",
+        )
+
+        assert is_genuine_kurdistan_event(art) is False
+        assert is_bashur_article(art) is False
+        inferred = normalize_category(art.category, text_hint=f"{title} {summary}")
+        assert inferred == "military_conflict"
+
+    def test_tartous_syrian_naval_dockyard_news_normalizes_to_military_or_world(self):
+        title = "Russia expands naval facilities at Syrian port of Tartus"
+        summary = "Satellite images reveal new docking piers being constructed at Tartous naval base on the Mediterranean."
+        art = _make_article(
+            title=title,
+            summary=summary,
+            source_name="North Press Agency",
+            category="kurdistan",
+            region="West Kurdistan",
+            url="https://npasyria.com/en/tartus-dock-2/",
+        )
+
+        assert is_genuine_kurdistan_event(art) is False
+        assert is_bashur_article(art) is False
+        inferred = normalize_category(art.category, text_hint=f"{title} {summary}")
+        assert inferred in {"military_conflict", "politics_world"}
+
+    def test_damascus_latakia_strikes_rejected_from_kurdistan_category(self):
+        title = "هێرشێکی ئاسمانی کۆگایەکی لە لازقیە و دەوروبەری دیمەشق کردە ئامانج"
+        summary = "تەقینەوەی بەهێز لە بەندەری لازقیە و ناوچەکانی دەوروبەری دیمەشق بیسترا بەهۆی بۆردومانەوە."
+        art = _make_article(
+            title=title,
+            summary=summary,
+            source_name="Kurdistan24 Sorani",
+            category="kurdistan",
+            region="South Kurdistan",
+            url="https://www.kurdistan24.net/ckb/latakia-strike",
+        )
+
+        assert is_genuine_kurdistan_event(art) is False
+        assert is_bashur_article(art) is False
+        inferred = normalize_category("kurdistan", text_hint=f"{title} {summary}")
+        assert inferred == "military_conflict"
+
+    def test_genuine_kurdistan_events_remain_verified_as_kurdistan(self):
+        title = "Erbil and Baghdad sign agreement on regional civil service salaries"
+        summary = "KRG Prime Minister Masrour Barzani announced the finalization of the budget mechanism in Erbil."
+        art = _make_article(
+            title=title,
+            summary=summary,
+            source_name="Rudaw English",
+            category="kurdistan",
+            region="South Kurdistan",
+            url="https://www.rudaw.net/english/kurdistan/salary-agreement",
+        )
+
+        assert is_genuine_kurdistan_event(art) is True
+        assert is_bashur_article(art) is True
+        assert normalize_category("kurdistan", text_hint=f"{title} {summary}") == "kurdistan"
+
+    def test_genuine_rojava_sdf_events_remain_genuine_kurdistan(self):
+        title = "SDF repels infiltration attempt near Kobani countryside"
+        summary = "Syrian Democratic Forces in Rojava engaged hostile fighters near Kobani and Qamishli."
+        art = _make_article(
+            title=title,
+            summary=summary,
+            source_name="North Press Agency",
+            category="kurdistan",
+            region="West Kurdistan",
+            url="https://npasyria.com/en/kobani-sdf-1",
+        )
+
+        assert is_genuine_kurdistan_event(art) is True
+        assert is_bashur_article(art) is False
+        assert normalize_category("kurdistan", text_hint=f"{title} {summary}") == "kurdistan"
+
+    def test_pipeline_and_formatter_clear_tartous_kurdistan_tag(self):
+        art = _make_article(
+            title="Airstrikes target Tartous military site",
+            summary="Explosions shook the coastal city of Tartous in Syria.",
+            source_name="North Press Agency",
+            category="kurdistan",
+            region="West Kurdistan",
+            url="https://npasyria.com/en/tartous-site",
+        )
+        art.translated_title = "بۆردومانی ئاسمانی بنکەیەکی سەربازی لە تەرتووس کردە ئامانج"
+        art.translated_summary = "تەقینەوەی بەهێز لە کەناراوەکانی تەرتووس لە سووریا ڕوویدا."
+
+        relevance = RelevanceEvaluation(
+            score=8,
+            is_breaking=False,
+            category="kurdistan",  # LLM erroneously classified as kurdistan
+            reason="Coastal strike in Tartous",
+            passed=True,
+        )
+
+        ArticlePipeline._populate_relevance_fields(art, relevance)
+
+        # Region must be stripped and category coerced to military_conflict
+        assert art.region == ""
+        assert art.category == "military_conflict"
+
+        formatter = ContentFormatter()
+        caption = formatter.format_caption(art)
+        assert "📂 کوردستان" not in caption
+        assert "شەڕ و سەربازی" in caption
+        assert "⚔️" in caption

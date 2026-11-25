@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 import httpx
 
+import config
 from config import (
     ArticleStatus,
     DEDUP_HISTORY_HOURS,
@@ -636,6 +637,37 @@ class SupabaseDatabase:
             if dt is not None and dt >= cutoff:
                 recent_24h.append(art)
         return prioritize_digest_articles(recent_24h, limit=limit)
+
+    async def get_global_posts_count_last_24h(self) -> int:
+        """
+        Count the number of published articles with region == 'global' in the rolling 24 hours.
+        Fail-closed to MAX_GLOBAL_POSTS_PER_DAY (4) on error to protect 90/10 Middle East ratio.
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            resp = await self._request(
+                "GET",
+                "articles",
+                params={
+                    "status": "eq.PUBLISHED",
+                    "published_at": f"gte.{cutoff.isoformat()}",
+                    "select": "id,region,published_at,discovered_at",
+                    "order": "published_at.desc,id.desc",
+                    "limit": "200",
+                },
+            )
+            rows = resp.json() if resp.content else []
+            count = 0
+            for row in rows:
+                dt = parse_utc_timestamp(row.get("published_at") or row.get("discovered_at"))
+                if dt is not None and dt >= cutoff:
+                    reg = str(row.get("region") or "").strip().lower()
+                    if reg == "global":
+                        count += 1
+            return count
+        except Exception as exc:
+            logger.error("Supabase error counting global posts last 24h: %s; failing closed to max daily limit.", exc)
+            return int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
 
     async def is_digest_published_for_date(self, digest_date: str) -> bool:
         """Return True if a daily digest has already been recorded for `digest_date`."""

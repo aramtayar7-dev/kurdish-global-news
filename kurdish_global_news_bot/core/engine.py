@@ -28,6 +28,7 @@ from core.scheduler import DiscoveryScheduler
 from core.importance_ranker import (
     article_selection_sort_key,
     check_blocked_topic,
+    classify_geographic_region,
     is_bashur_article,
     is_strict_breaking,
     select_top_candidates_for_gemini,
@@ -981,13 +982,15 @@ class NewsEngine:
         if not candidate_pool:
             return counts
 
-        # 3. 4:4:2 Paced Batch Selection + Interleaving (10 posts max, zero duplicate padding)
+        # 3. 2:2:1 Paced Batch Selection + Interleaving (5 posts max, 90/10 ME ratio, zero duplicate padding)
         recent_published = await self._db.get_recent_published_articles(limit=8)
+        global_posts_24h = await self._db.get_global_posts_count_last_24h()
         plan = select_paced_batch(
             candidate_pool,
             target_posts=target_posts,
             source_mix=source_mix,
             recent_published=recent_published,
+            global_posts_last_24h=global_posts_24h,
         )
         logger.info("[BATCH PACING] %s", plan.reason)
 
@@ -1009,11 +1012,25 @@ class NewsEngine:
                 except Exception as exc:
                     logger.error("Batch prepare error for article %s: %s", art.id, str(exc)[:200])
 
-            # Substitute any translation failures from clean overflow up to target_posts
+            # Substitute any translation failures from clean overflow up to target_posts (enforcing global cap!)
             used_sub_ids: set[int] = set()
+            max_daily_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+            max_batch_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_BATCH", 1))
+            g_24h = int(global_posts_24h if global_posts_24h is not None else 0)
+            rem_g = max(0, max_daily_g - g_24h)
+            max_g_in_batch = min(max_batch_g, rem_g)
+
             while len(prepared_batch) < target_posts and substitute_pool:
                 sub = substitute_pool.pop(0)
                 if sub.id is not None and sub.id in used_sub_ids:
+                    continue
+                sub_reg = getattr(sub, "region", None) or classify_geographic_region(sub)
+                sub.region = sub_reg
+                curr_g = sum(
+                    1 for a in prepared_batch
+                    if (getattr(a, "region", "") or classify_geographic_region(a)) == "global"
+                )
+                if sub_reg == "global" and curr_g >= max_g_in_batch:
                     continue
                 if sub.status == ArticleStatus.QUEUED and is_valid_kurdish_sorani(sub.translated_title or ""):
                     prepared_batch.append(sub)

@@ -23,15 +23,24 @@ from processing.gemini_client import GeminiClient, GeminiAPIError, GeminiQuotaEx
 from processing.translator import strip_news_dateline
 import config
 from config import (
+    ALLOWED_EDITORIAL_CATEGORIES,
     CANONICAL_CATEGORIES,
+    DISABLED_EDITORIAL_CATEGORIES,
     GEMINI_API_KEY,
     GEMINI_MODEL,
     GEMINI_RANK_BATCH_SIZE,
     MAX_GEMINI_CANDIDATES_PER_CYCLE,
+    MAX_GLOBAL_POSTS_PER_BATCH,
+    MAX_GLOBAL_POSTS_PER_DAY,
+    MIDDLE_EAST_TARGET_RATIO,
     MIN_GLOBAL_RELEVANCE_SCORE,
     MIN_IMPORTANCE_SCORE,
     MIN_SOURCE_CREDIBILITY,
     Priority,
+    REGION_GLOBAL,
+    REGION_KURDISTAN_BASHUR,
+    REGION_MIDDLE_EAST,
+    VALID_GEOGRAPHIC_REGIONS,
     is_primary_category,
 )
 
@@ -80,6 +89,15 @@ NON_BASHUR_KURDISTAN_PATTERN = re.compile(
     r"(rojava|qamishli|kobani|hasakah|\bsdf\b|north and east syria|diyarbakir|amed|\bbakur\b|"
     r"van turkey|dem party|rojhelat|sanandaj|mahabad|kermanshah|urmia|"
     r"ڕۆژئاوا|قامیشلۆ|کۆبانێ|حەسەکە|باکوور|ئامەد|ڕۆژهەڵات|سنە|مەهاباد|ورمێ|کرماشان)",
+    re.IGNORECASE,
+)
+
+# Locations in Syria that are non-Kurdish (e.g. Tartous naval port, Latakia, Damascus, etc.)
+# News taking place in these locations must NEVER be classified as "kurdistan" unless they
+# explicitly and genuinely involve Kurdish territories/forces (Rojava, SDF, Qamishli, Kobani, Hasakah, etc.)
+NON_KURDISTAN_SYRIA_PATTERN = re.compile(
+    r"\b(tartous|tartus|latakia|lattakia|damascus|homs|hama|daraa|deraa|suwayda|sweida|palmyra|tadmur|baniyas|quneitra)\b|"
+    r"(طرطوس|تەرتووس|تەرتوس|اللاذقية|لازقیە|لادقیە|دمشق|دیمەشق|حمص|حمس|حماة|حەما|درعا|دەرعا|السويداء|سوەیدا|تدمر|تەدمور|بانياس|بانیاس|القنيطرة)",
     re.IGNORECASE,
 )
 
@@ -301,47 +319,41 @@ LEGACY_TO_CANONICAL_CATEGORY: dict[str, str] = {
 }
 
 GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
-    "You are the chief international news editor for a Central Kurdish (Sorani) global breaking news channel.\n"
-    "Evaluate the global importance, relevance, breaking urgency, and exact category of the given news article.\n\n"
-    "Allowed values for \"category\" (MUST be strictly one of these 7 keys):\n"
-    "- \"kurdistan\": Significant news from ANY of the four parts of Kurdistan — South (Erbil, Sulaymaniyah, Duhok, Kirkuk, KRG), "
-    "West (Rojava, North & East Syria, Qamishli, Kobani, Hasakah, SDF), North (Diyarbakir/Amed, Van, Kurdish issues in Turkey), "
-    "or East (Rojhelat, Sanandaj/Sine, Mahabad, Urmia, Kermanshah, Kurdish human rights/developments in Iran).\n"
-    "- \"military_conflict\": Active armed conflicts, airstrikes, wars, missile/drone attacks, defense treaties, or military operations.\n"
-    "- \"politics_world\": Geopolitics, world leaders, elections, UN/NATO diplomacy, government policy, treaties, royal/state affairs, major crises.\n"
-    "- \"economy_markets\": Stock markets, Nvidia/company earnings, oil/energy, central banks, trade tariffs, sanctions, inflation.\n"
-    "- \"ai_tech\": Artificial intelligence models, semiconductors, major tech releases, consumer/enterprise technology breakthroughs.\n"
-    "- \"cybersecurity\": Cyberattacks, ransomware, state-sponsored hacking, major data breaches, zero-day vulnerabilities.\n"
-    "- \"science_space\": Space missions, astronomy, NASA/SpaceX, scientific breakthroughs, major medical discoveries.\n\n"
-    "IMPORTANT Geographic & Categorization Accuracy:\n"
-    "- Determine geography strictly from WHERE the actual event took place and whose government, territory, or forces are directly involved.\n"
-    "- NEVER classify an article as \"kurdistan\" merely because it was published by a Kurdish/regional outlet (e.g., North Press Agency, Rudaw, Kurdistan24, NRT), "
-    "because of an agency dateline (e.g., 'Qamishli, Syria (North Press) –', 'Erbil -'), or because it mentions ISIS/داعش in a foreign/non-Kurdistan context. "
-    "If a Kurdish outlet reports international news (e.g., China-US trade, Russia-Ukraine, Gaza, Europe), classify it strictly by its true topic (\"economy_markets\", \"politics_world\", \"military_conflict\", or \"cybersecurity\") and NEVER \"kurdistan\".\n"
-    "- Classify strictly by actual subject, NOT the publisher name (e.g., Nvidia stock news from Al Jazeera is \"economy_markets\" or \"ai_tech\"; US court/FBI news published by North Press is NOT \"kurdistan\").\n\n"
+    "You are the chief international news intelligence editor for Kurdish Global News, "
+    "an independent, neutral, professional Central Kurdish (Sorani) international news organization.\n"
+    "Your channel specializes EXCLUSIVELY in Military, Security, War, and High-Level Geopolitical Intelligence, "
+    "plus verified Southern Kurdistan (Bashur) political, military, and security developments.\n\n"
+    "Evaluate the importance, relevance, breaking urgency, category, and geographic region of the given news article.\n\n"
+    "Allowed values for \"category\" (MUST be strictly one of these 3 active keys):\n"
+    "- \"military_conflict\": Active armed conflicts, airstrikes, missile/drone attacks, defense treaties, military operations, troop mobilization/deployments, weapons deployment, air-defense, or high-level assassinations.\n"
+    "- \"politics_world\": High-level geopolitics, world leaders, government collapse/decisions, parliamentary crises, national election crises, UN/NATO diplomacy, strategic state-level treaties, major international sanctions, major diplomatic crises.\n"
+    "- \"kurdistan\": ONLY verified political, military, or security developments directly taking place in Southern Kurdistan (Bashur — Erbil, Sulaymaniyah, Duhok, Halabja, Kirkuk, KRG, Peshmerga, Erbil-Baghdad relations). Non-Bashur news must NEVER receive \"kurdistan\".\n\n"
+    "Allowed values for \"region\" (MUST be strictly one of these 3 keys):\n"
+    "- \"kurdistan_bashur\": Verified Southern Kurdistan political, military, or security events directly involving Erbil, Sulaymaniyah, Duhok, Halabja, Kirkuk, KRG, or Peshmerga.\n"
+    "- \"middle_east\": Events occurring in or directly concerning Iraq, Iran, Syria, Turkey, Israel/Palestine, Lebanon, Yemen, Jordan, Saudi Arabia, Gulf states, OR international military/diplomatic intervention directly in the Middle East (e.g. US strikes in Iraq/Syria, EU sanctions on Iran, CENTCOM operations, Pentagon statements on Middle East security). A story is NEVER global merely because the US, EU, or NATO is involved.\n"
+    "- \"global\": Genuinely international events taking place outside the Middle East with no direct Middle East operational connection (e.g. Ukraine-Russia war in Europe, China-Taiwan confrontation, US domestic politics, European internal government crises).\n\n"
+    "STRICT Editorial Exclusions (MUST set score 1 to 3, passed=false):\n"
+    "- ALL Economy / Finance / Business: stock markets, GDP reports, inflation, interest rates, cryptocurrency/Bitcoin, oil prices/tickers, corporate earnings, IPOs, mergers, trade deals, business investments.\n"
+    "- ALL Technology / AI / Consumer Tech: AI models/OpenAI, software releases, smartphones, gadgets, space missions/NASA, ordinary hacking/ransomware.\n"
+    "- ALL Ceremonial / Protocol / PR Fluff: festivals, exhibitions, ceremonies, book fairs, awards, marathons, charity foundation meetings with delegations, routine delegation visits, ribbon-cutting, inaugurating parks/schools/hospitals.\n"
+    "- ALL Diplomatic Pleasantries: congratulatory messages, holiday greetings, routine condolences, ambassadors presenting credentials, courtesy visits, routine phone calls.\n"
+    "- ALL sports, celebrity/entertainment news, domestic crime/court trials, traffic accidents, municipal service notices.\n\n"
     "STRICT Breaking News Rule (`is_breaking`):\n"
     "- Set \"is_breaking\": true ONLY for sudden, unfolding, emergency, high-impact events happening right now (and ONLY when score >= 9): "
     "active military strikes, explosions, missile/drone attacks, assassinations, sudden declarations of war or ceasefires, major earthquakes/natural disasters, "
     "emergency government or court decrees taking immediate effect, or major critical-infrastructure cyberattacks.\n"
     "- Explicitly set \"is_breaking\": false for ALL routine political statements, interviews, speeches, party-leader commentary, diplomatic meetings, "
-    "opinions, analyses, forecasts, routine economic updates, or reactions — EVEN IF the article is high-priority Kurdistan news with score 8 or 9.\n"
-    "- High importance alone does NOT make an article breaking news.\n\n"
+    "opinions, analyses, forecasts, routine economic updates, or reactions — EVEN IF the article is high-priority Kurdistan news with score 8 or 9.\n\n"
     "Scoring Criteria (1 to 10):\n"
-    "- Editorial Focus (7/8 Politics & War + Max 1/8 Economy OR Cybersecurity): This channel prioritizes Politics and War/Military news first. Major Economy or Cybersecurity stories compete for at most 1 slot per 8 posts.\n"
-    "- 9 to 10 (HIGHEST PRIORITY): Major Southern Kurdistan (Bashur — Erbil, Sulaymaniyah, Duhok, Halabja, Kirkuk, KRG, Peshmerga, Erbil-Baghdad) politics, "
-    "war, security/drone/missile incidents; or major wars, military escalations, world leader summits, and severe crises.\n"
-    "- 8 (HIGH PASS): Genuine political, security, economic (salaries/مووچە, oil/energy, official decrees), or human-rights development taking place in ANY of the 4 parts of Kurdistan; "
-    "regional geopolitics (Iraq, Iran, Turkey, Syria, US, Middle East); major macroeconomic crises/sanctions/central banks or critical state-level cyberattacks.\n"
-    "- 7 (PASS): Notable international diplomacy, cross-border crises, or ICJ/ICC international court rulings.\n"
-    "- 1 to 6 (STRICTLY REJECT): Domestic crime, FBI arrests, single-person immigration/deportation court cases with no state-level geopolitical impact, individual extremism/propaganda trials, local police reports, personal prison sentences (EVEN if ISIS/terrorism is mentioned in a foreign domestic court); "
-    "ALL sports/tournaments/athletes; "
-    "ALL celebrity/actor/actress/Hollywood/cinema/music/singer/athlete obituaries or entertainment news (whether English, Arabic, or Kurdish); "
-    "ALL multi-story news roundups or podcast/newsletter briefings (e.g., Up First, Morning Briefing, composite headlines joining unrelated stories); "
-    "travel/tourism fluff, weather trivia/routine forecasts, consumer phones/gadgets/apps, routine human-interest fluff, traffic/municipal outage notices, and advertisements.\n\n"
+    "- 9 to 10 (HIGHEST PRIORITY): Major Southern Kurdistan (Bashur) security/military/drone/missile incidents or major armed conflicts, military escalations, world leader summits, and severe state crises.\n"
+    "- 8 (HIGH PASS): Genuine political, military, or security developments taking place in Southern Kurdistan; major regional geopolitics (Iraq, Iran, Turkey, Syria, Israel, Middle East); major strategic state-level treaties or critical sanctions.\n"
+    "- 7 (PASS): Notable international diplomacy, cross-border military crises, or ICJ/ICC state rulings.\n"
+    "- 1 to 6 (STRICTLY REJECT): All off-topic, economy, tech, ceremonial fluff, routine meetings, local crime, sports, entertainment.\n\n"
     "Cross-Language Event Identification & Live Threading:\n"
-    "- Include concise standardized ENGLISH `event_key` (lowercase snake_case identifying the SPECIFIC incident, e.g. \"erbil_airport_drone_attack\", \"baghdad_krg_salary_agreement\", \"trump_iran_war_funding\" — never just a country/city), `event_entities` (3 to 5 lowercase English entity/location/topic tokens), and optional `update_type` (`\"new_story\"`, `\"casualties_update\"`, `\"official_response\"`, `\"retaliation\"`, `\"ceasefire\"`, `\"investigation_result\"`, or `\"repeat_coverage\"`).\n\n"
+    "- Include concise standardized ENGLISH `event_key` (lowercase snake_case identifying the SPECIFIC incident), `event_entities` (3 to 5 lowercase English entity/location/topic tokens), and optional `update_type`.\n\n"
     "Respond ONLY with valid JSON (no markdown fences, no commentary):\n"
-    '{"score": <integer 1-10>, "is_breaking": <true or false>, "category": "<one of the 7 keys>", '
+    '{"score": <integer 1-10>, "is_breaking": <true or false>, "category": "<military_conflict|politics_world|kurdistan>", '
+    '"region": "<kurdistan_bashur|middle_east|global>", '
     '"event_key": "<english_snake_case_event_id>", "event_entities": ["entity1", "entity2", "topic"], '
     '"update_type": "<new_story|casualties_update|official_response|retaliation|ceasefire|repeat_coverage>", '
     '"reason": "<short one-sentence justification>"}'
@@ -354,9 +366,9 @@ BATCH_RELEVANCE_SYSTEM_PROMPT = (
     + "- Evaluate EVERY article independently using the exact rules above.\n"
     + "- Respond ONLY with valid JSON containing an `items` array with one object per input `idx`:\n"
     + '{"items": [{"idx": <integer>, "score": <integer 1-10>, "is_breaking": <true or false>, '
-    + '"category": "<one of the 7 keys>", "event_key": "<english_snake_case_event_id>", '
-    + '"event_entities": ["entity1", "entity2", "topic"], "update_type": "<optional_update_type>", '
-    + '"reason": "<short one-sentence justification>"}]}'
+    + '"category": "<military_conflict|politics_world|kurdistan>", "region": "<kurdistan_bashur|middle_east|global>", '
+    + '"event_key": "<english_snake_case_event_id>", "event_entities": ["entity1", "entity2", "topic"], '
+    + '"update_type": "<optional_update_type>", "reason": "<short one-sentence justification>"}]}'
 )
 
 
@@ -372,6 +384,7 @@ class RelevanceEvaluation:
     event_key: str = ""
     event_entities: list[str] = field(default_factory=list)
     update_type: str = ""
+    region: str = ""
 
 
 def clean_article_event_text(article: Article) -> str:
@@ -413,10 +426,21 @@ def is_genuine_kurdistan_event(article: Article) -> bool:
     """
     Return True ONLY when stripped event text directly involves Kurdish
     territories, governments, or forces (never merely datelines, outlet name, or foreign ISIS trials).
+    Non-Kurdish Syrian locations (Tartous, Latakia, Damascus, etc.) are strictly excluded unless
+    the event genuinely involves Kurdish territories, institutions, or forces.
     """
     clean_text = clean_article_event_text(article)
     if not clean_text:
         return False
+
+    # Check for non-Kurdistan Syrian locations
+    if NON_KURDISTAN_SYRIA_PATTERN.search(clean_text):
+        # Only consider Kurdistan if there is an explicit and genuine Kurdish territorial / defense presence
+        has_bashur = bool(BASHUR_PATTERN.search(clean_text))
+        has_rojava = bool(NON_BASHUR_KURDISTAN_PATTERN.search(clean_text))
+        if not (has_bashur or has_rojava):
+            return False
+
     return bool(KURDISTAN_PATTERN.search(clean_text))
 
 
@@ -453,35 +477,327 @@ def check_blocked_topic(article: Article) -> Optional[str]:
     return None
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Deterministic Pre-LLM Editorial Gate: Military & High-Level Politics
+# ═════════════════════════════════════════════════════════════════════
+
+HARD_BANNED_ECONOMY_PATTERN = re.compile(
+    r"(\b(?:stock|stocks|financial|crude|mortgage)\s+market[s]?\b|"
+    r"\bwall\s+street\b|\bs&p\s*500\b|\bdow\s+jones\b|\bnasdaq\b|\bbourse\b|"
+    r"\b(?:share|stock)\s+prices?\b|\bshares\s+(?:fall|rise|surge|drop|slide)\b|"
+    r"\bbillionaire\s+signs\b|\blukoil\b|\boil\s+deal\b|\bcorporate\s+earnings\b|"
+    r"\bfinancial\s+earnings\b|\bannual\s+financial\b|\bfinancial\s+results\b|"
+    r"\bquarterly\s+(?:profit|earnings|revenue)\b|\bearnings\s+reports?\b|\bipo\s+debut\b|"
+    r"\bmergers?\s+(?:and|&)\s+acquisitions?\b|\bm&a\b|\bcompany\s+deal\b|\bcommercial\s+deal\b|"
+    r"\bcompany\s+announces\b.{0,60}\b(?:deal|earnings|results|profit|revenue|dividend)\b|"
+    r"\bcommercial\s+contracts?\b|\bcorporate\s+delegations?\b|"
+    r"\binvestment\s+announcements?\b|\binvestment\s+agreements?\b|\breal\s+estate\b|"
+    r"\boil\s+prices?\s+(?:increase|rise|fall|drop|surge|slide|jump)\b|\bcrude\s+oil\s+prices?\b|"
+    r"\bprice\s+of\s+oil\b|\bbarrel\s+of\s+oil\b|\bgdp\s+growth\b|\bgdp\s+reports?\b|"
+    r"\binflation\s+(?:rate|report|data|figures?)\b|\bcentral\s+bank\s+(?:raises|cuts|changes|hikes)\s+interest\b|"
+    r"\binterest\s+rates?\b|\bbitcoins?\b|\bcryptocurrenc(?:y|ies)\b|\bethereum\b|\bmortgage\s+rates?\b|"
+    r"ئابووری|بازاڕی\s+بۆرسە|بۆرسە|نرخی\s+نەوت|نرخی\s+دۆلار|وەبەرهێنان|کۆمپانیا|"
+    r"داهاتی\s+کۆمپانیا|قازانجی\s+کۆمپانیا|گرێبەستی\s+بازرگانی|هەڵاوسان|سوودی\s+بانکی|"
+    r"بورصة|أسهم|أسعار\s+النفط|سعر\s+النفط|برميل\s+النفط|سعر\s+الدولار|استثمار|أرباح\s+الشركات|"
+    r"التضخم|الفائدة\s+المصرفية|سعر\s+الفائدة|صفقة\s+تجارية|عقد\s+تجاري|بيتكوين|عملات\s+رقمية)",
+    re.IGNORECASE,
+)
+
+HARD_BANNED_TECH_AI_CYBER_PATTERN = re.compile(
+    r"(\bnew\s+ai\s+model\b|\bai\s+model\s+(?:launch|releases?|announced)\b|\bopenai\s+releases\b|"
+    r"\bchatgpt\s+updates?\b|\bclaude\s+model\b|\bgemini\s+model\b|\bsoftware\s+releases?\b|"
+    r"\bnew\s+smartphones?\b|\bsmartphones?\s+announced\b|\biphones?\s+\d+\b|\bsamsung\s+galaxy\b|"
+    r"\bconsumer\s+electronics\b|\bgadgets?\s+review\b|\bspace\s+telescopes?\b|\bexoplanets?\b|"
+    r"\bnasa\s+announcements?\b|\bspace\s+missions?\b|\bspace\s+launch\b|\bspacex\s+starship\b|"
+    r"\bransomware\s+cyberattacks?\b|\bransomware\s+attacks?\b|\bhits\s+banks?\b|\bdata\s+breaches?\b|"
+    r"\bmalware\b|\broutine\s+cyberattacks?\b|\bphishing\b|\bhacking\s+incidents?\b|"
+    r"ژیریی\s+دەستکرد|تەکنەلۆژیا|مۆبایلی\s+نوێ|ئایفۆن|سامسۆنگ|هاککردنی\s+بانک|"
+    r"باجی\s+سایبەری|ئاسایشی\s+سایبەری|هاکەر|باجی\s+ئەلیکترۆنی|"
+    r"ذكاء\s+اصطناعي|نموذج\s+ذكاء|تطبيق\s+جديد|هاتف\s+ذكي|إطلاق\s+هاتف|هجوم\s+فدية|"
+    r"برامج\s+الفدية|اختراق\s+بنك|تسريب\s+بيانات|أمن\s+سيبراني)",
+    re.IGNORECASE,
+)
+
+HARD_BANNED_PROTOCOL_FLUFF_PATTERN = re.compile(
+    r"(\bannual\s+(?:cultural\s+)?festival\b|\bcultural\s+festival\b|\bfilm\s+festival\b|\bmusic\s+festival\b|"
+    r"\bbook\s+fair\b|\bannual\s+exhibition\b|\bart\s+exhibition\b|\baward\s+ceremony\b|\bmarathons?\b|"
+    r"\bconcerts?\b|\bcelebration\b|\bceremony\s+held\b|\banniversary\s+celebration\b|"
+    r"\b(?:charity\s+)?foundation\s+met\b|\bmet\s+with\s+(?:a\s+)?(?:foreign\s+|european\s+)?delegation\b|"
+    r"\bwelcomed?\s+(?:a\s+)?(?:foreign\s+|european\s+)?delegation\b|\breceived?\s+(?:a\s+)?(?:foreign\s+|european\s+)?delegation\b|"
+    r"\bcharity\s+activities\b|\bngo\s+meetings?\b|\broutine\s+(?:workshop|seminar|conference)\b|\bcorporate\s+meetings?\b|"
+    r"\bribbon[\s\-]cuttings?\b|\binaugurated?\s+(?:a\s+)?(?:park|school|hospital|bridge|building)\b|"
+    r"\bcompany\s+welcomes\s+(?:foreign\s+)?delegation\b|\bcongratulatory\s+messages?\b|"
+    r"\bofficial\s+sends\s+congratulatory\b|\bcongratulates\b|\bholiday\s+greetings\b|"
+    r"\broutine\s+(?:diplomatic\s+)?condolences?\b|\bsent\s+condolences\b|\bambassadors?\s+(?:presents?|presented)\s+credentials\b|"
+    r"\broutine\s+ambassador\s+courtesy\s+visits?\b|\bcourtesy\s+visits?\b|\broutine\s+(?:diplomatic\s+)?telephone\s+calls?\b|"
+    r"\bdiplomatic\s+pleasantries\b|"
+    r"فێستیڤاڵ|پێشانگا(?:ی|دا)?|مەراسیم(?:ی)?|خەڵات(?:ی)?|کۆنسێرت|ئاهەنگ|ماراسۆن|نمایشگەی\s+هونەری|"
+    r"دامەزراوە(?:ی)?\s*(?:خێرخوازی)?.{0,40}شاند|دەزگای\s+خێرخوازی.{0,40}شاند|کۆبوونەوەی\s+دامەزراوە|"
+    r"پێشوازی\s+لە\s+شاند|کۆمپانیا.{0,30}شاند|فاوندەیشن|وۆرکشۆپ|سیمینار|"
+    r"کردنەوەی\s+(?:باخچە|قوتابخانە|نەخۆشخانە|پرد|باڵەخانە)|"
+    r"پەیامی\s+پیرۆزبایی|بروسکەی\s+سەرەخۆشی|پیرۆزبایی\s+(?:ئاراستە|دەکات|کرد)|سەردانی\s+پرۆتۆکۆڵی|پێشکەشکردنی\s+باوەڕنامە|"
+    r"مهرجان|معرض|احتفال|حفل\s+تكريم|ماراثون|حفل\s+غنائي|"
+    r"استقبل\s+وفداً|التقى\s+وفداً|مؤسسة\s+خيرية|جمعية\s+خيرية|ورشة\s+عمل|افتتاح\s+(?:مدرسة|حديقة|مستشفى|جسر)|"
+    r"برقية\s+تهنئة|برقية\s+تعزية|زيارة\s+مجاملة|تقديم\s+أوراق\s+الاعتماد|اتصال\s+بروتوكولي)",
+    re.IGNORECASE,
+)
+
+SUBSTANTIVE_MILITARY_PATTERN = re.compile(
+    r"(\bairstrikes?\b|\bdrone\s+strikes?\b|\bdrone\s+attacks?\b|\bmissile\s+attacks?\b|"
+    r"\brockets?\s+fired\b|\bartillery\s+shelling\b|\bexplosions?\b|\bbombing\b|"
+    r"\bmilitary\s+clashes\b|\barmed\s+clashes\b|\bcross-border\s+(?:military\s+)?operations?\b|"
+    r"\bmilitary\s+operations?\b|\btroop\s+(?:deployments?|mobilization)\b|\bmilitary\s+mobilization\b|"
+    r"\bcombat\s+operations?\b|\bair\s+defense\s+(?:systems?|intercepted)\b|\bintercepted\s+(?:missiles?|drones?)\b|"
+    r"\bweapons\s+deployments?\b|\bpatriot\s+missiles?\b|\bassassination\s+of\b|\bcommanders?\s+killed\b|"
+    r"\bsecurity\s+forces\s+(?:kill|neutralize|target)\b|\bmajor\s+military\s+withdrawals?\b|"
+    r"\bceasefire\s+(?:agreements?|violations?|collapse)\b|\barmed\s+conflict\b|\bstate\s+security\s+operations?\b|"
+    r"\bstate[\s\-]sponsored\s+cyberattacks?\b|\bcyber\s+warfare\b|\benergy\s+grid\b|"
+    r"هێرشی\s+ئاسمانی|بۆردومانی\s+ئاسمانی|هێرشی\s+درۆنی|هێرشی\s+موشەکی|پێکدادانی\s+سەربازی|"
+    r"ئۆپەراسیۆنی\s+سەربازی|تۆپباران|ڕووبەڕووبوونەوەی\s+چەکداری|کشانەوەی\s+سەربازی|ئاگربەست|"
+    r"بەرگری\s+ئاسمانی|کوژرانی\s+فەرماندە|هێزە\s+ئەمنییەکان|"
+    r"ضربة\s+جوية|غارة\s+جوية|قصف\s+جوي|هجوم\s+بطائرة\s+مسيرة|هجوم\s+صاروخي|اشتباكات\s+مسلحة|"
+    r"عملية\s+عسكرية|قصف\s+مدفعي|وقف\s+إطلاق\s+النار|دفاع\s+جوي|اغتيال\s+قيادي|مقتل\s+قائد\s+عسكري)",
+    re.IGNORECASE,
+)
+
+HIGH_LEVEL_POLITICS_PATTERN = re.compile(
+    r"(\bgovernment\s+collapse\b|\bgovernment\s+resigns?\b|\bparliamentary\s+crisis\b|"
+    r"\bconstitutional\s+crisis\b|\belection\s+crisis\b|\bvot(?:e|ing)\s+of\s+no\s+confidence\b|"
+    r"\bstate\s+of\s+emergency\b|\bstrategic\s+(?:defense\s+)?treat(?:y|ies)\b|\bmajor\s+international\s+sanctions\b|"
+    r"\bnew\s+sanctions\s+targeting\b|\bstrategic\s+international\s+agreements?\b|\bstate-level\s+treat(?:y|ies)\b|"
+    r"\bmajor\s+diplomatic\s+crisis\b|\bsevered\s+diplomatic\s+ties\b|\bexpelled\s+ambassadors?\b|"
+    r"\bmilitary\s+alliances?\b|\bgeopolitical\s+negotiations\b|\bforeign\s+policy\s+(?:shift|change)\b|"
+    r"\bkrg\s+and\s+baghdad\b|\berbil\s+and\s+baghdad\b|\bpeshmerga\s+security\b|"
+    r"\bregional\s+civil\s+service\s+salaries\b|\bbudget\s+mechanisms?\b|"
+    r"\b(?:major|mass|widespread|large|anti-government)?\s*(?:protests?|demonstrations?|civil\s+unrest|popular\s+uprising)\b|"
+    r"خۆپیشاندان(?:ی|ەکان)?|تەقینەوەی\s+جەماوەری|تظاهر(?:ات)?\s*(?:حاشدة|شعبية|عارمة)?|احتجاج(?:ات)?\s*(?:شعبية|واسعة)?|"
+    r"هەڵوەشاندنەوەی\s+حکومەت|دەستلەکارکێشانەوەی\s+حکومەت|قەیرانی\s+پەرلەمانی|قەیرانی\s+دەستووری|"
+    r"سزای\s+نێودەوڵەتی|سزاکانی\s+ئەمریکا|سزاکانی\s+ئەوروپا|پەیماننامەی\s+ستراتیژی|ڕێککەوتنی\s+ستراتیژی|"
+    r"قەیرانی\s+دیپلۆماسی|دەرکردنی\s+باڵیۆز|هەولێر\s+و\s+بەغدا|مووچەی\s+فەرمانبەرانی\s+هەرێم|"
+    r"سقوط\s+الحكومة|استقالة\s+الحكومة|أزمة\s+برلمانية|أزمة\s+دستورية|عقوبات\s+دولية|"
+    r"معاهدة\s+استراتيجية|اتفاقية\s+استراتيجية|أزمة\s+دبلوماسية|طرد\s+السفير|تحالف\s+عسكري)",
+    re.IGNORECASE,
+)
+
+MIDDLE_EAST_GEOGRAPHY_PATTERN = re.compile(
+    r"(\biraq\b|\bbaghdad\b|\bbasra\b|\bmosul\b|\bkerkuk\b|\bkirkuk\b|\bpmf\b|\bhashd\b|"
+    r"\biran\b|\btehran\b|\birgc\b|\bquds\s+force\b|"
+    r"\bsyria\b|\bdamascus\b|\btartous\b|\btartus\b|\blatakia\b|\baleppo\b|\bhoms\b|\bhama\b|\brojava\b|\bsdf\b|\bqamishli\b|\bkobani\b|\bhasakah\b|"
+    r"\bturkey\b|\bturkiye\b|\bankara\b|\bisis\b|\bdaesh\b|"
+    r"\bisrael\b|\btel\s+aviv\b|\bjerusalem\b|\bidf\b|\bnetanyahu\b|\bknesset\b|\bmossad\b|"
+    r"\bpalestine\b|\bgaza\b|\bwest\s+bank\b|\bhamas\b|\bpij\b|\bpalestinian\b|"
+    r"\blebanon\b|\bbeirut\b|\bhezbollah\b|"
+    r"\byemen\b|\bsanaa\b|\bhouthi[s]?\b|\bansarallah\b|\bred\s+sea\b|\bbab\s+el[\s\-]mandeb\b|"
+    r"\bjordan\b|\bamman\b|\bsaudi\s+arabia\b|\briyadh\b|\buae\b|\babu\s+dhabi\b|\bdubai\b|\bqatar\b|\bdoha\b|\bkuwait\b|\bbahrain\b|\boman\b|\begypt\b|\bcairo\b|\bsuez\b|"
+    r"\bcentcom\b|\bmiddle\s+east\b|\bpersian\s+gulf\b|"
+    r"عێراق|بەغدا|بەسڕە|موسڵ|کەرکووک|حەشدی\s+شەعبی|"
+    r"ئێران|تاران|سوپای\s+پاسداران|قودس|"
+    r"سووریا|سوریا|دیمەشق|تەرتووس|لازقیە|حەلەب|حومس|حەما|ڕۆژئاوا|قامیشلۆ|کۆبانێ|حەسەکە|"
+    r"تورکیا|ئەنقەرە|"
+    r"ئیسرائیل|تەلئەبیب|قودس|غەززە|کەرتی\s+غەززە|لوبنان|بەیروت|حزبوڵڵا|حەماس|فەلەستین|"
+    r"یەمان|سەنعا|حوسی|حوسییەکان|دەریای\s+سوور|"
+    r"ئوردن|سعوودیە|ڕیاز|ئیمارات|قەتەر|کووەیت|بەحرێن|عومان|میسر|قاهیرە|"
+    r"ڕۆژهەڵاتی\s+ناوەڕاست|کەنداوی\s+فارس|"
+    r"العراق|بغداد|البصرة|الموصل|كركوك|الحشد\s+الشعبي|"
+    r"إيران|طهران|الحرس\s+الثوري|"
+    r"سوريا|دمشق|طرطوس|اللاذقية|حلب|حمص|حماة|"
+    r"تركيا|أنقرة|"
+    r"إسرائيل|تل\s+أبيب|القدس|غزة|قطاع\s+غزة|لبنان|بيروت|حزب\s+الله|حماس|فلسطين|"
+    r"اليمن|صنعاء|الحوثي|الحوثيون|البحر\s+الأحمر|"
+    r"الأردن|عمان|السعودية|الرياض|الإمارات|أبوظبي|دبي|قطر|الدوحة|الكويت|البحرين|عمان|مصر|القاهرة|"
+    r"الشرق\s+الأوسط|الخليج)",
+    re.IGNORECASE,
+)
+
+FOREIGN_ACTOR_IN_REGIONAL_SECURITY_PATTERN = re.compile(
+    r"\b(pentagon|centcom|white\s+house|state\s+department|nato|european\s+union|\beu\b)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_article_text(article: Article) -> str:
+    """Extract raw combined textual content from article."""
+    parts = [
+        getattr(article, "original_title", "") or "",
+        getattr(article, "original_summary", "") or "",
+        getattr(article, "translated_title", "") or "",
+        getattr(article, "translated_summary", "") or "",
+        " ".join(str(e) for e in (getattr(article, "event_entities", None) or [])),
+    ]
+    return " ".join(p.strip() for p in parts if p.strip()).strip()
+
+
+def normalize_article_text(article: Article) -> str:
+    """Extract and normalize clean event text after stripping datelines and outlet brands."""
+    return clean_article_event_text(article)
+
+
+def detect_hard_banned_domain(clean_text: str, article: Optional[Article] = None) -> Optional[str]:
+    """Detect if content belongs to hard-banned economy, technology, cyber, or disabled categories."""
+    if article is not None:
+        raw_cat = (getattr(article, "category", "") or "").strip().lower()
+        if raw_cat in ("economy_markets", "business", "corporate"):
+            return "economy"
+        if raw_cat in ("ai_tech", "science_space"):
+            return "technology"
+        if raw_cat in ("cybersecurity",):
+            return "cybersecurity"
+
+    if HARD_BANNED_ECONOMY_PATTERN.search(clean_text):
+        return "economy"
+
+    if HARD_BANNED_TECH_AI_CYBER_PATTERN.search(clean_text):
+        m = clean_text.lower()
+        if any(k in m for k in ("cyber", "hack", "ransomware", "سایبەری", "هاک", "أمن سيبراني", "فدية")):
+            return "cybersecurity"
+        return "technology"
+
+    return None
+
+
+def detect_protocol_fluff(clean_text: str, article: Optional[Article] = None) -> Optional[str]:
+    """Detect ceremonial fluff, festivals, delegation meetings, courtesy visits, or condolences."""
+    m = HARD_BANNED_PROTOCOL_FLUFF_PATTERN.search(clean_text)
+    if not m:
+        return None
+    matched = m.group(0).lower()
+    if any(k in matched for k in ("festival", "فێستیڤاڵ", "مهرجان", "exhibition", "پێشانگا", "معرض")):
+        return f"festival_or_exhibition ({matched})"
+    if any(k in matched for k in ("delegation", "شاند", "وفد", "foundation", "دامەزراوە", "مؤسسة", "charity")):
+        return f"routine_delegation_or_charity ({matched})"
+    if any(k in matched for k in ("congratulat", "پیرۆزبایی", "تهنئة", "condolence", "سەرەخۆشی", "تعزية", "courtesy", "باوەڕنامە")):
+        return f"diplomatic_pleasantry ({matched})"
+    return f"ceremonial_fluff ({matched})"
+
+
+def detect_substantive_military_event(clean_text: str, article: Optional[Article] = None) -> tuple[bool, str]:
+    """Detect active military strikes, clashes, mobilization, troop movements, or defense operations."""
+    m = SUBSTANTIVE_MILITARY_PATTERN.search(clean_text)
+    if m:
+        return True, m.group(0).strip()
+    return False, ""
+
+
+def detect_high_level_political_event(clean_text: str, article: Optional[Article] = None) -> tuple[bool, str]:
+    """Detect high-level political crises, government collapse, state-level treaties, or major sanctions."""
+    m = HIGH_LEVEL_POLITICS_PATTERN.search(clean_text)
+    if m:
+        return True, m.group(0).strip()
+    return False, ""
+
+
+def _is_state_treaty_or_crisis(clean_text: str) -> bool:
+    """Check if text contains state-level treaty, ceasefire, or major diplomatic crisis."""
+    return bool(re.search(
+        r"(\bstate-level\s+treaty\b|\bstrategic\s+(?:defense\s+)?treaty\b|\bceasefire\s+agreement\b|"
+        r"\bmajor\s+international\s+sanctions\b|\bexpelled\s+ambassadors?\b|\bsevered\s+diplomatic\b|"
+        r"پەیماننامەی\s+ستراتیژی|ڕێککەوتنی\s+ستراتیژی|ئاگربەست|دەرکردنی\s+باڵیۆز|"
+        r"معاهدة\s+استراتيجية|اتفاقية\s+استراتيجية|طرد\s+السفير|وقف\s+إطلاق\s+النار)",
+        clean_text,
+        re.IGNORECASE,
+    ))
+
+
+def classify_geographic_region(article: Article) -> str:
+    """
+    Classify an article into exactly one of three geographic regions:
+      1. 'kurdistan_bashur': Verified Southern Kurdistan (Erbil, Suli, Duhok, Kirkuk, KRG, Peshmerga)
+      2. 'middle_east': Iraq, Iran, Syria, Turkey, Israel/Palestine, Lebanon, Yemen, Gulf,
+         OR international intervention directly in the Middle East (US strikes in Iraq/Syria, EU sanctions on Iran, etc.)
+      3. 'global': Genuinely outside the Middle East with no direct Middle East operational connection
+         (e.g., Ukraine-Russia, China-Taiwan, US domestic politics, European internal crises)
+    """
+    clean_text = clean_article_event_text(article)
+    has_me = bool(MIDDLE_EAST_GEOGRAPHY_PATTERN.search(clean_text))
+    has_foreign_actor = bool(FOREIGN_ACTOR_IN_REGIONAL_SECURITY_PATTERN.search(clean_text))
+
+    # Critical Middle East Relevance Rule (1.4):
+    # If a foreign actor is discussing or operating in the Middle East, it belongs to Middle East
+    if has_foreign_actor and (has_me or bool(BASHUR_PATTERN.search(clean_text))):
+        return REGION_MIDDLE_EAST
+
+    if is_bashur_article(article):
+        return REGION_KURDISTAN_BASHUR
+
+    if has_me:
+        return REGION_MIDDLE_EAST
+
+    country = (getattr(article, "country", "") or "").strip().lower()
+    if country in (
+        "iraq", "iran", "syria", "turkey", "israel", "palestine",
+        "lebanon", "yemen", "jordan", "saudi arabia", "uae",
+        "qatar", "kuwait", "bahrain", "oman", "egypt",
+    ):
+        return REGION_MIDDLE_EAST
+
+    return REGION_GLOBAL
+
+
+def is_strictly_military_or_political(article: Article) -> tuple[bool, str]:
+    """
+    Deterministic pre-LLM editorial gate.
+    Returns (True, explanation) or (False, rejection_reason).
+    Fast, deterministic, testable, runs with 0 Gemini/OpenRouter calls.
+    """
+    # 1. Existing hard blocked topics (sports, domestic crime/court, celebrity obituaries, etc.)
+    blocked = check_blocked_topic(article)
+    if blocked:
+        return False, blocked
+
+    clean_text = normalize_article_text(article)
+    if not clean_text:
+        return False, "insufficient_content"
+
+    # 2. Check for substantive military / war / security event
+    is_mil, mil_reason = detect_substantive_military_event(clean_text, article)
+
+    # 3. Check for high-level politics / geopolitics event
+    is_pol, pol_reason = detect_high_level_political_event(clean_text, article)
+
+    # 4. Check for hard-banned ceremonial, protocol, PR, festival, or delegation fluff
+    protocol_fluff = detect_protocol_fluff(clean_text, article)
+    if protocol_fluff:
+        if is_mil:
+            return True, f"substantive_military: {mil_reason} (overrode protocol fluff)"
+        if is_pol and _is_state_treaty_or_crisis(clean_text):
+            return True, f"high_level_politics: {pol_reason} (state-level treaty/crisis overrode ceremony)"
+        return False, f"banned_protocol: {protocol_fluff}"
+
+    # 5. Check for hard-banned domain (economy/finance/crypto/tech/gadgets/routine cyber)
+    banned_domain = detect_hard_banned_domain(clean_text, article)
+    if banned_domain:
+        if is_mil:
+            return True, f"substantive_military: {mil_reason} (military conflict involving {banned_domain})"
+        return False, f"banned_{banned_domain}"
+
+    # 6. Verify genuine Southern Kurdistan political/military/security event
+    if is_bashur_article(article):
+        if is_mil:
+            return True, f"verified_southern_kurdistan_military: {mil_reason}"
+        if is_pol or is_politics_or_war(article):
+            return True, "verified_southern_kurdistan_politics: KRG/Bashur political development"
+        return False, "insufficient_political_or_military_importance: local Kurdistan news lacks state-level impact"
+
+    # 7. For non-Bashur stories: MUST be substantive military or high-level politics
+    if is_mil:
+        return True, f"substantive_military: {mil_reason}"
+    if is_pol:
+        return True, f"high_level_politics: {pol_reason}"
+    if POLITICS_WAR_PATTERN.search(clean_text):
+        return True, "politics_or_war: qualified geopolitical event"
+
+    return False, "insufficient_political_or_military_importance"
+
+
 def check_pre_filter_off_topic(article: Article) -> Optional[str]:
     """
     Deterministic pre-Gemini topic filter eliminating obvious off-focus items
     (blocked sports/crime/traffic/ads plus routine non-political market/consumer-tech fluff)
     so Gemini quota is reserved cleanly for Kurdistan, politics, war, and security news.
     """
-    blocked = check_blocked_topic(article)
-    if blocked:
-        return blocked
-
-    clean_text = clean_article_event_text(article)
-    if not clean_text:
-        return None
-
-    # Never pre-reject genuine Kurdistan news, politics/war, or geopolitical/security stories
-    if is_genuine_kurdistan_event(article) or is_politics_or_war(article):
-        return None
-    if _GEOPOLITICAL_SAFEGUARD_PATTERN.search(clean_text):
-        return None
-
-    if _OFFTOPIC_ECONOMY_PATTERN.search(clean_text):
-        return "Pre-filtered topic: routine market/earnings noise without geopolitical focus"
-    if _OFFTOPIC_TECH_SCIENCE_PATTERN.search(clean_text):
-        return "Pre-filtered topic: consumer tech/gadget/space fluff without security focus"
-
-    raw_cat = (getattr(article, "category", "") or "").strip().lower()
-    if raw_cat in _OFFTOPIC_FEED_CATEGORIES:
-        return f"Pre-filtered topic: secondary feed '{article.category}' outside politics/war focus"
-
+    is_ok, reason = is_strictly_military_or_political(article)
+    if not is_ok:
+        return reason
     return None
 
 
@@ -595,22 +911,56 @@ def select_top_candidates_for_gemini(
     return selected, rejected
 
 
+# Leading or embedded agency dateline pattern (e.g. "QAMISHLI, Syria (North Press) - ", "ERBIL (Reuters) - ")
+_EMBEDDED_DATELINE_RE = re.compile(
+    r"(?:^|[\s\.\!\?])"
+    r"[A-Za-z\u0600-\u06FF\s,،]{1,40}?"
+    r"\([A-Za-z\u0600-\u06FF\s]{2,30}\)"
+    r"\s*(?:[-–—−]+|:)\s*",
+)
+
+
+def _strip_all_datelines(text: str) -> str:
+    """Strip both leading and mid-text agency datelines and publisher signatures."""
+    if not text:
+        return ""
+    # Strip leading datelines
+    res = strip_news_dateline(text)
+    # Strip embedded datelines
+    res = _EMBEDDED_DATELINE_RE.sub(" ", res)
+    # Strip outlet brands
+    res = _OUTLET_BRAND_STRIP_RE.sub(" ", res)
+    return re.sub(r"\s+", " ", res).strip()
+
+
 def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
     """Map any category string strictly onto one of the 7 canonical category keys."""
-    cleaned_hint = _OUTLET_BRAND_STRIP_RE.sub(" ", strip_news_dateline(text_hint or "")).strip()
+    cleaned_hint = _strip_all_datelines(text_hint or "")
+    def _is_hint_kurdish(hint: str) -> bool:
+        if not hint or not KURDISTAN_PATTERN.search(hint):
+            return False
+        if NON_KURDISTAN_SYRIA_PATTERN.search(hint):
+            has_b = bool(BASHUR_PATTERN.search(hint))
+            has_r = bool(NON_BASHUR_KURDISTAN_PATTERN.search(hint))
+            if not (has_b or has_r):
+                return False
+        return True
+
     if raw_category:
         cleaned = raw_category.strip().lower()
         if cleaned in {"kurdistan", "کوردستان", "كردستان"} or "kurd" in cleaned:
-            # Keep 'kurdistan' ONLY when actual content involves Kurdistan/Kurdish entities
-            if not cleaned_hint or KURDISTAN_PATTERN.search(cleaned_hint):
-                return "kurdistan"
-            if _CYBER_TOPIC_RE.search(cleaned_hint):
-                return "cybersecurity"
-            if _ECONOMY_TOPIC_RE.search(cleaned_hint):
-                return "economy_markets"
-            if _MILITARY_TOPIC_RE.search(cleaned_hint):
-                return "military_conflict"
-            return "politics_world"
+            # If hint is provided, keep 'kurdistan' ONLY when actual content verified to involve Kurdistan/Kurdish entities
+            if cleaned_hint:
+                if _is_hint_kurdish(cleaned_hint):
+                    return "kurdistan"
+                if _CYBER_TOPIC_RE.search(cleaned_hint):
+                    return "cybersecurity"
+                if _ECONOMY_TOPIC_RE.search(cleaned_hint):
+                    return "economy_markets"
+                if _MILITARY_TOPIC_RE.search(cleaned_hint):
+                    return "military_conflict"
+                return "politics_world"
+            return "kurdistan"
         if cleaned in CANONICAL_CATEGORIES:
             return cleaned
         if cleaned in LEGACY_TO_CANONICAL_CATEGORY:
@@ -627,7 +977,7 @@ def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
         if "science" in cleaned or "space" in cleaned:
             return "science_space"
 
-    if cleaned_hint and KURDISTAN_PATTERN.search(cleaned_hint):
+    if _is_hint_kurdish(cleaned_hint):
         return "kurdistan"
     if cleaned_hint and _ECONOMY_TOPIC_RE.search(cleaned_hint) and not _MILITARY_TOPIC_RE.search(cleaned_hint):
         return "economy_markets"
@@ -850,6 +1200,7 @@ class ImportanceRanker:
             and scaled_score >= 9
             and not any(m in lower_text for m in non_breaking_markers)
         )
+        reg = classify_geographic_region(article)
         return RelevanceEvaluation(
             score=scaled_score,
             is_breaking=is_breaking,
@@ -857,6 +1208,7 @@ class ImportanceRanker:
             reason=f"Rule-based fallback ({err_reason}; rule_score={rule_score:.2f})",
             passed=passed,
             used_fallback=True,
+            region=reg,
         )
 
     def _build_evaluation_from_payload(
@@ -875,6 +1227,12 @@ class ImportanceRanker:
         clean_hint = clean_article_event_text(article)
         category = normalize_category(raw_category, text_hint=clean_hint)
 
+        # Enforce content check for "kurdistan" category: if LLM returned "kurdistan"
+        # but content is not genuine Kurdistan (e.g. Tartous Syria, non-Kurdish international story),
+        # coerce cleanly to military_conflict or politics_world.
+        if category == "kurdistan" and not is_genuine_kurdistan_event(article):
+            category = "military_conflict" if is_politics_or_war(article) else "politics_world"
+
         # Enforce high priority ONLY for genuine Kurdistan events scoring >= threshold
         if category == "kurdistan" and is_genuine_kurdistan_event(article) and threshold <= score < 8:
             score = 8
@@ -886,6 +1244,12 @@ class ImportanceRanker:
         ev_entities = normalize_event_entities(data.get("event_entities"))
         update_type = str(data.get("update_type", "")).strip().lower()
 
+        raw_region = str(data.get("region", "")).strip().lower()
+        if raw_region in ("kurdistan_bashur", "middle_east", "global"):
+            region = raw_region
+        else:
+            region = classify_geographic_region(article)
+
         return RelevanceEvaluation(
             score=score,
             is_breaking=is_breaking,
@@ -896,6 +1260,7 @@ class ImportanceRanker:
             event_key=ev_key,
             event_entities=ev_entities,
             update_type=update_type,
+            region=region,
         )
 
     async def evaluate_global_relevance(
@@ -911,8 +1276,22 @@ class ImportanceRanker:
         """
         threshold = self._min_relevance_score if min_score is None else min_score
 
+        pre_rejected = check_pre_filter_off_topic(article)
+        if pre_rejected:
+            reg = classify_geographic_region(article)
+            return RelevanceEvaluation(
+                score=2,
+                is_breaking=False,
+                category="politics_world",
+                reason=pre_rejected,
+                passed=False,
+                used_fallback=False,
+                region=reg,
+            )
+
         blocked_reason = check_blocked_topic(article)
         if blocked_reason:
+            reg = classify_geographic_region(article)
             return RelevanceEvaluation(
                 score=2,
                 is_breaking=False,
@@ -920,6 +1299,7 @@ class ImportanceRanker:
                 reason=blocked_reason,
                 passed=False,
                 used_fallback=False,
+                region=reg,
             )
 
         has_active_engine = (
@@ -985,6 +1365,7 @@ class ImportanceRanker:
         for idx, art in enumerate(articles):
             pre_rejected = check_pre_filter_off_topic(art)
             if pre_rejected:
+                reg = classify_geographic_region(art)
                 results[idx] = RelevanceEvaluation(
                     score=2,
                     is_breaking=False,
@@ -992,6 +1373,7 @@ class ImportanceRanker:
                     reason=pre_rejected,
                     passed=False,
                     used_fallback=False,
+                    region=reg,
                 )
             else:
                 to_classify.append((idx, art))

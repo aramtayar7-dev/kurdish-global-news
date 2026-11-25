@@ -266,7 +266,7 @@ def test_graceful_backfill_when_x_short_and_no_junk_padding(monkeypatch):
 
     # X has only 1 video while TG has 4 and Search has 3 -> cleanly backfills to 5 unique posts
     tg_items = [_make_art("telegram", i, score=8.8 - i * 0.05) for i in range(4)]
-    x_items = [_make_art("x", 10 + i, score=8.7 - i * 0.05) for i in range(1)]
+    x_items = [_make_art("x", 4 + i, score=8.7 - i * 0.05) for i in range(1)]
     search_items = [_make_art("search", 20 + i, score=8.6 - i * 0.05) for i in range(3)]
 
     res_backfill = select_paced_batch(

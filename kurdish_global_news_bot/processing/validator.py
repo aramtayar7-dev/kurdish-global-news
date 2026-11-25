@@ -15,6 +15,9 @@ from typing import Optional
 from storage.models import Article
 import config
 from config import ENABLE_TELEGRAM, MAX_ARTICLE_AGE_HOURS, MAX_ARTICLE_AGE_MINUTES, TELEGRAM_SOURCE_CHANNELS
+from core.importance_ranker import is_strictly_military_or_political
+
+__all__ = ["ArticleValidator", "is_strictly_military_or_political"]
 
 logger = logging.getLogger("processing.validator")
 
@@ -240,3 +243,11 @@ class ArticleValidator:
                 return False, f"Article too old ({age_hours:.1f}h > {max_age_hours:.1f}h limit)"
 
         return True, ""
+
+    def validate_editorial(self, article: Article) -> tuple[bool, str]:
+        """
+        Validate that article strictly satisfies Kurdish Global News editorial policy:
+        Substantive Military, Security, War, or High-Level Geopolitical Intelligence.
+        Zero Gemini API calls.
+        """
+        return is_strictly_military_or_political(article)

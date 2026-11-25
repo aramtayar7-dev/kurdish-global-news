@@ -16,6 +16,9 @@ articles per 8 published articles (62.5% Bashur / 37.5% Global) with:
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
@@ -29,18 +32,49 @@ from config import (
     ECON_CYBER_MIN_SCORE,
     ENABLE_SOURCE_DOMINANCE_CAP,
     MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW,
+    MAX_GLOBAL_POSTS_PER_DAY,
+    MAX_GLOBAL_POSTS_PER_BATCH,
+    MIDDLE_EAST_TARGET_RATIO,
+    GLOBAL_MAX_RATIO,
 )
 from core.importance_ranker import (
     PRIORITY_TIER_1A,
     article_selection_sort_key,
     classify_priority_tier,
     classify_topic_bucket,
+    classify_geographic_region,
     is_bashur_article,
     is_regional_geopolitics,
     is_strict_breaking,
 )
 from core.source_verifier import get_source_group, get_source_tier, is_x_source_url, TIER_3
 from storage.models import Article
+
+_GLOBAL_SELECTION_LOCK = asyncio.Lock()
+_RESERVATION_LOCK = threading.Lock()
+_ACTIVE_GLOBAL_SELECTIONS: list[tuple[float, str]] = []
+
+
+def clear_global_selection_reservations() -> None:
+    """Clear in-flight global selection reservations (useful for test isolation)."""
+    with _RESERVATION_LOCK:
+        _ACTIVE_GLOBAL_SELECTIONS.clear()
+
+
+def get_active_global_reservations_count(window_seconds: float = 0.2) -> int:
+    """Return the number of uncommitted global selections currently in-flight."""
+    now = time.monotonic()
+    with _RESERVATION_LOCK:
+        cutoff = now - window_seconds
+        _ACTIVE_GLOBAL_SELECTIONS[:] = [item for item in _ACTIVE_GLOBAL_SELECTIONS if item[0] >= cutoff]
+        return len(_ACTIVE_GLOBAL_SELECTIONS)
+
+
+def record_global_selection(url_or_id: str) -> None:
+    """Record an admitted global selection into the in-flight reservation buffer."""
+    now = time.monotonic()
+    with _RESERVATION_LOCK:
+        _ACTIVE_GLOBAL_SELECTIONS.append((now, url_or_id))
 
 _TELEGRAM_BUCKET_DOMAINS = {"t.me", "telegram.me", "telegram.dog"}
 _TELEGRAM_ONLY_NAMES = {"sabereen", "sabereen news", "sabereen plus", "sabrennewss", "sabren_news1"}
@@ -189,7 +223,7 @@ def _qualifies_for_econ_cyber_slot(article: Article) -> bool:
 
 @dataclass
 class BalanceSelectionResult:
-    """Structured result of 5-of-8 Bashur + 7-of-8 Politics/War + 4:4:2 bucket selection."""
+    """Structured result of 5-of-8 Bashur + 7-of-8 Politics/War + 2:2:1 bucket selection + 90/10 ME geographic cap."""
     selected: list[Article]
     deferred: list[Article]
     bashur_selected: int
@@ -201,6 +235,10 @@ class BalanceSelectionResult:
     bucket_counts: dict[str, int] = field(
         default_factory=lambda: {"telegram": 0, "x": 0, "search": 0}
     )
+    middle_east_selected: int = 0
+    global_posts_last_24h: int = 0
+    global_remaining_today: int = 0
+    middle_east_ratio: float = 1.0
 
 
 def batch_publish_sort_key(article: Article) -> tuple:
@@ -549,6 +587,8 @@ class QuotaBalancer:
         global_count = len(ordered_selected) - bashur_count
         pw_count = sum(1 for a in ordered_selected if classify_topic_bucket(a) == "politics_war")
         ec_count = sum(1 for a in ordered_selected if classify_topic_bucket(a) in ("economy", "cybersecurity"))
+        me_count = sum(1 for a in ordered_selected if classify_geographic_region(a) in ("kurdistan_bashur", "middle_east"))
+        me_ratio = (me_count / float(len(ordered_selected))) if ordered_selected else 1.0
 
         reason = (
             f"Selected {len(ordered_selected)}/{effective_limit}: "
@@ -569,6 +609,8 @@ class QuotaBalancer:
                 "x": sum(1 for a in ordered_selected if get_source_bucket(a) == "x"),
                 "search": sum(1 for a in ordered_selected if get_source_bucket(a) == "search"),
             },
+            middle_east_selected=me_count,
+            middle_east_ratio=round(me_ratio, 3),
         )
 
     def select_paced_batch(
@@ -577,12 +619,15 @@ class QuotaBalancer:
         target_posts: Optional[int] = None,
         source_mix: Optional[dict[str, int]] = None,
         recent_published: Optional[list[Article]] = None,
+        global_posts_last_24h: Optional[int] = None,
     ) -> BalanceSelectionResult:
         """
         Select up to `target_posts` (default 5) unique, non-duplicate articles enforcing:
           1. 2:2:1 Source Mix (`2 telegram + 2 x + 1 search`) when available
-          2. Graceful non-duplicate backfill from remaining eligible high-priority candidates
-             when any bucket is short (never pads with duplicates or banned/junk items)
+          2. 90/10 Middle East vs Global geographic policy:
+             - Maximum 1 Global article per 5-post batch (`MAX_GLOBAL_POSTS_PER_BATCH = 1`)
+             - Rolling 24-hour daily Global cap (`MAX_GLOBAL_POSTS_PER_DAY = 4`)
+             - Zero Global backfill when limit is reached (Quality > Quantity)
           3. 5-of-8 Southern Kurdistan priority, 7:1 Politics/War limit (max 1 Econ/Cyber
              per batch), and rolling per-source-group dominance cap (strict Tier-3 cap)
           4. Balanced round-robin interleaving across buckets for 1-post/minute publishing
@@ -603,6 +648,10 @@ class QuotaBalancer:
                 politics_war_selected=0,
                 econ_cyber_selected=0,
                 bucket_counts={"telegram": 0, "x": 0, "search": 0},
+                middle_east_selected=0,
+                global_posts_last_24h=int(global_posts_last_24h or 0),
+                global_remaining_today=max(0, int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)) - int(global_posts_last_24h or 0)),
+                middle_east_ratio=1.0,
             )
 
         mix = dict(
@@ -612,6 +661,15 @@ class QuotaBalancer:
         )
         bashur_budget = self.compute_bashur_budget(effective_limit, recent_published=recent_published)
         ec_budget = max(0, self.compute_econ_cyber_budget(min(effective_limit, 8), recent_published=recent_published))
+
+        # 90/10 Middle East vs Global geographic allowance
+        max_daily_global = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+        max_batch_global = int(getattr(config, "MAX_GLOBAL_POSTS_PER_BATCH", 1))
+        global_24h = int(global_posts_last_24h if global_posts_last_24h is not None else 0)
+        in_flight_global = get_active_global_reservations_count()
+        effective_global_24h = global_24h + in_flight_global
+        remaining_global = max(0, max_daily_global - effective_global_24h)
+        max_global_in_batch = min(max_batch_global, remaining_global)
 
         dom_cap_enabled = bool(getattr(config, "ENABLE_SOURCE_DOMINANCE_CAP", ENABLE_SOURCE_DOMINANCE_CAP))
         dom_cap = max(
@@ -653,10 +711,20 @@ class QuotaBalancer:
         picked_by_bucket: dict[str, list[Article]] = {"telegram": [], "x": [], "search": []}
         ec_selected_count = 0
         bashur_selected_count = 0
+        global_admitted_count = 0
+        me_admitted_count = 0
+
+        def _get_region(a: Article) -> str:
+            return classify_geographic_region(a)
 
         def _can_admit(art: Article, allow_tier12_scarcity_overflow: bool = False) -> bool:
             if id(art) in selected_ids:
                 return False
+            # Geographic 90/10 & Global cap check
+            art_reg = _get_region(art)
+            if art_reg == "global":
+                if global_admitted_count >= max_global_in_batch:
+                    return False
             topic = classify_topic_bucket(art)
             if topic in ("economy", "cybersecurity"):
                 if not _qualifies_for_econ_cyber_slot(art):
@@ -677,10 +745,18 @@ class QuotaBalancer:
             return False
 
         def _admit(art: Article, bucket_name: str) -> None:
-            nonlocal ec_selected_count, bashur_selected_count
+            nonlocal ec_selected_count, bashur_selected_count, global_admitted_count, me_admitted_count
             selected.append(art)
             selected_ids.add(id(art))
             picked_by_bucket[bucket_name].append(art)
+            art_reg = _get_region(art)
+            if art_reg == "global":
+                global_admitted_count += 1
+                record_global_selection(
+                    getattr(art, "canonical_url", "") or getattr(art, "original_url", "") or str(id(art))
+                )
+            else:
+                me_admitted_count += 1
             if classify_topic_bucket(art) in ("economy", "cybersecurity"):
                 ec_selected_count += 1
             if is_bashur_article(art):
@@ -689,7 +765,7 @@ class QuotaBalancer:
             if grp and grp != "unknown":
                 group_counts[grp] = group_counts.get(grp, 0) + 1
 
-        # Pass 1: Fill explicit 4:4:2 bucket targets (preferring Politics/War and Bashur first)
+        # Pass 1: Fill explicit bucket targets (preferring Politics/War, Bashur, and Middle East first)
         for bucket_name in ("telegram", "x", "search"):
             quota = max(0, int(mix.get(bucket_name, 0)))
             if quota <= 0 or len(selected) >= effective_limit:
@@ -699,6 +775,7 @@ class QuotaBalancer:
                 key=lambda a: (
                     0 if classify_topic_bucket(a) == "politics_war" else 1,
                     0 if (bashur_selected_count < bashur_budget and is_bashur_article(a)) else 1,
+                    0 if _get_region(a) != "global" else 1,
                     *article_selection_sort_key(a),
                 ),
             )
@@ -711,6 +788,7 @@ class QuotaBalancer:
                     taken += 1
 
         # Pass 2: Graceful backfill from remaining highest-priority unique items across all buckets
+        # (Strictly rejects global candidates if global cap reached or max_global_in_batch == 0; never pads!)
         if len(selected) < effective_limit:
             remaining_pool = [a for a in unique_candidates if id(a) not in selected_ids]
             remaining_ordered = sorted(
@@ -718,6 +796,7 @@ class QuotaBalancer:
                 key=lambda a: (
                     0 if classify_topic_bucket(a) == "politics_war" else 1,
                     0 if (bashur_selected_count < bashur_budget and is_bashur_article(a)) else 1,
+                    0 if _get_region(a) != "global" else 1,
                     *article_selection_sort_key(a),
                 ),
             )
@@ -737,28 +816,37 @@ class QuotaBalancer:
         interleaved = _interleave_buckets(picked_by_bucket)
         deferred = [a for a in unique_candidates if id(a) not in selected_ids]
 
+        total_selected = len(interleaved)
         bashur_count = sum(1 for a in interleaved if is_bashur_article(a))
-        global_count = len(interleaved) - bashur_count
+        me_count = sum(1 for a in interleaved if _get_region(a) in ("kurdistan_bashur", "middle_east"))
+        true_global_count = sum(1 for a in interleaved if _get_region(a) == "global")
+        me_ratio = (me_count / float(total_selected)) if total_selected > 0 else 1.0
+        rem_today = max(0, remaining_global - true_global_count)
         pw_count = sum(1 for a in interleaved if classify_topic_bucket(a) == "politics_war")
         ec_count = sum(1 for a in interleaved if classify_topic_bucket(a) in ("economy", "cybersecurity"))
         b_counts = {b: len(picked_by_bucket[b]) for b in ("telegram", "x", "search")}
 
         reason = (
-            f"Paced Batch {len(interleaved)}/{effective_limit} "
+            f"Paced Batch {total_selected}/{effective_limit} "
             f"[TG={b_counts['telegram']}, X={b_counts['x']}, Search={b_counts['search']}] | "
-            f"{bashur_count} Bashur + {global_count} Global | "
+            f"Geo: {me_count} ME ({bashur_count} Bashur) + {true_global_count} Global "
+            f"(24h={global_24h}, rem={rem_today}) | "
             f"Topics: {pw_count} Politics/War + {ec_count} Econ/Cyber"
         )
         return BalanceSelectionResult(
             selected=interleaved,
             deferred=deferred,
             bashur_selected=bashur_count,
-            global_selected=global_count,
+            global_selected=true_global_count,
             bashur_quota_target=bashur_budget,
             reason=reason,
             politics_war_selected=pw_count,
             econ_cyber_selected=ec_count,
             bucket_counts=b_counts,
+            middle_east_selected=me_count,
+            global_posts_last_24h=global_24h,
+            global_remaining_today=rem_today,
+            middle_east_ratio=round(me_ratio, 3),
         )
 
 
@@ -767,6 +855,7 @@ def select_paced_batch(
     target_posts: Optional[int] = None,
     source_mix: Optional[dict[str, int]] = None,
     recent_published: Optional[list[Article]] = None,
+    global_posts_last_24h: Optional[int] = None,
 ) -> BalanceSelectionResult:
     """Module-level helper to select an interleaved 2:2:1 paced batch up to `target_posts`."""
     limit = (
@@ -779,4 +868,5 @@ def select_paced_batch(
         target_posts=target_posts,
         source_mix=source_mix,
         recent_published=recent_published,
+        global_posts_last_24h=global_posts_last_24h,
     )

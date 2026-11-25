@@ -30,6 +30,7 @@ from core.importance_ranker import (
     classify_priority_tier,
     is_bashur_article,
     is_genuine_kurdistan_event,
+    is_politics_or_war,
     select_top_candidates_for_gemini,
 )
 from core.balancer import QuotaBalancer
@@ -404,15 +405,17 @@ class ArticlePipeline:
             return
         article.importance_score = float(relevance.score)
         is_kurd_content = is_genuine_kurdistan_event(article)
-        if not relevance.used_fallback:
-            article.category = relevance.category
-        elif (article.category or "").strip().lower() in {"kurdistan", "کوردستان", "كردستان"} and not is_kurd_content:
-            # Never retain a Kurdistan feed tag on non-Kurdistan international stories during fallback
-            article.category = relevance.category
-        if not is_kurd_content and (article.region or "").strip().lower() in {
-            "south kurdistan", "kurdistan", "kurdistan_bashur", "کوردستان", "کوردستان (باشوور)",
-        }:
-            article.region = ""
+        effective_category = relevance.category
+        if effective_category == "kurdistan" and not is_kurd_content:
+            effective_category = "military_conflict" if is_politics_or_war(article) else "politics_world"
+
+        article.category = effective_category
+
+        # Clear any Kurdistan regional label if content is not a verified genuine Kurdistan event
+        if not is_kurd_content:
+            art_reg = (article.region or "").strip().lower()
+            if any(k in art_reg for k in ("kurdistan", "کوردستان", "کردستان", "bashur", "rojava", "bakur", "rojhelat")):
+                article.region = ""
         article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
 
         ev_key = normalize_event_key(getattr(relevance, "event_key", ""))

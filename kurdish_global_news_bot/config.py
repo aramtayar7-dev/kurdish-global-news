@@ -321,6 +321,49 @@ ECON_CYBER_MAX_PER_8: int = max(0, 8 - POLITICS_WAR_MIN_PER_8)
 ECON_CYBER_MIN_SCORE: float = _float(os.getenv("ECON_CYBER_MIN_SCORE"), 7.5)
 
 # ═══════════════════════════════════════════════════
+# Strict Editorial Policy & Geographic Distribution
+# ═══════════════════════════════════════════════════
+# Restricted active publication categories: Military/War, High-Level Politics, Kurdistan (Bashur only)
+ALLOWED_EDITORIAL_CATEGORIES: set[str] = {
+    "military_conflict",
+    "politics_world",
+    "kurdistan",
+}
+
+DISABLED_EDITORIAL_CATEGORIES: set[str] = {
+    "economy_markets",
+    "ai_tech",
+    "cybersecurity",
+    "science_space",
+    "sports",
+    "entertainment",
+    "culture",
+    "lifestyle",
+    "health",
+    "weather",
+    "business",
+    "corporate",
+    "cryptocurrency",
+}
+
+# 90/10 Middle East vs Global geographic distribution
+MIDDLE_EAST_TARGET_RATIO: float = _float(os.getenv("MIDDLE_EAST_TARGET_RATIO"), 0.90)
+GLOBAL_MAX_RATIO: float = _float(os.getenv("GLOBAL_MAX_RATIO"), 0.10)
+# Hard safety maximum of 4 Global posts per rolling 24 hours (strictly clamped <= 4)
+MAX_GLOBAL_POSTS_PER_DAY: int = max(0, min(4, _int(os.getenv("MAX_GLOBAL_POSTS_PER_DAY"), 4)))
+# At most 1 Global post per batch
+MAX_GLOBAL_POSTS_PER_BATCH: int = max(0, min(1, _int(os.getenv("MAX_GLOBAL_POSTS_PER_BATCH"), 1)))
+
+REGION_KURDISTAN_BASHUR: str = "kurdistan_bashur"
+REGION_MIDDLE_EAST: str = "middle_east"
+REGION_GLOBAL: str = "global"
+VALID_GEOGRAPHIC_REGIONS: tuple[str, ...] = (
+    REGION_KURDISTAN_BASHUR,
+    REGION_MIDDLE_EAST,
+    REGION_GLOBAL,
+)
+
+# ═══════════════════════════════════════════════════
 # Network
 # ═══════════════════════════════════════════════════
 REQUEST_TIMEOUT: int = _int(os.getenv("REQUEST_TIMEOUT"), 30)

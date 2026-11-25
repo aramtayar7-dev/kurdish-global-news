@@ -143,7 +143,7 @@ class TestGeminiRelevanceAndCategoryClassifier:
 
     @pytest.mark.asyncio
     async def test_al_jazeera_nvidia_stock_classified_economy_not_war(self):
-        """Ensure Al Jazeera business/tech stories get economy_markets/ai_tech rather than military_conflict."""
+        """Under strict editorial policy, Nvidia stock / earnings stories are rejected before Gemini as banned economy."""
         ranker = ImportanceRanker(api_key="gem_test_key", min_relevance_score=7)
         mock_session = _make_gemini_session(
             200,
@@ -164,8 +164,9 @@ class TestGeminiRelevanceAndCategoryClassifier:
         )
         result = await ranker.evaluate_global_relevance(art)
 
-        assert result.passed is True
-        assert result.category == "economy_markets"
+        # Under strict editorial policy (Section 1.1 & 6.8), economy/stock articles are rejected with 0 LLM calls
+        assert result.passed is False
+        assert "banned_economy" in result.reason or "insufficient" in result.reason
 
     @pytest.mark.asyncio
     async def test_hyperlocal_foreign_lawsuit_rejected(self):

@@ -299,7 +299,13 @@ class ContentFormatter:
         """
         parts: list[str] = []
 
-        kurdish_cat, emoji = resolve_category_display(article.category)
+        from core.importance_ranker import is_genuine_kurdistan_event, is_politics_or_war
+
+        display_cat = article.category
+        if (display_cat or "").strip().lower() in {"kurdistan", "کوردستان", "كردستان"} and not is_genuine_kurdistan_event(article):
+            display_cat = "military_conflict" if is_politics_or_war(article) else "politics_world"
+
+        kurdish_cat, emoji = resolve_category_display(display_cat)
         headline = self._format_headline(article)
         parts.append(f"{emoji} <b>{headline}</b>")
 
@@ -339,7 +345,13 @@ class ContentFormatter:
         without cutting mid-sentence (`...`) or truncating footer tags.
         Omits the bottom text URL line when an inline source button is attached.
         """
-        kurdish_cat, emoji = resolve_category_display(article.category)
+        from core.importance_ranker import is_genuine_kurdistan_event, is_politics_or_war
+
+        display_cat = article.category
+        if (display_cat or "").strip().lower() in {"kurdistan", "کوردستان", "كردستان"} and not is_genuine_kurdistan_event(article):
+            display_cat = "military_conflict" if is_politics_or_war(article) else "politics_world"
+
+        kurdish_cat, emoji = resolve_category_display(display_cat)
         headline = self._format_headline(article)
         header = f"{emoji} <b>{headline}</b>"
 

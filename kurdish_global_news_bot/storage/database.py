@@ -17,6 +17,7 @@ from typing import Optional
 
 import aiosqlite
 
+import config
 from config import (
     ArticleStatus,
     BACKUP_DIR,
@@ -442,6 +443,32 @@ class Database:
                 recent_24h.append(art)
 
         return _prioritize_digest_articles(recent_24h, limit=limit)
+
+    async def get_global_posts_count_last_24h(self) -> int:
+        """
+        Count the number of published articles with region == 'global' in the rolling 24 hours.
+        Fail-closed to MAX_GLOBAL_POSTS_PER_DAY (4) on error to protect 90/10 Middle East ratio.
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            async with self.conn.execute(
+                """SELECT region, published_at, discovered_at FROM articles
+                   WHERE status = 'PUBLISHED'
+                   ORDER BY published_at DESC, id DESC LIMIT 200"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            global_count = 0
+            for row in rows:
+                dt = self._parse_utc_timestamp(row["published_at"] or row["discovered_at"])
+                if dt is not None and dt >= cutoff:
+                    reg = str(row["region"] or "").strip().lower()
+                    if reg == "global":
+                        global_count += 1
+            return global_count
+        except Exception as e:
+            logger.error("Failed to query global posts count last 24h: %s; failing closed to max daily limit.", e)
+            return int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
 
     async def is_digest_published_for_date(self, digest_date: str) -> bool:
         """Return True if a daily digest has already been recorded for `digest_date` (YYYY-MM-DD)."""

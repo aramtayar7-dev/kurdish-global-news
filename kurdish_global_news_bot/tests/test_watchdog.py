@@ -488,6 +488,6 @@ class TestCrashNonBlockingZeroGeminiAndFallback:
         assert isinstance(engine._db, Database)
         assert engine._supabase_fallback_active is True
         mock_bot.send_message.assert_awaited()
-        alert_text = mock_bot.send_message.call_args.kwargs["text"]
-        assert ALERT_SUPABASE_FALLBACK in alert_text
-        assert "eyJfakeSupabaseJwt.part2.part3" not in alert_text
+        all_sent_texts = [call.kwargs.get("text", "") for call in mock_bot.send_message.call_args_list]
+        assert any(ALERT_SUPABASE_FALLBACK in t for t in all_sent_texts)
+        assert all("eyJfakeSupabaseJwt.part2.part3" not in t for t in all_sent_texts)
