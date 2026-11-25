@@ -293,3 +293,87 @@ class TestPublisherInlineButtonIntegration:
         ok = await wd.dispatch_alert("SOURCE_OUTAGE", title="Test outage", details="Source timeout")
         assert ok is True
         assert "reply_markup" not in mock_bot.send_message.call_args.kwargs
+
+
+class TestTextOnlyTelegramAndXVisualCardsAndButtons:
+    @pytest.mark.asyncio
+    async def test_text_only_telegram_and_x_always_render_visual_card_and_attach_valid_button(self, tmp_path):
+        mock_bot = AsyncMock()
+        mock_bot.send_photo = AsyncMock(return_value=MagicMock(message_id=801))
+        mock_bot.send_message = AsyncMock(return_value=MagicMock(message_id=802))
+
+        pub = TelegramPublisher()
+        pub._channel_id = "@KurdishGlobalNews"
+        pub._bot = mock_bot
+        pub._image_handler.download_image = AsyncMock(return_value=None)
+
+        # 1. Text-only Telegram post with NO external URL -> renders real visual card via background_selector + card_generator
+        tg_text_art = _make_article(
+            url="https://t.me/rudawdigital/8801",
+            source_name="Rudaw",
+            category="kurdistan",
+        )
+        tg_text_art.image_url = ""
+        tg_text_art.video_url = None
+        msg_tg = await pub.publish_article(tg_text_art)
+        assert msg_tg == 801
+        mock_bot.send_photo.assert_awaited_once()
+        mock_bot.send_message.assert_not_awaited()
+        # Blocked t.me/ link has no inline button by default
+        assert "reply_markup" not in mock_bot.send_photo.call_args.kwargs
+
+        mock_bot.send_photo.reset_mock()
+
+        # 2. Text-only X post carrying a valid non-blocked canonical/web URL -> renders visual card AND attaches inline button
+        x_text_art = _make_article(
+            url="https://x.com/RudawEnglish/status/8802",
+            source_name="Rudaw",
+            category="kurdistan",
+        )
+        x_text_art.canonical_url = "https://www.rudaw.net/english/kurdistan/8802"
+        x_text_art.image_url = ""
+        x_text_art.video_url = None
+        msg_x = await pub.publish_article(x_text_art)
+        assert msg_x == 801
+        mock_bot.send_photo.assert_awaited_once()
+        mock_bot.send_message.assert_not_awaited()
+        markup = mock_bot.send_photo.call_args.kwargs["reply_markup"]
+        assert isinstance(markup, InlineKeyboardMarkup)
+        assert markup.inline_keyboard[0][0].url == "https://www.rudaw.net/english/kurdistan/8802"
+
+    @pytest.mark.asyncio
+    async def test_no_plain_text_fallback_when_card_rendered_only_on_card_generation_error(self, tmp_path):
+        fake_card = tmp_path / "card_ok.jpg"
+        fake_card.write_bytes(b"VALID_CARD_BYTES")
+
+        # Case A: Card renders cleanly, send_photo caption rejected once -> retries send_photo (NO plain-text fallback!)
+        mock_bot = AsyncMock()
+        mock_bot.send_photo = AsyncMock(
+            side_effect=[BadRequest("Message caption is too long"), MagicMock(message_id=901)]
+        )
+        mock_bot.send_message = AsyncMock(return_value=MagicMock(message_id=999))
+
+        pub = TelegramPublisher()
+        pub._channel_id = "@KurdishGlobalNews"
+        pub._bot = mock_bot
+        pub._card_generator.generate_card_file = AsyncMock(return_value=fake_card)
+
+        tg_art = _make_article(url="https://t.me/Kurdistan24news/901", source_name="Kurdistan24")
+        msg_id = await pub.publish_article(tg_art)
+        assert msg_id == 901
+        assert mock_bot.send_photo.await_count == 2
+        mock_bot.send_message.assert_not_awaited()
+
+        # Case B: Card renders cleanly, send_photo raises hard error -> returns None, STILL never falls back to plain text!
+        fake_card.write_bytes(b"VALID_CARD_BYTES")
+        mock_bot.send_photo = AsyncMock(side_effect=RuntimeError("Telegram upload outage"))
+        mock_bot.send_message.reset_mock()
+        msg_fail = await pub.publish_article(tg_art)
+        assert msg_fail is None
+        mock_bot.send_message.assert_not_awaited()
+
+        # Case C: Card generation itself raises an unhandled error -> falls back cleanly to _publish_text_only
+        pub._card_generator.generate_card_file = AsyncMock(side_effect=RuntimeError("Pillow font crash"))
+        msg_text_fallback = await pub.publish_article(tg_art)
+        assert msg_text_fallback == 999
+        mock_bot.send_message.assert_awaited_once()

@@ -28,7 +28,7 @@ from config import (
 from core.importance_ranker import is_strict_breaking
 from core.source_verifier import is_official_media_source, is_x_source_url
 from processing.card_generator import NewsCardGenerator
-from processing.content_formatter import ContentFormatter
+from processing.content_formatter import ContentFormatter, resolve_category_display
 from processing.translator import is_valid_kurdish_sorani, trim_at_sentence_boundary
 from processing.video_processor import (
     WatermarkRejectedError,
@@ -150,7 +150,14 @@ class TelegramPublisher:
             message_id = await self._publish_with_card(article)
             if message_id is not None:
                 return message_id
-            logger.info("Card photo publish failed, falling back to text-only.")
+            if not getattr(article, "_card_generation_failed", False):
+                logger.warning(
+                    "Visual news card was rendered for '%s' but send_photo failed; "
+                    "not falling back to plain text.",
+                    (article.original_title or "")[:60],
+                )
+                return None
+            logger.info("Card generation raised an unhandled error, falling back to text-only.")
 
         return await self._publish_text_only(article)
 
@@ -332,6 +339,7 @@ class TelegramPublisher:
                         image_bytes = None
                         article.image_url = ""
 
+        article._card_generation_failed = False  # type: ignore[attr-defined]
         reply_markup = build_source_button_markup(article=article)
         caption = self._trim_caption_at_sentence(
             self._formatter.format_caption(article, has_inline_source_button=(reply_markup is not None))
@@ -339,22 +347,70 @@ class TelegramPublisher:
         card_path: Optional[Path] = None
 
         try:
-            card_path = await self._card_generator.generate_card_file(
-                article, image_bytes=image_bytes, is_breaking=breaking
+            try:
+                card_path = await self._card_generator.generate_card_file(
+                    article, image_bytes=image_bytes, is_breaking=breaking
+                )
+            except Exception as gen_exc:
+                if image_bytes is not None:
+                    logger.warning(
+                        "Card generation with downloaded image failed (%s); retrying with Smart Background.",
+                        str(gen_exc)[:150],
+                    )
+                    card_path = await self._card_generator.generate_card_file(
+                        article, image_bytes=None, is_breaking=breaking
+                    )
+                else:
+                    raise
+        except Exception as card_err:
+            article._card_generation_failed = True  # type: ignore[attr-defined]
+            logger.error(
+                "Card generation raised unhandled error (%s): %s",
+                type(card_err).__name__,
+                str(card_err)[:200],
             )
+            return None
+
+        try:
             with open(card_path, "rb") as photo_file:
                 send_extra = {"reply_markup": reply_markup} if reply_markup is not None else {}
-                message = await self._send_with_optional_reply(
-                    self._bot.send_photo,
-                    reply_to_message_id=reply_root_id,
-                    rewind_file=photo_file,
-                    chat_id=self._channel_id,
-                    photo=photo_file,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                    disable_notification=disable_notification,
-                    **send_extra,
-                )
+                try:
+                    message = await self._send_with_optional_reply(
+                        self._bot.send_photo,
+                        reply_to_message_id=reply_root_id,
+                        rewind_file=photo_file,
+                        chat_id=self._channel_id,
+                        photo=photo_file,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        disable_notification=disable_notification,
+                        **send_extra,
+                    )
+                except BadRequest as cap_err:
+                    logger.warning(
+                        "Telegram rejected photo caption (%s); retrying visual card with compact caption.",
+                        str(cap_err)[:150],
+                    )
+                    photo_file.seek(0)
+                    kurdish_cat, emoji = resolve_category_display(article.category)
+                    safe_headline = self._formatter._escape_html(self._formatter._format_headline(article))[:220]
+                    compact_caption = (
+                        f"{emoji} <b>{safe_headline}</b>\n"
+                        f"📂 {self._formatter._escape_html(kurdish_cat)}"
+                    )
+                    if article.source_name:
+                        compact_caption += f"\n📡 {self._formatter._escape_html(article.source_name)}"
+                    message = await self._send_with_optional_reply(
+                        self._bot.send_photo,
+                        reply_to_message_id=reply_root_id,
+                        rewind_file=photo_file,
+                        chat_id=self._channel_id,
+                        photo=photo_file,
+                        caption=compact_caption[:900],
+                        parse_mode=ParseMode.HTML,
+                        disable_notification=disable_notification,
+                        **send_extra,
+                    )
             if message:
                 logger.info(
                     "Published branded card: msg_id=%d, reply_to=%s, breaking=%s, silent=%s, category=%s, title='%s'",

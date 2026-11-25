@@ -136,6 +136,7 @@ def resolve_article_button_url(
         candidates.extend([
             getattr(article, "original_url", None),
             getattr(article, "canonical_url", None),
+            getattr(article, "source_url", None),
             getattr(article, "url", None),
         ])
 
