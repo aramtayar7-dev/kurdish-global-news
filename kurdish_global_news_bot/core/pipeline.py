@@ -16,6 +16,11 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 from storage.database import Database
 from storage.models import Article, Event
+from storage.utils import (
+    normalize_event_entities,
+    normalize_event_key,
+    pack_event_metadata,
+)
 from core.importance_ranker import (
     ImportanceRanker,
     RelevanceEvaluation,
@@ -28,7 +33,12 @@ from core.importance_ranker import (
 )
 from core.balancer import QuotaBalancer
 from core.duplicate_detector import DuplicateDetector
-from processing.deduplicator import SemanticDeduplicator
+from processing.deduplicator import (
+    OUTCOME_DUPLICATE,
+    OUTCOME_NEW_STORY,
+    OUTCOME_THREAD_UPDATE,
+    SemanticDeduplicator,
+)
 from processing.extractor import ArticleExtractor
 from processing.validator import ArticleValidator
 from processing.translator import TranslationEngine, TranslationError, is_valid_kurdish_sorani
@@ -42,6 +52,7 @@ from config import (
     PRIMARY_CATEGORY_RATIO, SECONDARY_CATEGORY_RATIO,
     FALLBACK_WINDOW_MINUTES, MAX_ARTICLE_AGE_MINUTES,
     BATCH_PUBLISH_LIMIT, GEMINI_RANK_BATCH_SIZE, MAX_GEMINI_CANDIDATES_PER_CYCLE,
+    DEDUP_HISTORY_HOURS,
     is_primary_category,
 )
 
@@ -100,10 +111,85 @@ class ArticlePipeline:
         self._formatter = ContentFormatter()
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_ARTICLES)
         self._cold_start: Optional[bool] = None
+        self._cycle_published_history: Optional[list[dict]] = None
+        self._cycle_accepted_refs: list[dict] = []
 
     def set_cold_start(self, enabled: bool) -> None:
         """Set whether cold start protection is active."""
         self._cold_start = enabled
+
+    def set_cycle_published_history(self, history: Optional[list[dict]]) -> None:
+        """Cache the 48-72h persistent published history for the active cycle."""
+        self._cycle_published_history = list(history) if history is not None else None
+        self._cycle_accepted_refs = []
+
+    async def _get_published_history(self) -> list[dict]:
+        """Return cached cycle history or load last 72h published history from storage."""
+        if self._cycle_published_history is not None:
+            return self._cycle_published_history
+        return await self._db.get_recent_published_headlines(hours=DEDUP_HISTORY_HOURS)
+
+    def _record_cycle_published_article(self, article: Article) -> None:
+        """Record a newly translated/published article into same-cycle dedup state."""
+        ev_key = normalize_event_key(getattr(article, "event_key", ""))
+        ev_entities = normalize_event_entities(getattr(article, "event_entities", []))
+        ref = {
+            "id": article.id,
+            "original_title": article.original_title or "",
+            "translated_title": article.translated_title or "",
+            "translated_summary": article.translated_summary or "",
+            "original_summary": article.original_summary or "",
+            "category": article.category or "",
+            "published_at": article.published_at or datetime.now(timezone.utc).isoformat(),
+            "telegram_message_id": getattr(article, "telegram_message_id", None),
+            "thread_root_message_id": getattr(article, "thread_root_message_id", None),
+            "is_published": True,
+            "event_key": ev_key,
+            "event_entities": ev_entities,
+            "named_entities": article.named_entities or pack_event_metadata(ev_key, ev_entities),
+        }
+        self._cycle_accepted_refs.append(ref)
+        if self._cycle_published_history is not None:
+            self._cycle_published_history.insert(0, ref)
+
+    async def _reject_duplicate_event(
+        self,
+        article: Article,
+        matched_id: Optional[int],
+        reason: str,
+        score: float = 0.0,
+        matched_title: str = "",
+    ) -> bool:
+        """Mark article as REJECTED_DUPLICATE, log cleanly, and record canonical URL in skipped_urls."""
+        matched_ref = f"#{matched_id}" if matched_id is not None else "#unknown"
+        dedup_reason = reason or "Duplicate event"
+        canonical_target = Article.canonicalize_url(article.canonical_url or article.original_url)
+        await self._db.update_article_status(
+            article.id,
+            ArticleStatus.REJECTED_DUPLICATE,
+            error_message=f"SKIPPED [Duplicate Event]: matches {matched_ref} ({dedup_reason})",
+            importance_score=float(score or article.importance_score or 0.0),
+            priority=article.priority,
+        )
+        await self._db.mark_url_skipped(
+            canonical_target,
+            title=article.original_title,
+            score=float(score or 0.0),
+            reason=f"Duplicate Event {matched_ref}: {dedup_reason}"[:500],
+        )
+        logger.info(
+            "SKIPPED [Duplicate Event]: %s — matches %s (%s)",
+            article.original_title[:100],
+            matched_ref,
+            dedup_reason,
+        )
+        logger.info(
+            "Duplicate story blocked: matched '%s' (%s)",
+            matched_title or matched_ref,
+            dedup_reason,
+        )
+        self._metrics.increment("articles_semantic_duplicate")
+        return False
 
     async def cleanup(self) -> None:
         """Clean up pipeline resources (ranker, semantic deduplicator, and translator sessions)."""
@@ -221,8 +307,17 @@ class ArticlePipeline:
             self._metrics.increment("articles_duplicate")
             return False
 
+        recent_history = await self._get_published_history()
+        combined_extra = list(extra_recent or []) + list(self._cycle_accepted_refs)
+        dedup_res = await self._semantic_dedup.check_duplicate(
+            article,
+            extra_recent=combined_extra,
+            recent_history=recent_history,
+            allow_pending_cooldown=True,
+        )
+
         same_event, event_reason = await self._dedup.is_same_event_already_published(article)
-        if same_event:
+        if same_event and dedup_res.classification != OUTCOME_THREAD_UPDATE:
             is_update = await self._dedup.is_meaningful_update(article)
             if not is_update:
                 await self._db.update_article_status(
@@ -237,31 +332,24 @@ class ArticlePipeline:
             else:
                 logger.info("Article %s is a meaningful update to existing event.", article_id)
 
-        dedup_res = await self._semantic_dedup.check_duplicate(article, extra_recent=extra_recent)
         if dedup_res.is_duplicate:
-            matched_ref = f"#{dedup_res.matched_id}" if dedup_res.matched_id is not None else "#unknown"
-            dedup_reason = dedup_res.reason or "Duplicate event"
-            await self._db.update_article_status(
-                article_id,
-                ArticleStatus.REJECTED_DUPLICATE,
-                error_message=f"SKIPPED [Duplicate Event]: matches {matched_ref} ({dedup_reason})",
-                importance_score=score,
-                priority=priority,
-            )
-            await self._db.mark_url_skipped(
-                article.canonical_url or article.original_url,
-                title=article.original_title,
+            return await self._reject_duplicate_event(
+                article,
+                matched_id=dedup_res.matched_id,
+                reason=dedup_res.reason,
                 score=float(score),
-                reason=f"Duplicate Event {matched_ref}: {dedup_reason}",
+                matched_title=dedup_res.matched_title,
             )
+
+        if dedup_res.classification == OUTCOME_THREAD_UPDATE and dedup_res.thread_root_message_id is not None:
+            article.thread_root_message_id = int(dedup_res.thread_root_message_id)
+            article.is_thread_update = True
             logger.info(
-                "SKIPPED [Duplicate Event]: %s — matches %s (%s)",
-                article.original_title[:100],
-                matched_ref,
-                dedup_reason,
+                "[THREAD_UPDATE] Candidate %s earmarked as reply to root msg_id=%s (%s)",
+                article_id,
+                article.thread_root_message_id,
+                dedup_res.delta_reason or dedup_res.reason,
             )
-            self._metrics.increment("articles_semantic_duplicate")
-            return False
 
         return True
 
@@ -269,8 +357,9 @@ class ArticlePipeline:
         self,
         article: Article,
         relevance: RelevanceEvaluation,
+        extra_recent: Optional[list[dict]] = None,
     ) -> bool:
-        """Apply Gemini relevance threshold, strict breaking gate, and blocked-topic check."""
+        """Apply Gemini relevance threshold, event_key metadata, strict breaking gate, and blocked-topic check."""
         article_id = article.id
         priority = article.priority
 
@@ -303,6 +392,18 @@ class ArticlePipeline:
             article.category = relevance.category
         article.is_breaking = bool(relevance.is_breaking and article.importance_score >= 9.0)
 
+        # Store Gemini's lightweight standardized English event fingerprint & update hint (0 extra API calls)
+        ev_key = normalize_event_key(getattr(relevance, "event_key", ""))
+        ev_entities = normalize_event_entities(getattr(relevance, "event_entities", []))
+        if ev_key:
+            article.event_key = ev_key
+        if ev_entities:
+            article.event_entities = ev_entities
+        if getattr(relevance, "update_type", ""):
+            article.update_type = relevance.update_type  # type: ignore[attr-defined]
+        if article.event_key or article.event_entities:
+            article.named_entities = pack_event_metadata(article.event_key, article.event_entities)
+
         if article.is_breaking and not relevance.used_fallback:
             priority = Priority.CRITICAL
             article.priority = Priority.CRITICAL
@@ -318,6 +419,41 @@ class ArticlePipeline:
         post_blocked = check_blocked_topic(article)
         if post_blocked:
             return await self._reject_blocked_topic(article, post_blocked)
+
+        # Zero-extra-API three-way check (NEW_STORY | THREAD_UPDATE | DUPLICATE) using
+        # Gemini's English event_key/event_entities & final score/is_breaking cooldown rules
+        if (
+            article.event_key
+            or article.event_entities
+            or article.is_thread_update
+            or article.thread_root_message_id is not None
+        ):
+            recent_history = await self._get_published_history()
+            combined_extra = list(extra_recent or []) + list(self._cycle_accepted_refs)
+            ev_dup = await self._semantic_dedup.check_event_match(
+                article, extra_recent=combined_extra, recent_history=recent_history
+            )
+            if ev_dup.is_duplicate:
+                article.thread_root_message_id = None
+                article.is_thread_update = False
+                return await self._reject_duplicate_event(
+                    article,
+                    matched_id=ev_dup.matched_id,
+                    reason=ev_dup.reason,
+                    score=float(article.importance_score),
+                    matched_title=ev_dup.matched_title,
+                )
+            if ev_dup.classification == OUTCOME_THREAD_UPDATE and ev_dup.thread_root_message_id is not None:
+                article.thread_root_message_id = int(ev_dup.thread_root_message_id)
+                article.is_thread_update = True
+                logger.info(
+                    "[THREAD_UPDATE] Post-scoring confirmed reply to root msg_id=%s (%s)",
+                    article.thread_root_message_id,
+                    ev_dup.delta_reason or ev_dup.reason,
+                )
+            elif ev_dup.stage == "thread_window_expired":
+                article.thread_root_message_id = None
+                article.is_thread_update = False
 
         return True
 
@@ -424,6 +560,19 @@ class ArticlePipeline:
             logger.info("[TRANSLATED] Article %s translated: '%s' -> '%s'",
                         article_id, article.original_title[:60], article.translated_title[:60])
 
+            # Merge optional event_key / event_entities / update_type emitted by Gemini translation JSON
+            tr_meta = getattr(self._translator, "last_event_metadata", None) or {}
+            tr_key = normalize_event_key(tr_meta.get("event_key", ""))
+            tr_ents = normalize_event_entities(tr_meta.get("event_entities"))
+            if tr_key and not article.event_key:
+                article.event_key = tr_key
+            if tr_ents and not article.event_entities:
+                article.event_entities = tr_ents
+            if tr_meta.get("update_type") and not getattr(article, "update_type", ""):
+                article.update_type = str(tr_meta["update_type"])  # type: ignore[attr-defined]
+            if article.event_key or article.event_entities:
+                article.named_entities = pack_event_metadata(article.event_key, article.event_entities)
+
         except TranslationError as e:
             err_str = str(e)
             if _is_transient_quota_or_sorani_error(err_str):
@@ -449,6 +598,30 @@ class ArticlePipeline:
             logger.warning("Translation aborted/deferred for article %s: %s", article_id, err_str[:200])
             return False
 
+        # ── Step 5c: Post-Translation Sorani Kurdish Deduplication & Threading Safety Gate ──
+        recent_history = await self._get_published_history()
+        post_dup = await self._semantic_dedup.check_post_translation_duplicate(
+            article,
+            extra_recent=self._cycle_accepted_refs,
+            recent_history=recent_history,
+        )
+        if post_dup.is_duplicate:
+            article.thread_root_message_id = None
+            article.is_thread_update = False
+            return await self._reject_duplicate_event(
+                article,
+                matched_id=post_dup.matched_id,
+                reason=post_dup.reason,
+                score=float(article.importance_score),
+                matched_title=post_dup.matched_title,
+            )
+        if post_dup.classification == OUTCOME_THREAD_UPDATE and post_dup.thread_root_message_id is not None:
+            article.thread_root_message_id = int(post_dup.thread_root_message_id)
+            article.is_thread_update = True
+        elif post_dup.classification == OUTCOME_NEW_STORY:
+            article.thread_root_message_id = None
+            article.is_thread_update = False
+
         # ── Step 6: Update article with all computed fields ──
         update_fields: dict[str, object] = {
             "translated_title": article.translated_title,
@@ -458,6 +631,10 @@ class ArticlePipeline:
             "image_url": article.image_url,
             "importance_score": article.importance_score,
             "priority": priority,
+            "named_entities": article.named_entities,
+            "event_key": article.event_key,
+            "event_entities": article.event_entities,
+            "thread_root_message_id": article.thread_root_message_id,
         }
         if getattr(article, "video_url", None):
             update_fields["video_url"] = article.video_url
@@ -599,11 +776,18 @@ class ArticlePipeline:
                 message_id = await self._publisher.publish_article(article)
 
             if message_id is not None:
-                # Success — Telegram confirmed delivery
+                # Success — Telegram confirmed delivery; record message_id & optional thread root anchor
+                article.telegram_message_id = message_id
+                article.published_at = datetime.now(timezone.utc).isoformat()
                 await self._db.update_article_status(
-                    article_id, ArticleStatus.PUBLISHED,
+                    article_id,
+                    ArticleStatus.PUBLISHED,
                     telegram_message_id=message_id,
+                    thread_root_message_id=article.thread_root_message_id,
                 )
+
+                # Track published story & message_id in current cycle history for zero-duplicate & live threading
+                self._record_cycle_published_article(article)
 
                 # Track event
                 if article.event_fingerprint:
@@ -616,9 +800,13 @@ class ArticlePipeline:
                 self._health.record_success("publishing")
                 self._metrics.increment("articles_published")
                 logger.info(
-                    "[PUBLISHED] Article %d published to Telegram: msg_id=%d, title='%s' (score=%.2f, priority=%s)",
-                    article_id, message_id, article.original_title[:60],
-                    article.importance_score, article.priority,
+                    "[PUBLISHED] Article %d published to Telegram: msg_id=%d, reply_to=%s, title='%s' (score=%.2f, priority=%s)",
+                    article_id,
+                    message_id,
+                    article.thread_root_message_id,
+                    article.original_title[:60],
+                    article.importance_score,
+                    article.priority,
                 )
                 return True
             else:
@@ -654,6 +842,7 @@ class ArticlePipeline:
         if not articles:
             return results
 
+        self._cycle_accepted_refs = []
         effective_limit = BATCH_PUBLISH_LIMIT if max_publish is None else max(0, max_publish)
 
         # Evaluate highest-priority candidates first so duplicate outlets lose cleanly
@@ -676,6 +865,9 @@ class ArticlePipeline:
                         "translated_title": art.translated_title or "",
                         "category": art.category or "",
                         "published_at": art.published_at or art.discovered_at or "",
+                        "telegram_message_id": getattr(art, "telegram_message_id", None),
+                        "thread_root_message_id": getattr(art, "thread_root_message_id", None),
+                        "is_published": False,
                     })
                 else:
                     results["rejected"] += 1
@@ -708,14 +900,29 @@ class ArticlePipeline:
 
         # Pass 2: Batched Gemini Importance Evaluation (10-15 articles per single JSON call)
         eligible: list[Article] = []
+        accepted_event_refs: list[dict] = []
         try:
             evaluations = await self._ranker.evaluate_batch_relevance(
                 gemini_candidates, batch_size=GEMINI_RANK_BATCH_SIZE
             )
             for art, relevance in zip(gemini_candidates, evaluations):
                 try:
-                    if await self._apply_relevance_evaluation(art, relevance):
+                    if await self._apply_relevance_evaluation(art, relevance, extra_recent=accepted_event_refs):
                         eligible.append(art)
+                        accepted_event_refs.append({
+                            "id": art.id,
+                            "original_title": art.original_title or "",
+                            "translated_title": art.translated_title or "",
+                            "translated_summary": art.translated_summary or "",
+                            "original_summary": art.original_summary or "",
+                            "category": art.category or "",
+                            "event_key": art.event_key or "",
+                            "event_entities": list(art.event_entities or []),
+                            "named_entities": art.named_entities or "",
+                            "telegram_message_id": getattr(art, "telegram_message_id", None),
+                            "thread_root_message_id": getattr(art, "thread_root_message_id", None),
+                            "is_published": False,
+                        })
                     else:
                         results["rejected"] += 1
                 except Exception as exc:

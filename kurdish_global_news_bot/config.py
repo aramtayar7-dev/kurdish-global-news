@@ -130,6 +130,15 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
 MAX_ARTICLE_AGE_HOURS: float = float(os.getenv("MAX_ARTICLE_AGE_HOURS", "3.0"))
 MAX_ARTICLE_AGE_MINUTES: int = _int(os.getenv("MAX_ARTICLE_AGE_MINUTES"), 30)
 DEDUP_WINDOW_HOURS: int = _int(os.getenv("DEDUP_WINDOW_HOURS"), 12)
+DEDUP_HISTORY_HOURS: int = _int(os.getenv("DEDUP_HISTORY_HOURS"), 72)
+
+# ═══════════════════════════════════════════════════
+# Live Event Threading (Reply-based Material Updates)
+# ═══════════════════════════════════════════════════
+ENABLE_LIVE_EVENT_THREADING: bool = _bool(os.getenv("ENABLE_LIVE_EVENT_THREADING"), True)
+EVENT_THREAD_WINDOW_HOURS: int = _int(os.getenv("EVENT_THREAD_WINDOW_HOURS"), 24)
+THREAD_UPDATE_COOLDOWN_MINUTES: int = _int(os.getenv("THREAD_UPDATE_COOLDOWN_MINUTES"), 20)
+MAX_UPDATES_PER_THREAD: int = _int(os.getenv("MAX_UPDATES_PER_THREAD"), 3)
 
 # ═══════════════════════════════════════════════════
 # News Prioritization & Balancer (5-of-8 Bashur Quota + 60/40 Category Ratio)

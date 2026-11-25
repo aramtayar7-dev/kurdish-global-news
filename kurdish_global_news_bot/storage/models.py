@@ -39,12 +39,16 @@ class Article:
     retry_count: int = 0
     error_message: str = ""
     telegram_message_id: Optional[int] = None
+    thread_root_message_id: Optional[int] = None
     image_url: str = ""
     video_url: Optional[str] = None
     country: str = ""
     region: str = ""
     named_entities: str = ""  # JSON string
+    event_key: str = ""
+    event_entities: list[str] = field(default_factory=list)
     is_breaking: bool = False
+    is_thread_update: bool = False
 
     def compute_content_hash(self) -> str:
         """Compute a hash of the article's core content for deduplication."""
@@ -85,23 +89,30 @@ class Article:
             parsed = urlparse(url.strip())
             # Remove fragments
             parsed = parsed._replace(fragment="")
-            # Remove tracking parameters
+            # Remove tracking parameters (exact match or known prefixes like utm_* / mc_*)
             tracking_params = {
-                "utm_source", "utm_medium", "utm_campaign", "utm_content",
-                "utm_term", "ref", "fbclid", "gclid", "source", "mkt_tok",
-                "mc_cid", "mc_eid", "s_cid", "soc_trk",
+                "ref", "ref_src", "ref_url", "fbclid", "gclid", "yclid", "msclkid",
+                "dclid", "twclid", "igshid", "si", "source", "mkt_tok",
+                "s_cid", "soc_trk", "feature", "share", "sprefix", "amp",
             }
+            tracking_prefixes = ("utm_", "mc_")
             if parsed.query:
                 params = parse_qs(parsed.query, keep_blank_values=True)
-                filtered = {k: v for k, v in params.items() if k.lower() not in tracking_params}
-                new_query = urlencode(filtered, doseq=True)
+                filtered = {
+                    k: v
+                    for k, v in params.items()
+                    if k.lower() not in tracking_params
+                    and not k.lower().startswith(tracking_prefixes)
+                }
+                new_query = urlencode(sorted(filtered.items()), doseq=True)
                 parsed = parsed._replace(query=new_query)
             # Normalize scheme
             scheme = parsed.scheme.lower() or "https"
-            # Normalize hostname
+            # Normalize hostname (strip trailing dot, www., and mobile prefixes like m./mobile.)
             netloc = parsed.netloc.lower().rstrip(".")
-            if netloc.startswith("www."):
-                netloc = netloc[4:]
+            for sub_prefix in ("www.", "mobile.", "m."):
+                if netloc.startswith(sub_prefix) and len(netloc) > len(sub_prefix) + 3:
+                    netloc = netloc[len(sub_prefix):]
             # Normalize path
             path = parsed.path.rstrip("/") or "/"
             return urlunparse((scheme, netloc, path, parsed.params, parsed.query, ""))

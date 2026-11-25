@@ -64,7 +64,8 @@ GEMINI_TRANSLATION_SYSTEM_PROMPT = (
     "6. Proper Sorani Orthography: Always use proper Sorani characters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی) rather than Arabic ي or ك.\n"
     "7. No Agency Datelines: NEVER copy or prepend news-agency datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -', 'Qamishli, Syria (North Press) –') at the start of the summary. Begin directly with the first clean news sentence.\n"
     "8. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
-    '{"title": "punchy Sorani headline", "summary": "3 to 4 complete Sorani sentences"}'
+    '{"title": "punchy Sorani headline", "summary": "3 to 4 complete Sorani sentences", '
+    '"event_key": "short_english_snake_case_event_id", "event_entities": ["entity1", "entity2", "topic"]}'
 )
 
 GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT = (
@@ -78,7 +79,8 @@ GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT = (
     "4. Complete Sentences & Orthography: End every sentence with proper punctuation (. or ؟ or !) and proper Sorani letters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی).\n"
     "5. No Agency Datelines: Strip any raw news-agency or city datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -') from the start of the summary so it starts cleanly with the first sentence.\n"
     "6. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
-    '{"title": "clean journalistic Sorani headline", "summary": "3 to 4 complete neutral Sorani sentences"}'
+    '{"title": "clean journalistic Sorani headline", "summary": "3 to 4 complete neutral Sorani sentences", '
+    '"event_key": "short_english_snake_case_event_id", "event_entities": ["entity1", "entity2", "topic"]}'
 )
 
 
@@ -257,6 +259,7 @@ class GeminiTranslationProvider(TranslationProvider):
             base_backoff=base_backoff,
             cooldown_store=cooldown_store,
         )
+        self.last_event_metadata: dict[str, object] = {"event_key": "", "event_entities": []}
 
     @property
     def name(self) -> str:
@@ -338,6 +341,13 @@ class GeminiTranslationProvider(TranslationProvider):
         if summary and summary.strip():
             if not final_summary or not is_valid_kurdish_sorani(final_summary):
                 raise TranslationError("Gemini summary failed strict Sorani Kurdish verification.")
+
+        from storage.utils import normalize_event_entities, normalize_event_key
+        self.last_event_metadata = {
+            "event_key": normalize_event_key(data.get("event_key", "")),
+            "event_entities": normalize_event_entities(data.get("event_entities")),
+            "update_type": str(data.get("update_type", "")).strip().lower(),
+        }
 
         return final_title, trim_at_sentence_boundary(final_summary, max_len=650)
 
@@ -525,6 +535,7 @@ class TranslationEngine:
             base_backoff=base_backoff,
             cooldown_store=cooldown_store,
         )
+        self.last_event_metadata: dict[str, object] = {"event_key": "", "event_entities": []}
         self._google_fallback = GoogleTranslateProvider(
             delay=self._delay,
             semaphore=self._semaphore,
@@ -534,6 +545,7 @@ class TranslationEngine:
         if self._gemini_provider.has_keys:
             self._providers.append(self._gemini_provider)
         self._providers.append(self._google_fallback)
+        self.last_event_metadata: dict[str, object] = {"event_key": "", "event_entities": []}
 
         logger.info(
             "Translation engine initialized (Gemini-first, no Groq). Active providers: %s",
@@ -591,6 +603,8 @@ class TranslationEngine:
         """
         native_kurdish = is_valid_kurdish_sorani(f"{title} {summary}")
         has_source_summary = bool(summary and summary.strip())
+        self.last_event_metadata = {"event_key": "", "event_entities": []}
+        self._gemini_provider.last_event_metadata = {"event_key": "", "event_entities": []}
 
         # Tier 1: Single high-quality Gemini pass (translates+summarizes OR rewrites native Kurdish)
         if self._gemini_provider.has_keys:
@@ -599,6 +613,10 @@ class TranslationEngine:
                     title=title,
                     summary=summary,
                     is_kurdish=native_kurdish,
+                )
+                self.last_event_metadata = dict(
+                    getattr(self._gemini_provider, "last_event_metadata", None)
+                    or {"event_key": "", "event_entities": []}
                 )
                 if not is_valid_kurdish_sorani(final_title) or (
                     has_source_summary and (not final_summary or not is_valid_kurdish_sorani(final_summary))

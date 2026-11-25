@@ -42,6 +42,15 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             published_at TEXT NOT NULL
         );
     """),
+    (6, "Add event_key column for zero-cost cross-language deduplication", """
+        ALTER TABLE articles ADD COLUMN event_key TEXT DEFAULT '';
+    """),
+    (7, "Add event_entities column for zero-cost cross-language deduplication", """
+        ALTER TABLE articles ADD COLUMN event_entities TEXT DEFAULT '';
+    """),
+    (8, "Add thread_root_message_id column for Live Event Threading", """
+        ALTER TABLE articles ADD COLUMN thread_root_message_id INTEGER DEFAULT NULL;
+    """),
 ]
 
 

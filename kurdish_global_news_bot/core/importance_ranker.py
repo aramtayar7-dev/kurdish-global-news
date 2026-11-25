@@ -9,7 +9,7 @@ and provides rule-based fallback if the Gemini API is unavailable.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 import re
@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from storage.models import Article
+from storage.utils import normalize_event_entities, normalize_event_key
 from processing.extractor import ArticleExtractor
 from processing.gemini_client import GeminiClient, GeminiAPIError, GeminiQuotaExhaustedError
 from processing.translator import strip_news_dateline
@@ -277,8 +278,13 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "- 1 to 6 (STRICTLY REJECT): Domestic crime, FBI arrests, individual extremism/propaganda trials, local police reports, personal prison sentences (EVEN if ISIS/terrorism is mentioned in a foreign domestic court); "
     "ALL sports/tournaments/athletes (football/soccer, World Cup, Olympics, matches, players, clubs, scores); "
     "ALL entertainment, celebrities, culture, travel/tourism fluff, weather trivia/routine forecasts, consumer phones/gadgets/apps, routine human-interest fluff, traffic/municipal outage notices, and advertisements.\n\n"
+    "Cross-Language Event Identification & Live Threading:\n"
+    "- Include concise standardized ENGLISH `event_key` (lowercase snake_case identifying the SPECIFIC incident, e.g. \"erbil_airport_drone_attack\", \"baghdad_krg_salary_agreement\", \"trump_iran_war_funding\" — never just a country/city), `event_entities` (3 to 5 lowercase English entity/location/topic tokens), and optional `update_type` (`\"new_story\"`, `\"casualties_update\"`, `\"official_response\"`, `\"retaliation\"`, `\"ceasefire\"`, `\"investigation_result\"`, or `\"repeat_coverage\"`).\n\n"
     "Respond ONLY with valid JSON (no markdown fences, no commentary):\n"
-    '{"score": <integer 1-10>, "is_breaking": <true or false>, "category": "<one of the 7 keys>", "reason": "<short one-sentence justification>"}'
+    '{"score": <integer 1-10>, "is_breaking": <true or false>, "category": "<one of the 7 keys>", '
+    '"event_key": "<english_snake_case_event_id>", "event_entities": ["entity1", "entity2", "topic"], '
+    '"update_type": "<new_story|casualties_update|official_response|retaliation|ceasefire|repeat_coverage>", '
+    '"reason": "<short one-sentence justification>"}'
 )
 
 BATCH_RELEVANCE_SYSTEM_PROMPT = (
@@ -288,7 +294,9 @@ BATCH_RELEVANCE_SYSTEM_PROMPT = (
     + "- Evaluate EVERY article independently using the exact rules above.\n"
     + "- Respond ONLY with valid JSON containing an `items` array with one object per input `idx`:\n"
     + '{"items": [{"idx": <integer>, "score": <integer 1-10>, "is_breaking": <true or false>, '
-    + '"category": "<one of the 7 keys>", "reason": "<short one-sentence justification>"}]}'
+    + '"category": "<one of the 7 keys>", "event_key": "<english_snake_case_event_id>", '
+    + '"event_entities": ["entity1", "entity2", "topic"], "update_type": "<optional_update_type>", '
+    + '"reason": "<short one-sentence justification>"}]}'
 )
 
 
@@ -301,6 +309,9 @@ class RelevanceEvaluation:
     passed: bool
     category: str = "politics_world"
     used_fallback: bool = False
+    event_key: str = ""
+    event_entities: list[str] = field(default_factory=list)
+    update_type: str = ""
 
 
 def clean_article_event_text(article: Article) -> str:
@@ -723,6 +734,9 @@ class ImportanceRanker:
         # Strict breaking gate: only True if Gemini returned True AND score >= 9
         is_breaking = bool(raw_is_breaking and score >= 9)
         reason = str(data.get("reason", "")).strip() or "Classified by Gemini relevance gatekeeper"
+        ev_key = normalize_event_key(data.get("event_key", ""))
+        ev_entities = normalize_event_entities(data.get("event_entities"))
+        update_type = str(data.get("update_type", "")).strip().lower()
 
         return RelevanceEvaluation(
             score=score,
@@ -731,6 +745,9 @@ class ImportanceRanker:
             reason=reason,
             passed=(score >= threshold),
             used_fallback=False,
+            event_key=ev_key,
+            event_entities=ev_entities,
+            update_type=update_type,
         )
 
     async def evaluate_global_relevance(

@@ -41,6 +41,7 @@ from config import (
     ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, ENABLE_TELEGRAM, CHANNEL_HANDLE,
     MAX_CONCURRENT_SOURCES, ArticleStatus, BACKUP_INTERVAL_HOURS,
     MAX_ARTICLE_AGE_MINUTES, BATCH_PUBLISH_LIMIT, MAX_GEMINI_CANDIDATES_PER_CYCLE,
+    DEDUP_HISTORY_HOURS,
 )
 
 logger = logging.getLogger("core.engine")
@@ -427,83 +428,106 @@ class NewsEngine:
     async def _discovery_cycle(self) -> None:
         """
         Run one discovery cycle:
-        1. Fetch articles from all sources concurrently
-        2. Extract and deduplicate
-        3. Feed into the pipeline for IMMEDIATE processing and publishing
+        1. Load last 48-72h published history from persistent DB (Supabase / SQLite)
+        2. Fetch articles from all sources concurrently
+        3. Extract and deduplicate across URLs, events, and post-translation Sorani
+        4. Feed into the pipeline for IMMEDIATE processing and publishing
         """
         with Timer(self._metrics, "discovery_cycle_time"):
-            # Fetch from all sources concurrently
-            all_raw_articles: list[RawArticle] = []
-            fetch_tasks = [
-                self._fetch_from_source(source) for source in self._sources if source.enabled
-            ]
-            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            try:
+                recent_history = await self._db.get_recent_published_headlines(hours=DEDUP_HISTORY_HOURS)
+                if self._pipeline is not None:
+                    self._pipeline.set_cycle_published_history(recent_history)
+                logger.info(
+                    "Loaded %d published story records from the last %dh for cross-run deduplication.",
+                    len(recent_history),
+                    DEDUP_HISTORY_HOURS,
+                )
+            except Exception as hist_exc:
+                logger.warning(
+                    "Failed to preload %dh published history: %s",
+                    DEDUP_HISTORY_HOURS,
+                    str(hist_exc)[:150],
+                )
+                if self._pipeline is not None:
+                    self._pipeline.set_cycle_published_history(None)
 
-            for i, result in enumerate(results):
-                source_name = self._sources[i].name if i < len(self._sources) else "unknown"
-                if isinstance(result, Exception):
-                    logger.error("Source '%s' error: %s", source_name, str(result)[:200])
-                    self._health.record_failure("discovery", f"{source_name}: {result}")
-                    continue
-                if isinstance(result, list):
-                    all_raw_articles.extend(result)
-                    self._health.record_success("discovery")
+            try:
+                # Fetch from all sources concurrently
+                all_raw_articles: list[RawArticle] = []
+                fetch_tasks = [
+                    self._fetch_from_source(source) for source in self._sources if source.enabled
+                ]
+                results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
 
-            self._metrics.increment("total_raw_articles", len(all_raw_articles))
-            logger.info("Discovered %d raw articles from %d sources.",
-                         len(all_raw_articles), len(self._sources))
+                for i, result in enumerate(results):
+                    source_name = self._sources[i].name if i < len(self._sources) else "unknown"
+                    if isinstance(result, Exception):
+                        logger.error("Source '%s' error: %s", source_name, str(result)[:200])
+                        self._health.record_failure("discovery", f"{source_name}: {result}")
+                        continue
+                    if isinstance(result, list):
+                        all_raw_articles.extend(result)
+                        self._health.record_success("discovery")
 
-            published_this_cycle = 0
-            if all_raw_articles:
-                # Extract and prepare articles
-                new_articles = await self._extract_and_insert(all_raw_articles)
-                logger.info("%d new articles to process.", len(new_articles))
+                self._metrics.increment("total_raw_articles", len(all_raw_articles))
+                logger.info("Discovered %d raw articles from %d sources.",
+                             len(all_raw_articles), len(self._sources))
 
-                if new_articles:
-                    # Pre-filter obvious off-topic items & cap fresh relevant candidates BEFORE Gemini
-                    capped_articles, locally_rejected = select_top_candidates_for_gemini(
-                        new_articles, max_candidates=MAX_GEMINI_CANDIDATES_PER_CYCLE
-                    )
-                    for rej_art, rej_reason in locally_rejected:
-                        try:
-                            await self._db.update_article_status(
-                                rej_art.id,
-                                ArticleStatus.SKIPPED,
-                                error_message=f"SKIPPED [Pre-Filter]: {rej_reason}",
-                            )
-                            if rej_reason.startswith(("Blocked", "Pre-filtered")):
-                                await self._db.mark_url_skipped(
-                                    rej_art.canonical_url or rej_art.original_url,
-                                    title=rej_art.original_title,
-                                    score=2.0,
-                                    reason=rej_reason,
+                published_this_cycle = 0
+                if all_raw_articles:
+                    # Extract and prepare articles
+                    new_articles = await self._extract_and_insert(all_raw_articles)
+                    logger.info("%d new articles to process.", len(new_articles))
+
+                    if new_articles:
+                        # Pre-filter obvious off-topic items & cap fresh relevant candidates BEFORE Gemini
+                        capped_articles, locally_rejected = select_top_candidates_for_gemini(
+                            new_articles, max_candidates=MAX_GEMINI_CANDIDATES_PER_CYCLE
+                        )
+                        for rej_art, rej_reason in locally_rejected:
+                            try:
+                                await self._db.update_article_status(
+                                    rej_art.id,
+                                    ArticleStatus.SKIPPED,
+                                    error_message=f"SKIPPED [Pre-Filter]: {rej_reason}",
                                 )
-                        except Exception:
-                            pass
+                                if rej_reason.startswith(("Blocked", "Pre-filtered")):
+                                    await self._db.mark_url_skipped(
+                                        rej_art.canonical_url or rej_art.original_url,
+                                        title=rej_art.original_title,
+                                        score=2.0,
+                                        reason=rej_reason,
+                                    )
+                            except Exception:
+                                pass
 
-                    if len(locally_rejected) > 0:
-                        logger.info(
-                            "Local pre-filter/cap: %d -> %d candidates forwarded to pipeline (%d filtered locally with 0 Gemini calls).",
-                            len(new_articles),
-                            len(capped_articles),
-                            len(locally_rejected),
-                        )
+                        if len(locally_rejected) > 0:
+                            logger.info(
+                                "Local pre-filter/cap: %d -> %d candidates forwarded to pipeline (%d filtered locally with 0 Gemini calls).",
+                                len(new_articles),
+                                len(capped_articles),
+                                len(locally_rejected),
+                            )
 
-                    if capped_articles:
-                        # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
-                        pipeline_results = await self._pipeline.process_batch(
-                            capped_articles, max_publish=BATCH_PUBLISH_LIMIT
-                        )
-                        published_this_cycle = pipeline_results.get("published", 0)
-                        logger.info("Pipeline results: %s", pipeline_results)
+                        if capped_articles:
+                            # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
+                            pipeline_results = await self._pipeline.process_batch(
+                                capped_articles, max_publish=BATCH_PUBLISH_LIMIT
+                            )
+                            published_this_cycle = pipeline_results.get("published", 0)
+                            logger.info("Pipeline results: %s", pipeline_results)
 
-            # Check and publish held articles within remaining cycle capacity
-            remaining_capacity = max(0, BATCH_PUBLISH_LIMIT - published_this_cycle)
-            if remaining_capacity > 0:
-                await self._publish_held_articles(max_additional=remaining_capacity)
+                # Check and publish held articles within remaining cycle capacity
+                remaining_capacity = max(0, BATCH_PUBLISH_LIMIT - published_this_cycle)
+                if remaining_capacity > 0:
+                    await self._publish_held_articles(max_additional=remaining_capacity)
 
-            # Cold start protection completed after first discovery pass
-            self._pipeline.set_cold_start(False)
+                # Cold start protection completed after first discovery pass
+                self._pipeline.set_cold_start(False)
+            finally:
+                if self._pipeline is not None:
+                    self._pipeline.set_cycle_published_history(None)
 
     async def _publish_held_articles(self, max_additional: int = BATCH_PUBLISH_LIMIT) -> None:
         """Evaluate held READY_TO_PUBLISH articles against 5-of-8 balancer and publish if eligible."""

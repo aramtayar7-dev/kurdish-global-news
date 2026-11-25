@@ -13,19 +13,24 @@ and sources) without PostgreSQL TCP/5432 or IPv6 dependencies.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
 
-from config import ArticleStatus, SUPABASE_KEY, SUPABASE_URL
+from config import ArticleStatus, DEDUP_HISTORY_HOURS, SUPABASE_KEY, SUPABASE_URL
 from storage.models import Article, Event, Source
 from storage.utils import (
     compute_url_hash as _compute_url_hash,
     filter_recent_headlines,
+    normalize_event_entities,
+    normalize_event_key,
+    pack_event_metadata,
     parse_utc_timestamp,
     prioritize_digest_articles,
+    unpack_event_metadata,
 )
 
 logger = logging.getLogger("storage.supabase_db")
@@ -61,6 +66,10 @@ class SupabaseDatabase:
         self._max_retries = max(1, max_retries)
         self._base_backoff = max(0.0, base_backoff)
         self._lock = asyncio.Lock()
+        # Tracks whether remote Supabase `articles` has optional columns
+        self._supports_event_columns: Optional[bool] = None
+        self._supports_thread_columns: Optional[bool] = None
+        self._warned_missing_thread_cols: bool = False
 
     def _build_default_headers(self) -> dict[str, str]:
         return {
@@ -170,8 +179,16 @@ class SupabaseDatabase:
 
     async def insert_article(self, article: Article) -> Optional[int]:
         """Insert a new article. Returns the assigned ID or None if canonical_url already exists."""
+        canonical = Article.canonicalize_url(article.canonical_url or article.original_url)
+        if canonical:
+            article.canonical_url = canonical
         url_hash = self.compute_url_hash(article.canonical_url or article.original_url)
-        payload = {
+
+        ev_key = normalize_event_key(getattr(article, "event_key", ""))
+        ev_entities_list = normalize_event_entities(getattr(article, "event_entities", []))
+        named_entities_val = article.named_entities or pack_event_metadata(ev_key, ev_entities_list)
+
+        payload: dict[str, Any] = {
             "canonical_url": article.canonical_url,
             "url_hash": url_hash,
             "original_url": article.original_url,
@@ -193,28 +210,27 @@ class SupabaseDatabase:
             "event_fingerprint": article.event_fingerprint,
             "retry_count": int(article.retry_count or 0),
             "error_message": article.error_message,
-            "telegram_message_id": article.telegram_message_id,
             "image_url": article.image_url,
             "country": article.country,
             "region": article.region,
-            "named_entities": article.named_entities,
+            "named_entities": named_entities_val,
             "is_breaking": bool(getattr(article, "is_breaking", False)),
         }
+        if self._supports_thread_columns is not False:
+            payload["telegram_message_id"] = article.telegram_message_id
+            if getattr(article, "thread_root_message_id", None) is not None:
+                payload["thread_root_message_id"] = int(article.thread_root_message_id)
         if getattr(article, "video_url", None):
             payload["video_url"] = article.video_url
-        try:
-            resp = await self._request(
-                "POST",
-                "articles",
-                params={"on_conflict": "canonical_url"},
-                json_body=payload,
-                extra_headers={"Prefer": "resolution=ignore-duplicates,return=representation"},
-                allow_conflict=True,
-            )
-        except SupabaseAPIError as exc:
-            if "video_url" in payload and "video_url" in str(exc):
-                logger.warning("Supabase schema missing video_url column; retrying insert without video_url.")
-                payload.pop("video_url", None)
+        if self._supports_event_columns is not False:
+            if ev_key:
+                payload["event_key"] = ev_key
+            if ev_entities_list:
+                payload["event_entities"] = json.dumps(ev_entities_list, ensure_ascii=True)
+
+        resp = None
+        for _ in range(4):
+            try:
                 resp = await self._request(
                     "POST",
                     "articles",
@@ -223,8 +239,43 @@ class SupabaseDatabase:
                     extra_headers={"Prefer": "resolution=ignore-duplicates,return=representation"},
                     allow_conflict=True,
                 )
-            else:
-                raise
+                break
+            except SupabaseAPIError as exc:
+                err_txt = str(exc)
+                stripped = False
+                if "video_url" in payload and "video_url" in err_txt:
+                    logger.warning("Supabase schema missing video_url column; retrying insert without video_url.")
+                    payload.pop("video_url", None)
+                    stripped = True
+                if ("thread_root_message_id" in payload or "telegram_message_id" in payload) and (
+                    "thread_root_message_id" in err_txt
+                    or "telegram_message_id" in err_txt
+                    or (
+                        ("HTTP 400" in err_txt or "PGRST" in err_txt)
+                        and "event_key" not in err_txt
+                        and "event_entities" not in err_txt
+                    )
+                ):
+                    self._supports_thread_columns = False
+                    if "thread_root_message_id" in err_txt or "thread_root_message_id" in payload:
+                        payload.pop("thread_root_message_id", None)
+                    if "telegram_message_id" in err_txt:
+                        payload.pop("telegram_message_id", None)
+                    self._log_missing_threading_columns_once()
+                    stripped = True
+                if ("event_key" in payload or "event_entities" in payload) and (
+                    "event_key" in err_txt or "event_entities" in err_txt or "HTTP 400" in err_txt or "PGRST" in err_txt
+                ):
+                    self._supports_event_columns = False
+                    payload.pop("event_key", None)
+                    payload.pop("event_entities", None)
+                    logger.warning(
+                        "Supabase schema missing optional event_key/event_entities columns; using named_entities fallback."
+                    )
+                    stripped = True
+                if not stripped:
+                    raise
+        assert resp is not None
         if resp.status_code == 409:
             logger.debug("Duplicate article URL in Supabase: %s", article.canonical_url)
             return None
@@ -234,6 +285,16 @@ class SupabaseDatabase:
             return None
         article.id = rows[0].get("id")
         return article.id
+
+    def _log_missing_threading_columns_once(self) -> None:
+        if not self._warned_missing_thread_cols:
+            self._warned_missing_thread_cols = True
+            logger.warning(
+                "Supabase `articles` table is missing Live Event Threading columns "
+                "(telegram_message_id / thread_root_message_id). Run "
+                "storage/sql/add_event_threading_columns.sql in Supabase SQL Editor; "
+                "falling back to non-threaded publishing cleanly."
+            )
 
     async def update_article_status(
         self,
@@ -248,24 +309,27 @@ class SupabaseDatabase:
             "error_message": error_message,
         }
         now_iso = datetime.now(timezone.utc).isoformat()
-        if status == ArticleStatus.PUBLISHED:
+        normalized_extra = dict(extra_fields)
+        if status == ArticleStatus.PUBLISHED and "published_at" not in normalized_extra:
             patch_data["published_at"] = now_iso
-        if status == ArticleStatus.PROCESSING:
+        if status == ArticleStatus.PROCESSING and "processed_at" not in normalized_extra:
             patch_data["processed_at"] = now_iso
-        patch_data.update(extra_fields)
+        if "event_entities" in normalized_extra:
+            ents = normalize_event_entities(normalized_extra["event_entities"])
+            normalized_extra["event_entities"] = json.dumps(ents, ensure_ascii=True) if ents else ""
+        if "event_key" in normalized_extra:
+            normalized_extra["event_key"] = normalize_event_key(normalized_extra["event_key"])
+        if self._supports_event_columns is False:
+            normalized_extra.pop("event_key", None)
+            normalized_extra.pop("event_entities", None)
+        if self._supports_thread_columns is False:
+            normalized_extra.pop("thread_root_message_id", None)
+            normalized_extra.pop("telegram_message_id", None)
 
-        try:
-            await self._request(
-                "PATCH",
-                "articles",
-                params={"id": f"eq.{article_id}"},
-                json_body=patch_data,
-                extra_headers={"Prefer": "return=minimal"},
-            )
-        except SupabaseAPIError as exc:
-            if "video_url" in patch_data and "video_url" in str(exc):
-                logger.warning("Supabase schema missing video_url column; retrying update without video_url.")
-                patch_data.pop("video_url", None)
+        patch_data.update(normalized_extra)
+
+        for _ in range(4):
+            try:
                 await self._request(
                     "PATCH",
                     "articles",
@@ -273,15 +337,50 @@ class SupabaseDatabase:
                     json_body=patch_data,
                     extra_headers={"Prefer": "return=minimal"},
                 )
-            else:
-                raise
+                return
+            except SupabaseAPIError as exc:
+                err_txt = str(exc)
+                stripped = False
+                if "video_url" in patch_data and "video_url" in err_txt:
+                    logger.warning("Supabase schema missing video_url column; retrying update without video_url.")
+                    patch_data.pop("video_url", None)
+                    stripped = True
+                if ("thread_root_message_id" in patch_data or "telegram_message_id" in patch_data) and (
+                    "thread_root_message_id" in err_txt
+                    or "telegram_message_id" in err_txt
+                    or (
+                        ("HTTP 400" in err_txt or "PGRST" in err_txt)
+                        and "event_key" not in err_txt
+                        and "event_entities" not in err_txt
+                    )
+                ):
+                    self._supports_thread_columns = False
+                    if "thread_root_message_id" in err_txt or "thread_root_message_id" in patch_data:
+                        patch_data.pop("thread_root_message_id", None)
+                    if "telegram_message_id" in err_txt:
+                        patch_data.pop("telegram_message_id", None)
+                    self._log_missing_threading_columns_once()
+                    stripped = True
+                if ("event_key" in patch_data or "event_entities" in patch_data) and (
+                    "event_key" in err_txt or "event_entities" in err_txt or "HTTP 400" in err_txt or "PGRST" in err_txt
+                ):
+                    self._supports_event_columns = False
+                    patch_data.pop("event_key", None)
+                    patch_data.pop("event_entities", None)
+                    logger.warning(
+                        "Supabase schema missing optional event_key/event_entities columns during PATCH; falling back safely."
+                    )
+                    stripped = True
+                if not stripped:
+                    raise
 
     async def get_article_by_canonical_url(self, canonical_url: str) -> Optional[Article]:
-        """Fetch an article by its canonical URL."""
+        """Fetch an article by its normalized canonical URL."""
+        normalized_url = Article.canonicalize_url(canonical_url) if canonical_url else canonical_url
         resp = await self._request(
             "GET",
             "articles",
-            params={"canonical_url": f"eq.{canonical_url}", "limit": "1"},
+            params={"canonical_url": f"eq.{normalized_url}", "limit": "1"},
         )
         rows = resp.json() if resp.content else []
         return self._row_to_article(rows[0]) if rows else None
@@ -431,24 +530,80 @@ class SupabaseDatabase:
         )
         return [self._row_to_article(r) for r in (resp.json() if resp.content else [])]
 
-    async def get_recent_published_headlines(self, hours: int = 12) -> list[dict]:
+    async def get_recent_published_headlines(self, hours: int = DEDUP_HISTORY_HOURS) -> list[dict]:
         """
-        Fetch id, original_title, translated_title, and category of all PUBLISHED
-        articles from the last `hours` hours for semantic deduplication.
+        Fetch id, titles, Kurdish summaries, category, and optional event metadata of all
+        PUBLISHED articles from the last `hours` hours for cross-run deduplication.
+        Gracefully degrades if remote Supabase schema lacks `event_key`/`event_entities`.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
-        resp = await self._request(
-            "GET",
-            "articles",
-            params={
-                "select": "id,original_title,translated_title,category,published_at,discovered_at",
-                "status": "eq.PUBLISHED",
-                "published_at": f"gte.{cutoff.isoformat()}",
-                "order": "published_at.desc,id.desc",
-                "limit": "200",
-            },
+        full_select = (
+            "id,original_title,translated_title,translated_summary,category,"
+            "published_at,discovered_at,telegram_message_id,thread_root_message_id,"
+            "named_entities,event_key,event_entities"
         )
-        rows = resp.json() if resp.content else []
+        no_thread_select = (
+            "id,original_title,translated_title,translated_summary,category,"
+            "published_at,discovered_at,named_entities,event_key,event_entities"
+        )
+        fallback_select = (
+            "id,original_title,translated_title,translated_summary,category,"
+            "published_at,discovered_at,named_entities"
+        )
+        minimal_select = (
+            "id,original_title,translated_title,category,published_at,discovered_at"
+        )
+
+        if self._supports_thread_columns is False and self._supports_event_columns is False:
+            select_candidates = [fallback_select, minimal_select]
+        elif self._supports_thread_columns is False:
+            select_candidates = [no_thread_select, fallback_select, minimal_select]
+        elif self._supports_event_columns is False:
+            select_candidates = [fallback_select, minimal_select]
+        else:
+            select_candidates = [full_select, no_thread_select, fallback_select, minimal_select]
+
+        rows: list[dict] = []
+        for idx, select_expr in enumerate(select_candidates):
+            try:
+                resp = await self._request(
+                    "GET",
+                    "articles",
+                    params={
+                        "select": select_expr,
+                        "status": "eq.PUBLISHED",
+                        "published_at": f"gte.{cutoff.isoformat()}",
+                        "order": "published_at.desc,id.desc",
+                        "limit": "300",
+                    },
+                )
+                rows = resp.json() if resp.content else []
+                break
+            except SupabaseAPIError as exc:
+                err_txt = str(exc)
+                if "thread_root_message_id" in err_txt or "telegram_message_id" in err_txt:
+                    self._supports_thread_columns = False
+                    self._log_missing_threading_columns_once()
+                if "event_key" in err_txt or "event_entities" in err_txt:
+                    self._supports_event_columns = False
+                is_schema_err = (
+                    "thread_root_message_id" in err_txt
+                    or "telegram_message_id" in err_txt
+                    or "event_key" in err_txt
+                    or "event_entities" in err_txt
+                    or "translated_summary" in err_txt
+                    or "named_entities" in err_txt
+                    or "HTTP 400" in err_txt
+                    or "PGRST" in err_txt
+                )
+                if is_schema_err and idx < len(select_candidates) - 1:
+                    logger.warning(
+                        "Supabase articles query falling back to compatible columns (%s).",
+                        err_txt[:140],
+                    )
+                    continue
+                raise
+
         return filter_recent_headlines(rows, cutoff)
 
     async def get_published_articles_last_24h(self, limit: int = 10) -> list[Article]:
@@ -729,6 +884,11 @@ class SupabaseDatabase:
     @staticmethod
     def _row_to_article(row: dict[str, Any]) -> Article:
         """Convert a PostgREST JSON object into an `Article` dataclass instance."""
+        ev_key, ev_entities = unpack_event_metadata(
+            row.get("named_entities") or "",
+            row.get("event_key") or "",
+            row.get("event_entities"),
+        )
         return Article(
             id=row.get("id"),
             canonical_url=row.get("canonical_url", ""),
@@ -752,10 +912,13 @@ class SupabaseDatabase:
             retry_count=int(row.get("retry_count") or 0),
             error_message=row.get("error_message") or "",
             telegram_message_id=row.get("telegram_message_id"),
+            thread_root_message_id=row.get("thread_root_message_id"),
             image_url=row.get("image_url") or "",
             video_url=row.get("video_url") or None,
             country=row.get("country") or "",
             region=row.get("region") or "",
             named_entities=row.get("named_entities") or "",
+            event_key=ev_key,
+            event_entities=ev_entities,
             is_breaking=bool(row.get("is_breaking", False)),
         )

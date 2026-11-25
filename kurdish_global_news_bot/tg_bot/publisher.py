@@ -140,6 +140,47 @@ class TelegramPublisher:
 
         return await self._publish_text_only(article)
 
+    async def _send_with_optional_reply(
+        self,
+        method,
+        *,
+        reply_to_message_id: Optional[int] = None,
+        rewind_file: Optional[object] = None,
+        **kwargs,
+    ) -> Optional[object]:
+        """
+        Send via Telegram Bot API with reply metadata when `reply_to_message_id` is set.
+        Falls back cleanly to non-reply publishing if Telegram rejects a deleted root message.
+        """
+        send_kwargs = dict(kwargs)
+        if reply_to_message_id is not None:
+            send_kwargs["reply_to_message_id"] = int(reply_to_message_id)
+            send_kwargs["allow_sending_without_reply"] = True
+
+        try:
+            return await self._send_with_retry(method, **send_kwargs)
+        except BadRequest as exc:
+            err_lower = str(exc).lower()
+            is_reply_err = reply_to_message_id is not None and any(
+                tok in err_lower
+                for tok in ("reply", "message to be replied", "replied", "not found")
+            )
+            if not is_reply_err:
+                raise
+            logger.warning(
+                "Root message %s unavailable for reply (%s); publishing cleanly without reply anchor.",
+                reply_to_message_id,
+                str(exc)[:120],
+            )
+            if rewind_file is not None and hasattr(rewind_file, "seek"):
+                try:
+                    rewind_file.seek(0)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            send_kwargs.pop("reply_to_message_id", None)
+            send_kwargs.pop("allow_sending_without_reply", None)
+            return await self._send_with_retry(method, **send_kwargs)
+
     async def _publish_with_video(self, article: Article) -> Optional[int]:
         """Download & watermark video with KGN logo, send via send_video, and clean up temp file."""
         assert self._bot is not None
@@ -149,6 +190,7 @@ class TelegramPublisher:
         breaking = is_strict_breaking(article)
         article.is_breaking = breaking
         disable_notification = not breaking
+        reply_root_id = getattr(article, "thread_root_message_id", None)
 
         branded_video_path = await download_and_brand_video(article.video_url)
         if not branded_video_path:
@@ -157,8 +199,10 @@ class TelegramPublisher:
         caption = self._trim_caption_at_sentence(self._formatter.format_caption(article))
         try:
             with open(branded_video_path, "rb") as video_file:
-                message = await self._send_with_retry(
+                message = await self._send_with_optional_reply(
                     self._bot.send_video,
+                    reply_to_message_id=reply_root_id,
+                    rewind_file=video_file,
                     chat_id=self._channel_id,
                     video=video_file,
                     caption=caption,
@@ -168,8 +212,9 @@ class TelegramPublisher:
                 )
             if message:
                 logger.info(
-                    "Published branded video: msg_id=%d, breaking=%s, silent=%s, source=%s, category=%s, title='%s'",
+                    "Published branded video: msg_id=%d, reply_to=%s, breaking=%s, silent=%s, source=%s, category=%s, title='%s'",
                     message.message_id,
+                    reply_root_id,
                     breaking,
                     disable_notification,
                     article.source_name,
@@ -193,6 +238,7 @@ class TelegramPublisher:
         breaking = is_strict_breaking(article)
         article.is_breaking = breaking
         disable_notification = not breaking
+        reply_root_id = getattr(article, "thread_root_message_id", None)
 
         image_bytes: Optional[bytes] = None
         if article.image_url:
@@ -206,8 +252,10 @@ class TelegramPublisher:
                 article, image_bytes=image_bytes, is_breaking=breaking
             )
             with open(card_path, "rb") as photo_file:
-                message = await self._send_with_retry(
+                message = await self._send_with_optional_reply(
                     self._bot.send_photo,
+                    reply_to_message_id=reply_root_id,
+                    rewind_file=photo_file,
                     chat_id=self._channel_id,
                     photo=photo_file,
                     caption=caption,
@@ -216,8 +264,9 @@ class TelegramPublisher:
                 )
             if message:
                 logger.info(
-                    "Published branded card: msg_id=%d, breaking=%s, silent=%s, category=%s, title='%s'",
+                    "Published branded card: msg_id=%d, reply_to=%s, breaking=%s, silent=%s, category=%s, title='%s'",
                     message.message_id,
+                    reply_root_id,
                     breaking,
                     disable_notification,
                     article.category,
@@ -244,11 +293,13 @@ class TelegramPublisher:
         breaking = is_strict_breaking(article)
         article.is_breaking = breaking
         disable_notification = not breaking
+        reply_root_id = getattr(article, "thread_root_message_id", None)
         text = self._formatter.format_telegram_message(article)
 
         try:
-            message = await self._send_with_retry(
+            message = await self._send_with_optional_reply(
                 self._bot.send_message,
+                reply_to_message_id=reply_root_id,
                 chat_id=self._channel_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
@@ -257,8 +308,9 @@ class TelegramPublisher:
             )
             if message:
                 logger.info(
-                    "Published text-only: msg_id=%d, breaking=%s, silent=%s, title='%s'",
+                    "Published text-only: msg_id=%d, reply_to=%s, breaking=%s, silent=%s, title='%s'",
                     message.message_id,
+                    reply_root_id,
                     breaking,
                     disable_notification,
                     article.original_title[:60],
@@ -361,6 +413,9 @@ class TelegramPublisher:
                 wait_time = 5 * (attempt + 1)
                 logger.warning("Telegram timeout. Retrying in %d seconds.", wait_time)
                 await asyncio.sleep(wait_time)
+            except BadRequest as e:
+                logger.error("Telegram BadRequest: %s", str(e)[:200])
+                raise
             except NetworkError as e:
                 wait_time = 10 * (attempt + 1)
                 logger.warning(
@@ -369,9 +424,6 @@ class TelegramPublisher:
                     wait_time,
                 )
                 await asyncio.sleep(wait_time)
-            except BadRequest as e:
-                logger.error("Telegram BadRequest: %s", str(e)[:200])
-                raise
             except TelegramError as e:
                 logger.error(
                     "Telegram error (attempt %d/%d): %s",

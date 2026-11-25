@@ -318,17 +318,55 @@ class TestSevenPlusOneTopicMixBalancer:
                     out.append(RelevanceEvaluation(score=8, is_breaking=False, category="politics_world", reason="Global pol", passed=True))
             return out
 
+        sorani_by_title = {
+            "Erbil KRG parliament debates provincial security budget framework": (
+                "پەرلەمانی کوردستان پرۆژەی بودجەی پارێزگاکان تاوتوێ دەکات",
+                "پەرلەمانتاران لە هەولێر دانیشتنێکی تایبەتیان بۆ بودجە ئەنجامدا.",
+            ),
+            "Peshmerga commanders reinforce Kirkuk western defensive trench line": (
+                "فەرماندەیی پێشمەرگە سەنگەرەکانی رۆژئاوای کەرکووکی قایم کرد",
+                "هێزەکانی پێشمەرگە ئامادەباشیی بەرگریان لە سنووری کەرکووک زیاد کرد.",
+            ),
+            "Sulaymaniyah governor hosts constitutional federalism dialogue talks": (
+                "پارێزگاری سلێمانی دیداری فیدراڵیزمی دەستووری بەڕێوەبرد",
+                "لە سلێمانی نوێنەرانی یاسایی و سیاسی کۆبوونەوەیان سازکرد.",
+            ),
+            "Duhok customs authorities modernize Zakho cross-border terminal": (
+                "دەروازەی ئیبراهیم خەلیل لە دهۆک نۆژەن دەکرێتەوە",
+                "ئیدارەی گومرگی دهۆک پڕۆژەی فراوانکردنی دەروازەی زاخۆی دەستپێکرد.",
+            ),
+            "Halabja provincial council approves reconstruction infrastructure bill": (
+                "ئەنجومەنی هەڵەبجە پڕۆژەی ژێرخانی شارەکەی پەسەند کرد",
+                "بەشێکی نوێ لە ڕێگاوبانەکانی هەڵەبجە نۆژەن دەکرێنەوە.",
+            ),
+            "NATO allies reinforce Eastern Mediterranean naval air defenses": (
+                "هاوپەیمانان بەرگری دەریاییان لە رۆژهەڵاتی دەریای ناوەڕاست بەهێز کرد",
+                "کەشتییە جەنگییەکانی ناتۆ سیستەمی بەرگری ئاسمانیان کارا کرد.",
+            ),
+            "UN Security Council convenes emergency humanitarian corridor talks": (
+                "ئەنجومەنی ئاسایش دۆسیەی رێڕەوە مرۆییەکانی تاوتوێ کرد",
+                "نەتەوە یەکگرتووەکان کۆبوونەوەیەکی تایبەتی لە نیویۆرک سازکرد.",
+            ),
+            "Ankara and Tehran diplomats hold border security consultations": (
+                "ئەنقەرە و تاران گفتوگۆی سنووریان ئەنجامدا",
+                "وەزارەتەکانی دەرەوەی تورکیا و ئێران دۆخی سنووریان هەڵسەنگاند.",
+            ),
+            "BleepingComputer: Massive ransomware flaw actively exploited in enterprise firewalls": (
+                "هۆشداریی ئاسایشی سایبەری لەسەر کەلێنێکی مەترسیداری فایەروۆڵ بڵاوکرایەوە",
+                "شارەزایان داوای نوێکردنەوەی بەپەلەی سیستەمە دیجیتاڵییەکان دەکەن.",
+            ),
+            "IMF cuts global growth forecast over soaring sovereign debt tariffs": (
+                "سندووقی دراوی نێودەوڵەتی پێشبینی گەشەی ئابووری کەمکردەوە",
+                "قەیرانی قەرز و باجی گومرگی کاریگەری لەسەر ئابووری جیهان دانا.",
+            ),
+        }
+
         with patch.object(pipeline._ranker, "evaluate_batch_relevance", side_effect=mock_batch_eval), \
              patch.object(pipeline._extractor, "fetch_article_content_and_image", new=AsyncMock(return_value=(None, None))), \
              patch.object(
                  pipeline._translator,
                  "translate_article",
-                 side_effect=lambda title, summary="": (
-                     "هەواڵێکی نوێی کوردستان و جیهان لەسەر دۆخی ئەمنی و سیاسی"
-                     if "BleepingComputer" not in title
-                     else "هۆشداریی ئاسایشی سایبەری لەسەر هێرشێکی نوێی ئەلیکترۆنی بڵاوکرایەوە",
-                     "پوختەی هەواڵەکە بە زمانی کوردی سۆرانی بۆ بڵاوکردنەوە لە کەناڵدا.",
-                 ),
+                 side_effect=lambda title, summary="": sorani_by_title[title],
              ):
             res = await pipeline.process_batch(batch, max_publish=8)
 

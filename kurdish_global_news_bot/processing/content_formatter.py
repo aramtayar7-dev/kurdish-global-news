@@ -184,11 +184,20 @@ class ContentFormatter:
     """Formats articles for Telegram publication in Kurdish Sorani."""
 
     def _format_headline(self, article: Article) -> str:
-        """Escape the headline from strict Sorani translation only (never raw source text)."""
+        """
+        Escape the headline from strict Sorani translation only (never raw source text).
+        Prepends breaking badge (`🔴 بەپەلە | `) first when active, or threaded update
+        tag (`🔄 نوێکردنەوە | `) for non-breaking live event updates.
+        """
         raw_title = normalize_neutral_terminology(
             (article.translated_title or "").strip()
         )
-        prefix = "🔴 بەپەلە | " if getattr(article, "is_breaking", False) else ""
+        if getattr(article, "is_breaking", False):
+            prefix = "🔴 بەپەلە | "
+        elif getattr(article, "is_thread_update", False) or getattr(article, "thread_root_message_id", None):
+            prefix = "🔄 نوێکردنەوە | "
+        else:
+            prefix = ""
         return self._escape_html(f"{prefix}{raw_title}")
 
     def format_telegram_message(self, article: Article) -> str:

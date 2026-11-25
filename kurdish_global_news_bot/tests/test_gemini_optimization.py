@@ -482,16 +482,34 @@ class TestPreFilteringCappingAndBatchEvaluation:
         pipeline._ranker._gemini.generate_json = AsyncMock(side_effect=fake_generate_json)
         pipeline._extractor.fetch_article_content_and_image = AsyncMock(return_value=("", None))
         bashur_markers = ("Erbil", "Peshmerga", "Sulaymaniyah", "Duhok", "Halabja", "Kurdistan")
-        pipeline._translator.translate_article = AsyncMock(
-            side_effect=lambda title, summary="": (
-                (
-                    "هەرێمی کوردستان و هەولێر بڕیاری نوێیان دەربارەی دۆخی سیاسی دەرکرد"
-                    if any(m in title for m in bashur_markers)
-                    else "پێشهاتی سەربازی و دیپلۆماسی لە ناوچەکەدا ڕاگەیەندرا"
-                ),
-                "ڕاپۆرتێکی وردی ڕۆژنامەوانی لەسەر پێشهاتە سیاسی و ئەمنییەکان. لایەنەکان لێدوانیان دا.",
-            )
-        )
+        _distinct_sorani = [
+            ("هەرێمی کوردستان و هەولێر: میکانیزمی دابەشکردنی مووچەی فەرمانبەران پەسەندکرا", "ئەنجومەنی وەزیران بڕیاری دابەشکردنی مووچەی فەرمانبەرانی دەرکرد."),
+            ("پێشمەرگە سەنگەرەکانی بەرگری لە سنووری کەرکووک بەهێزتر دەکات", "فەرماندەکانی پێشمەرگە هێڵەکانی بەرگریان بەسەر کردەوە."),
+            ("پارێزگاری سلێمانی میوانداری کۆبوونەوەی فیدراڵیزمی دەستووری دەکات", "لە سلێمانی دیدارێک دەربارەی دەسەڵاتە دەستوورییەکان سازکرا."),
+            ("دەروازەی گومرگی دهۆک سیستەمی پشکنینی بازرگانی فراوانتر دەکات", "بەرپرسانی گومرگ لە دهۆک پڕۆژەی نوێیان ڕاگەیاند."),
+            ("ئەنجومەنی پارێزگای هەڵەبجە لیژنەی ئاوەدانکردنەوەی پێکهێنا", "لە هەڵەبجە پرۆژە خزمەتگوزارییەکان پەسەند کران."),
+            ("ئەنجومەنی دادوەری کوردستان پێداچوونەوە بە یاسای ئەمنیدا دەکات", "پڕۆژە یاسای چاودێری ئەمنی خرایە بەردەم دادوەران."),
+            ("ناتۆ و تاران لەسەر یاساکانی کەشتیوانی کەنداو ناکۆکن", "گرژییە دەریاییەکانی کەنداو چووە قۆناغێکی نوێوە."),
+            ("ئەنجومەنی ئاسایش پاراستنی کەشتییەکان لە دەریای سوور تاوتوێ دەکات", "نوێنەرانی وڵاتان کۆبوونەوەی بەپەلەی دەریاییان ئەنجامدا."),
+            ("واشنتن سیستەمی بەرگری مووشەکی نوێ لە ئەورووپا جێگیر دەکات", "وەزارەتی بەرگری دامەزراندنی پاتریۆتی ڕاگەیاند."),
+            ("نێردراوانی جنێڤ ڕەشنووسی ئاگربەستی دووقۆڵی ئامادە دەکەن", "دیپلۆماتکاران چاودێری جێبەجێکردنی ئاگربەست دەکەن."),
+        ]
+        _tr_idx = 0
+
+        def fake_translate_distinct(title: str, summary: str = "") -> tuple[str, str]:
+            nonlocal _tr_idx
+            is_bash = any(m in title for m in bashur_markers)
+            for idx, b_t in enumerate(bashur_titles):
+                if b_t == title:
+                    return _distinct_sorani[idx]
+            for idx, g_t in enumerate(global_titles):
+                if g_t == title:
+                    return _distinct_sorani[6 + idx]
+            _tr_idx += 1
+            prefix = "هەرێمی کوردستان و هەولێر" if is_bash else "پێشهاتی سەربازی"
+            return (f"{prefix} بڕیارنامەی {_tr_idx} بڵاوكرایەوە", "ڕاپۆرتی تەواوی ڕۆژنامەوانی سۆرانی.")
+
+        pipeline._translator.translate_article = AsyncMock(side_effect=fake_translate_distinct)
 
         res = await pipeline.process_batch(batch, max_publish=8)
 
@@ -503,5 +521,6 @@ class TestPreFilteringCappingAndBatchEvaluation:
         # Confirm 5-of-8 Bashur quota preserved: 5 Bashur first + 3 Global
         published_captions = [c.kwargs["caption"] for c in mock_bot.send_photo.call_args_list]
         assert len(published_captions) == 8
-        bashur_sent = sum(1 for cap in published_captions if "هەرێمی کوردستان و هەولێر" in cap)
+        bashur_sorani_tokens = ("کوردستان", "پێشمەرگە", "سلێمانی", "دهۆک", "هەڵەبجە")
+        bashur_sent = sum(1 for cap in published_captions if any(tok in cap for tok in bashur_sorani_tokens))
         assert bashur_sent == 5

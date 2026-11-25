@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -16,13 +17,17 @@ from typing import Optional
 
 import aiosqlite
 
-from config import DATABASE_PATH, BACKUP_DIR
-from storage.models import Article, Source, Event
+from config import BACKUP_DIR, DATABASE_PATH, DEDUP_HISTORY_HOURS
+from storage.models import Article, Event, Source
 from storage.utils import (
     compute_url_hash as _compute_url_hash,
     filter_recent_headlines as _filter_recent_headlines,
+    normalize_event_entities as _normalize_event_entities,
+    normalize_event_key as _normalize_event_key,
+    pack_event_metadata as _pack_event_metadata,
     parse_utc_timestamp as _parse_utc_timestamp_util,
     prioritize_digest_articles as _prioritize_digest_articles,
+    unpack_event_metadata as _unpack_event_metadata,
 )
 
 logger = logging.getLogger("database")
@@ -99,11 +104,14 @@ class Database:
                 retry_count INTEGER DEFAULT 0,
                 error_message TEXT DEFAULT '',
                 telegram_message_id INTEGER,
+                thread_root_message_id INTEGER DEFAULT NULL,
                 image_url TEXT DEFAULT '',
                 video_url TEXT DEFAULT NULL,
                 country TEXT DEFAULT '',
                 region TEXT DEFAULT '',
-                named_entities TEXT DEFAULT ''
+                named_entities TEXT DEFAULT '',
+                event_key TEXT DEFAULT '',
+                event_entities TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS sources (
@@ -171,6 +179,12 @@ class Database:
             existing_cols = {row["name"] for row in await cursor.fetchall()}
         if "video_url" not in existing_cols:
             await self.conn.execute("ALTER TABLE articles ADD COLUMN video_url TEXT DEFAULT NULL")
+        if "event_key" not in existing_cols:
+            await self.conn.execute("ALTER TABLE articles ADD COLUMN event_key TEXT DEFAULT ''")
+        if "event_entities" not in existing_cols:
+            await self.conn.execute("ALTER TABLE articles ADD COLUMN event_entities TEXT DEFAULT ''")
+        if "thread_root_message_id" not in existing_cols:
+            await self.conn.execute("ALTER TABLE articles ADD COLUMN thread_root_message_id INTEGER DEFAULT NULL")
         await self.conn.commit()
         logger.info("Database schema initialized.")
 
@@ -180,6 +194,11 @@ class Database:
 
     async def insert_article(self, article: Article) -> Optional[int]:
         """Insert a new article. Returns the ID or None if duplicate."""
+        ev_key = _normalize_event_key(getattr(article, "event_key", ""))
+        ev_entities_list = _normalize_event_entities(getattr(article, "event_entities", []))
+        named_entities_val = article.named_entities or _pack_event_metadata(ev_key, ev_entities_list)
+        ev_entities_json = json.dumps(ev_entities_list, ensure_ascii=True) if ev_entities_list else ""
+
         async with self._lock:
             try:
                 cursor = await self.conn.execute("""
@@ -189,9 +208,10 @@ class Database:
                         source_name, category, priority, importance_score,
                         publication_date, discovered_at, processed_at, published_at,
                         status, content_hash, event_fingerprint, retry_count,
-                        error_message, telegram_message_id, image_url, video_url,
-                        country, region, named_entities
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        error_message, telegram_message_id, thread_root_message_id,
+                        image_url, video_url,
+                        country, region, named_entities, event_key, event_entities
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     article.canonical_url, article.original_url, article.original_title,
                     article.normalized_title, article.translated_title, article.original_summary,
@@ -200,8 +220,9 @@ class Database:
                     article.discovered_at, article.processed_at, article.published_at,
                     article.status, article.content_hash, article.event_fingerprint,
                     article.retry_count, article.error_message, article.telegram_message_id,
+                    article.thread_root_message_id,
                     article.image_url, article.video_url, article.country, article.region,
-                    article.named_entities,
+                    named_entities_val, ev_key, ev_entities_json,
                 ))
                 await self.conn.commit()
                 article.id = cursor.lastrowid
@@ -214,16 +235,23 @@ class Database:
                                      error_message: str = "",
                                      **extra_fields: object) -> None:
         """Update an article's status and optional extra fields."""
+        normalized_extra = dict(extra_fields)
+        if "event_entities" in normalized_extra:
+            ents = _normalize_event_entities(normalized_extra["event_entities"])
+            normalized_extra["event_entities"] = json.dumps(ents, ensure_ascii=True) if ents else ""
+        if "event_key" in normalized_extra:
+            normalized_extra["event_key"] = _normalize_event_key(normalized_extra["event_key"])
+
         async with self._lock:
             sets = ["status = ?", "error_message = ?"]
             vals: list[object] = [status, error_message]
-            if status == "PUBLISHED":
+            if status == "PUBLISHED" and "published_at" not in normalized_extra:
                 sets.append("published_at = ?")
                 vals.append(datetime.now(timezone.utc).isoformat())
-            if status == "PROCESSING":
+            if status == "PROCESSING" and "processed_at" not in normalized_extra:
                 sets.append("processed_at = ?")
                 vals.append(datetime.now(timezone.utc).isoformat())
-            for key, value in extra_fields.items():
+            for key, value in normalized_extra.items():
                 sets.append(f"{key} = ?")
                 vals.append(value)
             vals.append(article_id)
@@ -235,8 +263,10 @@ class Database:
 
     async def get_article_by_canonical_url(self, canonical_url: str) -> Optional[Article]:
         """Fetch an article by its canonical URL."""
+        normalized_url = Article.canonicalize_url(canonical_url) if canonical_url else ""
         async with self.conn.execute(
-            "SELECT * FROM articles WHERE canonical_url = ?", (canonical_url,)
+            "SELECT * FROM articles WHERE canonical_url = ? OR canonical_url = ?",
+            (normalized_url, canonical_url),
         ) as cursor:
             row = await cursor.fetchone()
             return self._row_to_article(row) if row else None
@@ -358,16 +388,19 @@ class Database:
         """Parse an ISO/RFC timestamp string into a UTC-aware datetime, or None."""
         return _parse_utc_timestamp_util(ts_str)
 
-    async def get_recent_published_headlines(self, hours: int = 12) -> list[dict]:
+    async def get_recent_published_headlines(self, hours: int = DEDUP_HISTORY_HOURS) -> list[dict]:
         """
-        Fetch id, original_title, translated_title, and category of all PUBLISHED
-        articles from the last `hours` hours (newest first).
+        Fetch id, titles, Kurdish summaries, category, and stored event metadata
+        for all PUBLISHED articles from the last `hours` hours (newest first).
         """
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
         async with self.conn.execute(
-            """SELECT id, original_title, translated_title, category, published_at, discovered_at
+            """SELECT id, original_title, translated_title, translated_summary,
+                      original_summary, category, published_at, discovered_at,
+                      telegram_message_id, thread_root_message_id,
+                      named_entities, event_key, event_entities
                FROM articles WHERE status = 'PUBLISHED'
-               ORDER BY published_at DESC, id DESC LIMIT 200"""
+               ORDER BY published_at DESC, id DESC LIMIT 300"""
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -635,6 +668,11 @@ class Database:
     def _row_to_article(row: aiosqlite.Row) -> Article:
         """Convert a database row to an Article object."""
         row_keys = set(row.keys())
+        ev_key, ev_entities = _unpack_event_metadata(
+            row["named_entities"] if "named_entities" in row_keys else "",
+            row["event_key"] if "event_key" in row_keys else "",
+            row["event_entities"] if "event_entities" in row_keys else None,
+        )
         return Article(
             id=row["id"],
             canonical_url=row["canonical_url"],
@@ -658,9 +696,16 @@ class Database:
             retry_count=row["retry_count"],
             error_message=row["error_message"] or "",
             telegram_message_id=row["telegram_message_id"],
+            thread_root_message_id=(
+                row["thread_root_message_id"]
+                if "thread_root_message_id" in row_keys
+                else None
+            ),
             image_url=row["image_url"] or "",
             video_url=(row["video_url"] or None) if "video_url" in row_keys else None,
             country=row["country"] or "",
             region=row["region"] or "",
             named_entities=row["named_entities"] or "",
+            event_key=ev_key,
+            event_entities=ev_entities,
         )
