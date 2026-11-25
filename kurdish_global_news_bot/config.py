@@ -42,6 +42,16 @@ TELEGRAM_CHANNEL_ID: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
 NOTIFY_DAILY_DIGEST: bool = _bool(os.getenv("NOTIFY_DAILY_DIGEST"), False)
 
 # ═══════════════════════════════════════════════════
+# Private Admin Watchdog & Telemetry Alerts
+# ═══════════════════════════════════════════════════
+ADMIN_CHAT_ID: str = os.getenv("ADMIN_CHAT_ID", "").strip()
+ENABLE_ADMIN_WATCHDOG: bool = _bool(os.getenv("ENABLE_ADMIN_WATCHDOG"), True)
+WATCHDOG_DAILY_REPORT_HOUR_UTC3: int = max(0, min(23, _int(os.getenv("WATCHDOG_DAILY_REPORT_HOUR_UTC3"), 22)))
+WATCHDOG_ALERT_COOLDOWN_MINUTES: int = max(1, _int(os.getenv("WATCHDOG_ALERT_COOLDOWN_MINUTES"), 60))
+WATCHDOG_SILENCE_ALERT_HOURS: int = max(1, _int(os.getenv("WATCHDOG_SILENCE_ALERT_HOURS"), 6))
+WATCHDOG_SOURCE_FAILURE_THRESHOLD: int = max(1, _int(os.getenv("WATCHDOG_SOURCE_FAILURE_THRESHOLD"), 5))
+
+# ═══════════════════════════════════════════════════
 # Discovery & Scheduling
 # ═══════════════════════════════════════════════════
 NEWS_CHECK_INTERVAL_SECONDS: int = _int(os.getenv("NEWS_CHECK_INTERVAL_SECONDS"), 60)

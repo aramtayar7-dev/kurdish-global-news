@@ -437,6 +437,47 @@ class TelegramPublisher:
         logger.error("All %d publish attempts failed.", max_retries)
         return None
 
+    async def send_admin_message(
+        self,
+        chat_id: str,
+        text: str,
+        disable_notification: bool = False,
+    ) -> bool:
+        """
+        Send a private operational watchdog message strictly to `chat_id`.
+        Refuses if target is missing, invalid, or matches public channel `self._channel_id`.
+        Never raises exceptions (non-blocking).
+        """
+        from monitoring.watchdog import is_valid_admin_target, redact_secrets
+
+        if not is_valid_admin_target(chat_id, self._channel_id):
+            logger.warning(
+                "Refusing admin message: invalid target or matches public channel (%s).",
+                self._channel_id,
+            )
+            return False
+
+        if not self._bot:
+            logger.warning("Cannot send admin message: Telegram bot client not initialized.")
+            return False
+
+        safe_text = redact_secrets(text)[:4000]
+        try:
+            await self._bot.send_message(
+                chat_id=chat_id.strip(),
+                text=safe_text,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                disable_notification=disable_notification,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Failed to deliver private admin watchdog message (non-blocking): %s",
+                redact_secrets(str(exc))[:200],
+            )
+            return False
+
     async def test_connection(self) -> bool:
         """Test that the bot can reach the channel."""
         if not self._bot:

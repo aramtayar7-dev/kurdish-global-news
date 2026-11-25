@@ -102,6 +102,18 @@ class GeminiClient:
 
         self._last_request_ts: float = 0.0
         self._exhausted_warned_until: float = 0.0
+        self._rate_limit_hits_cycle: int = 0
+        self._exhausted_events_cycle: int = 0
+
+    def consume_cycle_stats(self) -> dict[str, int]:
+        """Return and reset per-cycle Gemini HTTP 429 & quota exhaustion counters."""
+        stats = {
+            "http_429_hits": int(self._rate_limit_hits_cycle),
+            "quota_exhausted_events": int(self._exhausted_events_cycle),
+        }
+        self._rate_limit_hits_cycle = 0
+        self._exhausted_events_cycle = 0
+        return stats
 
     @property
     def has_keys(self) -> bool:
@@ -214,6 +226,7 @@ class GeminiClient:
 
         now = time.monotonic()
         if self.all_keys_in_cooldown(now):
+            self._exhausted_events_cycle += 1
             if now >= self._exhausted_warned_until:
                 earliest = self._earliest_cooldown_expiry()
                 wait_left = max(1.0, earliest - now)
@@ -320,6 +333,7 @@ class GeminiClient:
 
                     if is_rate_or_auth:
                         rate_limit_hits += 1
+                        self._rate_limit_hits_cycle += 1
                         old_idx = self._current_key_index
                         cd = (
                             self._quota_cooldown_seconds
@@ -382,6 +396,7 @@ class GeminiClient:
                 raise GeminiAPIError(f"Gemini request failed: {last_error}") from e
 
         if self.all_keys_in_cooldown():
+            self._exhausted_events_cycle += 1
             earliest = self._earliest_cooldown_expiry()
             wait_left = max(1.0, earliest - time.monotonic())
             logger.warning(

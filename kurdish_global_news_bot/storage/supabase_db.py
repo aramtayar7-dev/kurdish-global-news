@@ -942,14 +942,20 @@ class SupabaseDatabase:
     # System Logs, Stats & Backup
     # ───────────────────────────────────────────────
 
-    async def log_system_event(self, level: str, component: str, message: str) -> None:
+    async def log_system_event(
+        self,
+        level: str,
+        component: str,
+        message: str,
+        timestamp: Optional[str] = None,
+    ) -> None:
         """Write a system log entry to Supabase `system_logs`."""
         try:
             await self._request(
                 "POST",
                 "system_logs",
                 json_body={
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
                     "level": level,
                     "component": component,
                     "message": message[:2000],
@@ -958,6 +964,97 @@ class SupabaseDatabase:
             )
         except Exception as exc:
             logger.error("Failed to write system log to Supabase: %s", exc)
+
+    async def get_recent_system_logs(
+        self,
+        component: str,
+        limit: int = 50,
+        hours: Optional[int] = None,
+        now: Optional[datetime] = None,
+    ) -> list[dict]:
+        """Fetch recent system_logs entries for a component from Supabase."""
+        params: dict[str, str] = {
+            "select": "id,timestamp,level,component,message",
+            "component": f"eq.{component}",
+            "order": "timestamp.desc,id.desc",
+            "limit": str(max(1, int(limit))),
+        }
+        if hours is not None:
+            ref_now = now or datetime.now(timezone.utc)
+            if ref_now.tzinfo is None:
+                ref_now = ref_now.replace(tzinfo=timezone.utc)
+            cutoff = ref_now - timedelta(hours=max(1, int(hours)))
+            params["timestamp"] = f"gte.{cutoff.isoformat()}"
+        resp = await self._request("GET", "system_logs", params=params)
+        return resp.json() if resp.content else []
+
+    async def get_sources_status(self) -> list[dict]:
+        """Fetch enabled sources and failure counts from Supabase `sources`."""
+        resp = await self._request(
+            "GET",
+            "sources",
+            params={
+                "select": "name,source_type,enabled,consecutive_failures,last_error,last_checked_at,last_success_at",
+                "enabled": "eq.true",
+                "order": "consecutive_failures.desc,name.asc",
+            },
+        )
+        return resp.json() if resp.content else []
+
+    async def get_watchdog_article_metrics(
+        self,
+        hours: int = 24,
+        now: Optional[datetime] = None,
+    ) -> dict[str, object]:
+        """Compute 24h article metrics, backlog count, and last published timestamp from Supabase."""
+        ref_now = now or datetime.now(timezone.utc)
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=timezone.utc)
+        cutoff = ref_now - timedelta(hours=max(1, int(hours)))
+
+        pub_resp = await self._request(
+            "GET",
+            "articles",
+            params={
+                "status": "eq.PUBLISHED",
+                "order": "published_at.desc,id.desc",
+                "limit": "300",
+            },
+        )
+        pub_rows = pub_resp.json() if pub_resp.content else []
+        published_recent: list[Article] = []
+        all_pub_timestamps: list[datetime] = []
+        for row in pub_rows:
+            art = self._row_to_article(row)
+            dt = parse_utc_timestamp(art.published_at or art.discovered_at)
+            if dt is not None:
+                all_pub_timestamps.append(dt)
+                if dt >= cutoff:
+                    published_recent.append(art)
+
+        eff_resp = await self._request(
+            "GET",
+            "articles",
+            params={
+                "select": "status,discovered_at",
+                "status": "in.(REJECTED_DUPLICATE,SKIPPED)",
+                "discovered_at": f"gte.{cutoff.isoformat()}",
+                "limit": "1000",
+            },
+        )
+        eff_rows = eff_resp.json() if eff_resp.content else []
+        duplicates_recent = sum(1 for r in eff_rows if r.get("status") == ArticleStatus.REJECTED_DUPLICATE)
+        skipped_recent = sum(1 for r in eff_rows if r.get("status") == ArticleStatus.SKIPPED)
+
+        stats = await self.get_stats()
+        return {
+            "published_articles": published_recent,
+            "duplicates_count": duplicates_recent,
+            "skipped_count": skipped_recent,
+            "queued_count": int(stats.get(ArticleStatus.QUEUED, 0)),
+            "total_articles": int(stats.get("total", 0)),
+            "last_published_at": max(all_pub_timestamps) if all_pub_timestamps else None,
+        }
 
     async def get_stats(self) -> dict[str, int]:
         """Get article counts grouped by status."""

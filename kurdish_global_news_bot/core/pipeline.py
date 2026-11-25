@@ -220,6 +220,23 @@ class ArticlePipeline:
         await self._semantic_dedup.cleanup()
         await self._translator.cleanup()
 
+    def consume_gemini_cycle_stats(self) -> dict[str, int]:
+        """Aggregate and reset per-cycle Gemini HTTP 429 and quota exhaustion counters."""
+        r_stats = self._ranker.consume_gemini_cycle_stats()
+        t_primary = getattr(self._translator, "_primary", None)
+        t_stats = (
+            t_primary.consume_gemini_cycle_stats()
+            if t_primary is not None and hasattr(t_primary, "consume_gemini_cycle_stats")
+            else {"http_429_hits": 0, "quota_exhausted_events": 0}
+        )
+        return {
+            "http_429_hits": int(r_stats.get("http_429_hits", 0)) + int(t_stats.get("http_429_hits", 0)),
+            "quota_exhausted_events": (
+                int(r_stats.get("quota_exhausted_events", 0))
+                + int(t_stats.get("quota_exhausted_events", 0))
+            ),
+        }
+
     async def _check_cold_start(self) -> bool:
         """Check if cold start protection is active."""
         if self._cold_start is None:

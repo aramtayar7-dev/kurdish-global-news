@@ -284,6 +284,10 @@ class GeminiTranslationProvider(TranslationProvider):
     async def cleanup(self) -> None:
         await self._client.cleanup()
 
+    def consume_gemini_cycle_stats(self) -> dict[str, int]:
+        """Return and reset Gemini HTTP 429 & exhaustion counters."""
+        return self._client.consume_cycle_stats()
+
     async def translate_article(
         self,
         title: str,

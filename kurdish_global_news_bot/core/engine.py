@@ -47,6 +47,7 @@ from processing.translator import is_valid_kurdish_sorani
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
 from monitoring.metrics import Metrics, Timer
+from monitoring.watchdog import AdminWatchdog, WatchdogCycleMetrics, redact_secrets
 import config
 from config import (
     ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, ENABLE_TELEGRAM, CHANNEL_HANDLE,
@@ -84,6 +85,46 @@ class NewsEngine:
         self._source_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SOURCES)
         self._backup_task: Optional[asyncio.Task] = None
         self._metrics_task: Optional[asyncio.Task] = None
+        self._watchdog: Optional[AdminWatchdog] = None
+        self._supabase_fallback_active: bool = False
+        self._supabase_fallback_error: str = ""
+
+    async def _connect_db_with_fallback(self) -> None:
+        """Connect configured database, falling back cleanly to local SQLite if Supabase fails."""
+        from storage.database import Database
+        from storage.supabase_db import SupabaseDatabase
+
+        self._supabase_fallback_active = False
+        self._supabase_fallback_error = ""
+        if isinstance(self._db, SupabaseDatabase):
+            try:
+                await self._db.connect()
+                return
+            except Exception as exc:
+                self._supabase_fallback_active = True
+                self._supabase_fallback_error = redact_secrets(str(exc))[:300]
+                logger.error(
+                    "Supabase connection failed (%s); falling back cleanly to local SQLite (%s).",
+                    self._supabase_fallback_error,
+                    config.DATABASE_PATH,
+                )
+                try:
+                    await self._db.close()
+                except Exception:
+                    pass
+                self._db = Database(db_path=config.DATABASE_PATH)
+                await self._db.connect()
+                return
+
+        await self._db.connect()
+
+    def _active_storage_backend_label(self) -> str:
+        from storage.supabase_db import SupabaseDatabase
+        if self._supabase_fallback_active:
+            return "SQLite fallback"
+        if isinstance(self._db, SupabaseDatabase):
+            return "Supabase"
+        return "SQLite"
 
     async def start(self) -> None:
         """Initialize all components and start the engine."""
@@ -92,7 +133,7 @@ class NewsEngine:
         logger.info("╚══════════════════════════════════════════╝")
 
         # 1. Connect database
-        await self._db.connect()
+        await self._connect_db_with_fallback()
         if getattr(self._db, "conn", None) is not None:
             await run_migrations(self._db.conn)
 
@@ -104,6 +145,7 @@ class NewsEngine:
             health=self._health,
             metrics=self._metrics,
         )
+        self._watchdog = AdminWatchdog(db=self._db, publisher=self._publisher)
 
         # 3. Register health components
         for name in ["discovery", "pipeline", "publishing", "translation", "database"]:
@@ -164,7 +206,7 @@ class NewsEngine:
         logger.info("╚══════════════════════════════════════════╝")
 
         # 1. Connect database & run migrations (SQLite only)
-        await self._db.connect()
+        await self._connect_db_with_fallback()
         if getattr(self._db, "conn", None) is not None:
             await run_migrations(self._db.conn)
 
@@ -176,6 +218,7 @@ class NewsEngine:
             health=self._health,
             metrics=self._metrics,
         )
+        self._watchdog = AdminWatchdog(db=self._db, publisher=self._publisher)
 
         for name in ["discovery", "pipeline", "publishing", "translation", "database"]:
             self._health.register_component(name)
@@ -208,6 +251,10 @@ class NewsEngine:
             # 7. Execute ONE complete discovery & publishing cycle
             logger.info("Executing single discovery and publishing cycle...")
             await self._discovery_cycle()
+        except Exception as exc:
+            if self._watchdog is not None:
+                await self._watchdog.notify_pipeline_crash(exc)
+            raise
         finally:
             # 8. Clean shutdown & close DB
             await self.stop()
@@ -465,6 +512,9 @@ class NewsEngine:
                     self._pipeline.set_cycle_published_history(None)
 
             try:
+                published_this_cycle = 0
+                raw_discovered_count = 0
+
                 # Fetch from all sources concurrently
                 all_raw_articles: list[RawArticle] = []
                 fetch_tasks = [
@@ -482,18 +532,20 @@ class NewsEngine:
                         all_raw_articles.extend(result)
                         self._health.record_success("discovery")
 
-                self._metrics.increment("total_raw_articles", len(all_raw_articles))
+                raw_discovered_count = len(all_raw_articles)
+                self._metrics.increment("total_raw_articles", raw_discovered_count)
                 logger.info("Discovered %d raw articles from %d sources.",
-                             len(all_raw_articles), len(self._sources))
+                             raw_discovered_count, len(self._sources))
 
                 if config.ENABLE_SMART_PACING and isinstance(self._pipeline, ArticlePipeline):
                     pacing_results = await self._run_smart_pacing_cycle(
                         all_raw_articles,
                         recent_history=recent_history,
                     )
+                    if isinstance(pacing_results, dict):
+                        published_this_cycle = int(pacing_results.get("published", 0) or 0)
                     logger.info("Smart pacing cycle results: %s", pacing_results)
                 else:
-                    published_this_cycle = 0
                     if all_raw_articles:
                         new_articles = await self._extract_and_insert(all_raw_articles)
                         logger.info("%d new articles to process.", len(new_articles))
@@ -507,7 +559,8 @@ class NewsEngine:
                                 pipeline_results = await self._pipeline.process_batch(
                                     capped_articles, max_publish=BATCH_PUBLISH_LIMIT
                                 )
-                                published_this_cycle = pipeline_results.get("published", 0)
+                                if isinstance(pipeline_results, dict):
+                                    published_this_cycle = int(pipeline_results.get("published", 0) or 0)
                                 logger.info("Pipeline results: %s", pipeline_results)
 
                     # Check and publish held articles within remaining cycle capacity
@@ -518,6 +571,26 @@ class NewsEngine:
                 # Cold start protection completed after first discovery pass
                 if self._pipeline is not None and hasattr(self._pipeline, "set_cold_start"):
                     self._pipeline.set_cold_start(False)
+
+                # Private Admin Watchdog alerts & daily health report (ZERO Gemini calls, non-blocking)
+                if self._watchdog is not None:
+                    raw_gem_stats = (
+                        self._pipeline.consume_gemini_cycle_stats()
+                        if self._pipeline is not None and hasattr(self._pipeline, "consume_gemini_cycle_stats")
+                        else {}
+                    )
+                    gem_stats = raw_gem_stats if isinstance(raw_gem_stats, dict) else {}
+                    wd_metrics = WatchdogCycleMetrics(
+                        discovered=raw_discovered_count,
+                        published=published_this_cycle,
+                        gemini_429_hits=int(gem_stats.get("http_429_hits", 0) or 0),
+                        gemini_exhausted=int(gem_stats.get("quota_exhausted_events", 0) or 0),
+                        supabase_fallback=self._supabase_fallback_active,
+                        supabase_error=self._supabase_fallback_error,
+                        storage_backend=self._active_storage_backend_label(),
+                        discovery_ran=True,
+                    )
+                    await self._watchdog.run_cycle_checks(wd_metrics)
             finally:
                 if self._pipeline is not None and hasattr(self._pipeline, "set_cycle_published_history"):
                     self._pipeline.set_cycle_published_history(None)

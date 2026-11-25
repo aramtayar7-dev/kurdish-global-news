@@ -746,6 +746,10 @@ class ImportanceRanker:
         """Close the underlying Gemini HTTP session."""
         await self._gemini.cleanup()
 
+    def consume_gemini_cycle_stats(self) -> dict[str, int]:
+        """Return and reset Gemini HTTP 429 & exhaustion counters from the ranker client."""
+        return self._gemini.consume_cycle_stats()
+
     def _rule_based_fallback(
         self, article: Article, err_reason: str
     ) -> RelevanceEvaluation:

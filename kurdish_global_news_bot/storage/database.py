@@ -690,9 +690,15 @@ class Database:
     # System Logs
     # ───────────────────────────────────────────────
 
-    async def log_system_event(self, level: str, component: str, message: str) -> None:
+    async def log_system_event(
+        self,
+        level: str,
+        component: str,
+        message: str,
+        timestamp: Optional[str] = None,
+    ) -> None:
         """Write a system log entry to the database."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = timestamp or datetime.now(timezone.utc).isoformat()
         try:
             async with self._lock:
                 await self.conn.execute(
@@ -703,6 +709,101 @@ class Database:
                 await self.conn.commit()
         except Exception as e:
             logger.error("Failed to write system log: %s", e)
+
+    async def get_recent_system_logs(
+        self,
+        component: str,
+        limit: int = 50,
+        hours: Optional[int] = None,
+        now: Optional[datetime] = None,
+    ) -> list[dict]:
+        """Fetch recent system_logs entries for a component (newest first)."""
+        async with self.conn.execute(
+            """SELECT id, timestamp, level, component, message
+               FROM system_logs WHERE component = ?
+               ORDER BY timestamp DESC, id DESC LIMIT ?""",
+            (component, max(1, int(limit))),
+        ) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+
+        if hours is not None:
+            ref_now = now or datetime.now(timezone.utc)
+            if ref_now.tzinfo is None:
+                ref_now = ref_now.replace(tzinfo=timezone.utc)
+            cutoff = ref_now - timedelta(hours=max(1, int(hours)))
+            filtered: list[dict] = []
+            for row in rows:
+                dt = self._parse_utc_timestamp(row.get("timestamp"))
+                if dt is not None and dt >= cutoff:
+                    filtered.append(row)
+            return filtered
+        return rows
+
+    async def get_sources_status(self) -> list[dict]:
+        """Return enabled sources and their failure counters for watchdog health monitoring."""
+        async with self.conn.execute(
+            """SELECT name, source_type, enabled, consecutive_failures,
+                      last_error, last_checked_at, last_success_at
+               FROM sources WHERE COALESCE(enabled, 1) = 1
+               ORDER BY consecutive_failures DESC, name ASC"""
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_watchdog_article_metrics(
+        self,
+        hours: int = 24,
+        now: Optional[datetime] = None,
+    ) -> dict[str, object]:
+        """Compute 24h article metrics, backlog count, and last published time for watchdog."""
+        ref_now = now or datetime.now(timezone.utc)
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=timezone.utc)
+        cutoff = ref_now - timedelta(hours=max(1, int(hours)))
+
+        async with self.conn.execute(
+            """SELECT * FROM articles WHERE status = 'PUBLISHED'
+               ORDER BY published_at DESC, id DESC LIMIT 300"""
+        ) as cursor:
+            pub_rows = await cursor.fetchall()
+
+        published_recent: list[Article] = []
+        all_pub_timestamps: list[datetime] = []
+        for row in pub_rows:
+            art = self._row_to_article(row)
+            dt = self._parse_utc_timestamp(art.published_at or art.discovered_at)
+            if dt is not None:
+                all_pub_timestamps.append(dt)
+                if dt >= cutoff:
+                    published_recent.append(art)
+
+        last_published_at = max(all_pub_timestamps) if all_pub_timestamps else None
+
+        async with self.conn.execute(
+            """SELECT status, discovered_at FROM articles
+               WHERE status IN ('REJECTED_DUPLICATE', 'SKIPPED')
+               ORDER BY id DESC LIMIT 1000"""
+        ) as cursor:
+            eff_rows = await cursor.fetchall()
+
+        duplicates_recent = 0
+        skipped_recent = 0
+        for row in eff_rows:
+            dt = self._parse_utc_timestamp(row["discovered_at"])
+            if dt is None or dt >= cutoff:
+                if row["status"] == ArticleStatus.REJECTED_DUPLICATE:
+                    duplicates_recent += 1
+                elif row["status"] == ArticleStatus.SKIPPED:
+                    skipped_recent += 1
+
+        stats = await self.get_stats()
+        return {
+            "published_articles": published_recent,
+            "duplicates_count": duplicates_recent,
+            "skipped_count": skipped_recent,
+            "queued_count": int(stats.get(ArticleStatus.QUEUED, 0)),
+            "total_articles": int(stats.get("total", 0)),
+            "last_published_at": last_published_at,
+        }
 
     # ───────────────────────────────────────────────
     # Statistics
