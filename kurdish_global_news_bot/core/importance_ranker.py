@@ -67,10 +67,11 @@ KURDISTAN_PATTERN = re.compile(
 # Southern Kurdistan (Bashur) geographic, governmental, and security identifiers
 BASHUR_PATTERN = re.compile(
     r"(erbil|hewler|sulaymaniyah|slemani|\bsuli\b|duhok|halabja|kirkuk|peshmerga|\bkrg\b|"
-    r"kurdistan region|iraqi kurdistan|south kurdistan|bashur|erbil[\s\-–]+baghdad|"
-    r"baghdad[\s\-–]+erbil|nechirvan|masrour|barzani|talabani|disputed areas?|article 140|"
+    r"kurdistan region|iraqi kurdistan|south kurdistan|\bbashur\b(?!\s+(?:beirut|lebanon|gaza|israel|syria|iraq|iran|damascus|tehran|baghdad))|"
+    r"erbil[\s\-–]+baghdad|baghdad[\s\-–]+erbil|nechirvan|masrour|barzani|talabani|disputed areas?|article 140|"
     r"هەولێر|سلێمانی|دهۆک|هەڵەبجە|کەرکوک|پێشمەرگە|هەرێمی کوردستان|حکومەتی هەرێم|"
-    r"کوردستانی باشوور|باشوور|بارزانی|تاڵەبانی|هەولێر و بەغدا|مووچە)",
+    r"کوردستانی باشوور|باشووری کوردستان|باشوور(?!ی\s+(?:بەیروت|لوبنان|غەززە|ئیسرائیل|سوریا|عێراق|تاران|بەغدا|دیمەشق|ئەمریکا|یەمان|سودان|کەرتی|ئێران|تەورێز|کەناری))|"
+    r"بارزانی|تاڵەبانی|هەولێر و بەغدا|مووچە)",
     re.IGNORECASE,
 )
 

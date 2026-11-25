@@ -109,6 +109,8 @@ GEMINI_REQUEST_PACING_SECONDS: float = _float(os.getenv("GEMINI_REQUEST_PACING_S
 # Branding & Card Generation
 CHANNEL_HANDLE: str = os.getenv("CHANNEL_HANDLE", "@KurdishGlobalNews").strip() or "@KurdishGlobalNews"
 ASSETS_DIR: Path = _PROJECT_ROOT / "assets"
+BACKGROUNDS_DIR: Path = ASSETS_DIR / "backgrounds"
+ENABLE_SMART_BACKGROUNDS: bool = _bool(os.getenv("ENABLE_SMART_BACKGROUNDS"), True)
 CARD_WIDTH: int = 1280
 CARD_HEIGHT: int = 720
 

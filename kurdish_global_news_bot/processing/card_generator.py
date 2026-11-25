@@ -171,8 +171,12 @@ class NewsCardGenerator:
 
         return Image.alpha_composite(img, overlay)
 
-    def _prepare_background(self, image_bytes: Optional[bytes]) -> Image.Image:
-        """Prepare 1280x720 center-cropped image or geometric fallback."""
+    def _prepare_background(
+        self,
+        image_bytes: Optional[bytes],
+        article: Optional[Article] = None,
+    ) -> Image.Image:
+        """Prepare 1280x720 center-cropped image, smart theme fallback, or geometric fallback."""
         if image_bytes:
             try:
                 src = Image.open(io.BytesIO(image_bytes))
@@ -186,7 +190,28 @@ class NewsCardGenerator:
                 )
                 return fitted
             except Exception as e:
-                logger.warning("Background image decode failed (%s); using geometric fallback.", e)
+                logger.warning("Background image decode failed (%s); using fallback.", e)
+
+        # Smart Location & Topic-Aware Fallback Background
+        if article is not None:
+            try:
+                from processing.background_selector import resolve_background_bytes
+                bg_bytes = resolve_background_bytes(
+                    article,
+                    backgrounds_dir=self._assets_dir / "backgrounds",
+                )
+                if bg_bytes:
+                    src = Image.open(io.BytesIO(bg_bytes))
+                    src = ImageOps.exif_transpose(src)
+                    src = src.convert("RGBA")
+                    return ImageOps.fit(
+                        src,
+                        (CARD_WIDTH, CARD_HEIGHT),
+                        method=Image.Resampling.LANCZOS,
+                        centering=(0.5, 0.5),
+                    )
+            except Exception as e:
+                logger.warning("Smart fallback background resolution failed (%s); using geometric fallback.", e)
 
         return self._create_fallback_background()
 
@@ -323,7 +348,7 @@ class NewsCardGenerator:
         is_breaking: Optional[bool] = None,
     ) -> bytes:
         """Synchronously render 1280x720 branded JPEG news card and return bytes."""
-        bg = self._prepare_background(image_bytes)
+        bg = self._prepare_background(image_bytes, article=article)
         canvas = self._apply_bottom_gradient(bg)
         self._draw_logo_or_badge(canvas)
 

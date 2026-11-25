@@ -99,8 +99,7 @@ def test_github_actions_workflow_configuration():
 
     content = workflow_path.read_text(encoding="utf-8")
 
-    # Triggers
-    assert "cron: '*/30 * * * *'" in content
+    # Triggers (external trigger via cron-job.org + manual workflow_dispatch)
     assert "workflow_dispatch:" in content
 
     # Python & Cache setup
