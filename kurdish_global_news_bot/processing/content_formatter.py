@@ -13,7 +13,11 @@ import re
 from typing import Optional
 
 from config import CATEGORY_EMOJIS, CATEGORY_META
-from processing.translator import strip_news_dateline, trim_at_sentence_boundary
+from processing.translator import (
+    is_valid_kurdish_sorani,
+    strip_news_dateline,
+    trim_at_sentence_boundary,
+)
 from storage.models import Article
 
 logger = logging.getLogger("processing.formatter")
@@ -129,6 +133,14 @@ _RAW_NEUTRAL_TERM_RULES: tuple[tuple[str, str], ...] = (
     # Syria
     (r"سوو?ریای\s+داگیرکراوە?", "سووریا"),
     (r"سوري[اة]\s+المحتلة", "سووریا"),
+    # Strip partisan insults / epithets targeting political leaders
+    (r"(?:المجرم|القاتل|الإرهابي|الارهابي|السفاح|الجبان|الطاغية)\s+(?:دونالد\s+)?(?:ترامب|ترمب)", "دۆناڵد ترەمپ"),
+    (r"(?:تاوانبار|بکوژ|تیرۆریست|دڕندە|ترسنۆک)\s+(?:دۆناڵد\s+)?(?:ترەمپ|ترامپ)", "دۆناڵد ترەمپ"),
+    (r"(?:دۆناڵد\s+)?(?:ترەمپ|ترامپ)ی\s+(?:تاوانبار|بکوژ|تیرۆریست|ترسنۆک)", "دۆناڵد ترەمپ"),
+    (r"(?:المجرم|القاتل|الإرهابي|الارهابي|السفاح|الجبان)\s+(?:بنيامين\s+)?(?:نتنياهو|نتنیاهو)", "بێنیامین نەتەنیاهۆ"),
+    (r"(?:تاوانبار|بکوژ|تیرۆریست)\s+(?:بێنیامین\s+)?(?:نەتەنیاهۆ|نتنیاهو|نتنياهو)", "بێنیامین نەتەنیاهۆ"),
+    (r"(?:المجرم|القاتل|الإرهابي|الارهابي|السفاح)\s+(?:جو\s+)?(?:بايدن|بایدن)", "جۆ بایدن"),
+    (r"(?:تاوانبار|بکوژ|تیرۆریست)\s+(?:جۆ\s+)?(?:بایدن|بايدن)", "جۆ بایدن"),
     # Other partisan epithets
     (r"(?:ئێرانی\s+دوژمن|دوژمنی\s+ئێرانی|ڕژێمی\s+مەلاکان)", "ئێران"),
     (r"(?:العدو\s+(?:الإيراني|الايراني)|النظام\s+الصفوي)", "ئێران"),
@@ -172,9 +184,9 @@ class ContentFormatter:
     """Formats articles for Telegram publication in Kurdish Sorani."""
 
     def _format_headline(self, article: Article) -> str:
-        """Escape the headline and prepend the breaking badge prefix when active."""
+        """Escape the headline from strict Sorani translation only (never raw source text)."""
         raw_title = normalize_neutral_terminology(
-            (article.translated_title or article.original_title or "").strip()
+            (article.translated_title or "").strip()
         )
         prefix = "🔴 بەپەلە | " if getattr(article, "is_breaking", False) else ""
         return self._escape_html(f"{prefix}{raw_title}")
@@ -190,7 +202,7 @@ class ContentFormatter:
         parts.append(f"{emoji} <b>{headline}</b>")
 
         summary = normalize_neutral_terminology(
-            strip_news_dateline(article.translated_summary or article.original_summary or "")
+            strip_news_dateline(article.translated_summary or "")
         )
         if summary:
             trimmed = self._truncate_summary(summary, max_len=650)
@@ -234,7 +246,7 @@ class ContentFormatter:
         footer = "\n".join(footer_parts)
 
         summary = normalize_neutral_terminology(
-            strip_news_dateline(article.translated_summary or article.original_summary or "")
+            strip_news_dateline(article.translated_summary or "")
         )
         if not summary:
             caption = f"{header}\n{footer}"

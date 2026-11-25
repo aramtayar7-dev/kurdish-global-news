@@ -25,7 +25,7 @@ class RawArticle:
     source_name: str = ""
     category: str = ""
     publication_date: Optional[str] = None
-    image_url: str = ""
+    image_url: Optional[str] = ""
     video_url: Optional[str] = None
     country: str = ""
     region: str = ""

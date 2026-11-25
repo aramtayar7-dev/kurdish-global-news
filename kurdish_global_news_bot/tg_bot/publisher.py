@@ -28,7 +28,7 @@ from config import (
 from core.importance_ranker import is_strict_breaking
 from processing.card_generator import NewsCardGenerator
 from processing.content_formatter import ContentFormatter
-from processing.translator import trim_at_sentence_boundary
+from processing.translator import is_valid_kurdish_sorani, trim_at_sentence_boundary
 from processing.video_processor import cleanup_video_file, download_and_brand_video
 from storage.models import Article
 from tg_bot.image_handler import ImageHandler
@@ -111,6 +111,20 @@ class TelegramPublisher:
         """
         if not self._bot:
             raise RuntimeError("Publisher not initialized. Call initialize() first.")
+
+        # Strict Sorani Kurdish publish gate: never generate cards or publish untranslated/Arabic text
+        if not is_valid_kurdish_sorani(article.translated_title or ""):
+            logger.warning(
+                "Publish ABORTED (Sorani gate): non-Sorani or empty translated headline for '%s'",
+                (article.original_title or "")[:80],
+            )
+            return None
+        if (article.translated_summary or "").strip() and not is_valid_kurdish_sorani(article.translated_summary):
+            logger.warning(
+                "Publish ABORTED (Sorani gate): non-Sorani translated summary for '%s'",
+                (article.original_title or "")[:80],
+            )
+            return None
 
         if getattr(article, "video_url", None):
             message_id = await self._publish_with_video(article)

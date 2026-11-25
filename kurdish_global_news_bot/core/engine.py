@@ -17,7 +17,11 @@ from typing import Optional
 from storage import create_database, get_kurdistan_date_str
 from storage.migrations import run_migrations
 from core.scheduler import DiscoveryScheduler
-from core.importance_ranker import check_blocked_topic, is_strict_breaking
+from core.importance_ranker import (
+    check_blocked_topic,
+    is_strict_breaking,
+    select_top_candidates_for_gemini,
+)
 from core.pipeline import ArticlePipeline
 from core.recovery import RecoveryManager
 from sources.base import BaseSource, RawArticle
@@ -36,7 +40,7 @@ from monitoring.metrics import Metrics, Timer
 from config import (
     ENABLE_DDG, ENABLE_RSS, ENABLE_GDELT, ENABLE_TELEGRAM, CHANNEL_HANDLE,
     MAX_CONCURRENT_SOURCES, ArticleStatus, BACKUP_INTERVAL_HOURS,
-    MAX_ARTICLE_AGE_MINUTES, BATCH_PUBLISH_LIMIT,
+    MAX_ARTICLE_AGE_MINUTES, BATCH_PUBLISH_LIMIT, MAX_GEMINI_CANDIDATES_PER_CYCLE,
 )
 
 logger = logging.getLogger("core.engine")
@@ -456,12 +460,42 @@ class NewsEngine:
                 logger.info("%d new articles to process.", len(new_articles))
 
                 if new_articles:
-                    # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
-                    pipeline_results = await self._pipeline.process_batch(
-                        new_articles, max_publish=BATCH_PUBLISH_LIMIT
+                    # Pre-filter obvious off-topic items & cap fresh relevant candidates BEFORE Gemini
+                    capped_articles, locally_rejected = select_top_candidates_for_gemini(
+                        new_articles, max_candidates=MAX_GEMINI_CANDIDATES_PER_CYCLE
                     )
-                    published_this_cycle = pipeline_results.get("published", 0)
-                    logger.info("Pipeline results: %s", pipeline_results)
+                    for rej_art, rej_reason in locally_rejected:
+                        try:
+                            await self._db.update_article_status(
+                                rej_art.id,
+                                ArticleStatus.SKIPPED,
+                                error_message=f"SKIPPED [Pre-Filter]: {rej_reason}",
+                            )
+                            if rej_reason.startswith(("Blocked", "Pre-filtered")):
+                                await self._db.mark_url_skipped(
+                                    rej_art.canonical_url or rej_art.original_url,
+                                    title=rej_art.original_title,
+                                    score=2.0,
+                                    reason=rej_reason,
+                                )
+                        except Exception:
+                            pass
+
+                    if len(locally_rejected) > 0:
+                        logger.info(
+                            "Local pre-filter/cap: %d -> %d candidates forwarded to pipeline (%d filtered locally with 0 Gemini calls).",
+                            len(new_articles),
+                            len(capped_articles),
+                            len(locally_rejected),
+                        )
+
+                    if capped_articles:
+                        # Enforce 5-of-8 Bashur/Global quota & publish ordered winners
+                        pipeline_results = await self._pipeline.process_batch(
+                            capped_articles, max_publish=BATCH_PUBLISH_LIMIT
+                        )
+                        published_this_cycle = pipeline_results.get("published", 0)
+                        logger.info("Pipeline results: %s", pipeline_results)
 
             # Check and publish held articles within remaining cycle capacity
             remaining_capacity = max(0, BATCH_PUBLISH_LIMIT - published_this_cycle)

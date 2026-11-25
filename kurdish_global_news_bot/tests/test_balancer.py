@@ -643,12 +643,21 @@ class TestFiveOfEightBashurQuotaBalancer:
                 return RelevanceEvaluation(score=8, is_breaking=False, category="kurdistan", reason="Bashur politics", passed=True)
             return RelevanceEvaluation(score=8, is_breaking=False, category="politics_world", reason="Global politics", passed=True)
 
-        # Ensure Stage B never hits real network if Stage A passes
-        pipeline._semantic_dedup._gemini._api_keys = []
+        async def mock_translator(title: str, summary: str = "") -> tuple[str, str]:
+            if "Erbil" in title or "KRG" in title:
+                return (
+                    "لە هەولێر گفتوگۆی سیاسی نێوان هەرێم و بەغدا دەستیپێکرد",
+                    "پوختەی هەواڵە سیاسییەکەی هەولێر و بەغدا بە زمانی کوردی سۆرانی.",
+                )
+            return (
+                "وەزیرانی دەرەوەی ئێران و تورکیا لەسەر دۆخی ئەمنی کۆبوونەوە",
+                "پوختەی هەواڵە دیپلۆماسییەکە بە زمانی کوردی سۆرانی.",
+            )
 
+        # Stage B semantic dedup runs locally with zero Gemini network calls
         with patch.object(pipeline._ranker, "evaluate_global_relevance", side_effect=mock_relevance), \
              patch.object(pipeline._extractor, "fetch_article_content_and_image", new=AsyncMock(return_value=(None, None))), \
-             patch.object(pipeline._translator, "translate_article", side_effect=lambda title, summary="": (f"کوردی: {title}", f"پوختە: {summary}")):
+             patch.object(pipeline._translator, "translate_article", side_effect=mock_translator):
             res = await pipeline.process_batch([global_story, dup1, dup2], max_publish=8)
 
         # Duplicate Bashur event eliminated -> only 1 Bashur + 1 Global published (never 2 Bashur)

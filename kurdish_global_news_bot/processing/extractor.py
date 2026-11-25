@@ -99,7 +99,7 @@ class ArticleExtractor:
         article.original_summary = raw.summary.strip()[:1000]
         article.source_name = raw.source_name.strip()
         article.publication_date = raw.publication_date or ""
-        article.image_url = raw.image_url.strip()
+        article.image_url = (raw.image_url or "").strip()
         article.video_url = raw.video_url.strip() if getattr(raw, "video_url", None) else None
         article.discovered_at = datetime.now(timezone.utc).isoformat()
         article.country = raw.country or self._detect_country(raw.url)

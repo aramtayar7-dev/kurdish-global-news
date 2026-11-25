@@ -359,9 +359,9 @@ class TelegramSource(BaseSource):
                 if not headline or not summary:
                     continue
 
-                photo_url = extract_telegram_photo_url(msg_node)
-                video_thumb_url = extract_telegram_video_thumb_url(msg_node)
-                image_url = photo_url or video_thumb_url
+                # Ignore static watermarked/screenshot photo & video-thumb URLs for Telegram channels
+                # so card_generator uses clean news backgrounds instead of overlapping text on screenshots;
+                # retain direct video_url so videos get branded with our KGN logo via FFmpeg.
                 video_url = extract_telegram_video_url(msg_node)
                 canonical_url = f"https://t.me/{username}/{post_id}"
 
@@ -373,7 +373,7 @@ class TelegramSource(BaseSource):
                         source_name=display_name,
                         category="",
                         publication_date=pub_iso,
-                        image_url=image_url,
+                        image_url=None,
                         video_url=video_url,
                         country=region_hint,
                         region=region_hint,

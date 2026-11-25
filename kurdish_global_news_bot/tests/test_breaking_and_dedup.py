@@ -412,9 +412,8 @@ class TestSemanticEventDeduplication:
             pub_id, ArticleStatus.PUBLISHED, published_at=pub.published_at
         )
 
-        dedup = SemanticDeduplicator(temp_db, api_key="gem_test_key", base_backoff=0.0)
-        mock_session = _make_json_session(200, {"is_duplicate": False, "matched_id": None, "reason": "N/A"})
-        dedup._gemini._get_session = AsyncMock(return_value=mock_session)
+        dedup = SemanticDeduplicator(temp_db)
+        assert dedup.uses_gemini is False
 
         cand = _make_article(
             title="Iran launches ballistic missile strikes on regional military bases",
@@ -426,12 +425,12 @@ class TestSemanticEventDeduplication:
         assert res.is_duplicate is True
         assert res.stage == "fast"
         assert res.matched_id == pub_id
-        mock_session.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stage_b_cross_source_gemini_dedup_in_pipeline_saves_skipped_url(
         self, temp_db, caplog
     ):
+        """Zero-API cross-source semantic dedup catches paraphrased duplicate events and persists skipped URLs."""
         now = datetime.now(timezone.utc)
         existing = _make_article(
             title="Israeli warplanes bomb weapon depots near Beirut airport",
@@ -448,20 +447,7 @@ class TestSemanticEventDeduplication:
         publisher = MagicMock(spec=TelegramPublisher)
         publisher.publish_article = AsyncMock(return_value=999)
         pipeline = ArticlePipeline(temp_db, publisher, HealthMonitor(), Metrics())
-
-        # Replace semantic dedup session with mocked Gemini semantic match
-        pipeline._semantic_dedup = SemanticDeduplicator(
-            temp_db, api_key="gem_k1,gem_k2", base_backoff=0.0
-        )
-        mock_session = _make_json_session(
-            200,
-            {
-                "is_duplicate": True,
-                "matched_id": existing_id,
-                "reason": "Both report the same overnight Israeli airstrikes near Beirut airport.",
-            },
-        )
-        pipeline._semantic_dedup._gemini._get_session = AsyncMock(return_value=mock_session)
+        assert pipeline._semantic_dedup.uses_gemini is False
 
         candidate = _make_article(
             title="Massive explosions shake southern Lebanese capital amid aerial bombardment",
@@ -477,7 +463,7 @@ class TestSemanticEventDeduplication:
                 score=8, is_breaking=False, category="military_conflict",
                 reason="Major regional escalation", passed=True,
             )),
-        ), patch.object(
+        ) as mock_rank, patch.object(
             pipeline._extractor,
             "fetch_article_content_and_image",
             new=AsyncMock(return_value=("Should not scrape", None)),
@@ -489,6 +475,7 @@ class TestSemanticEventDeduplication:
             published = await pipeline.process_article(candidate)
 
         assert published is False
+        mock_rank.assert_not_called()
         mock_scrape.assert_not_called()
         mock_translate.assert_not_called()
         publisher.publish_article.assert_not_called()
@@ -506,6 +493,7 @@ class TestSemanticEventDeduplication:
     async def test_stage_b_prioritizes_same_category_and_caps_at_25_with_fail_open(
         self, temp_db
     ):
+        """Distinct events remain non-duplicate using zero-API local cross-source checks."""
         now = datetime.now(timezone.utc)
         for i in range(18):
             a = _make_article(
@@ -531,24 +519,8 @@ class TestSemanticEventDeduplication:
             aid = await temp_db.insert_article(a)
             await temp_db.update_article_status(aid, ArticleStatus.PUBLISHED, published_at=a.published_at)
 
-        dedup = SemanticDeduplicator(temp_db, api_key="gem_k1", base_backoff=0.0)
-        captured_payloads: list[dict] = []
-
-        resp = AsyncMock()
-        resp.status = 200
-        resp.json = AsyncMock(return_value={
-            "candidates": [{"content": {"parts": [{"text": json.dumps({
-                "is_duplicate": False, "matched_id": None, "reason": "Distinct model launch."
-            })}]}}]
-        })
-        session = MagicMock()
-
-        def _post_side_effect(*args, **kwargs):
-            captured_payloads.append(kwargs["json"])
-            return _MockResponseContext(resp)
-
-        session.post = MagicMock(side_effect=_post_side_effect)
-        dedup._gemini._get_session = AsyncMock(return_value=session)
+        dedup = SemanticDeduplicator(temp_db)
+        assert dedup.uses_gemini is False
 
         cand = _make_article(
             title="New Open Source Robotics Foundation Unveils Hardware Chip",
@@ -557,22 +529,4 @@ class TestSemanticEventDeduplication:
         )
         res = await dedup.check_duplicate(cand)
         assert res.is_duplicate is False
-        assert res.stage == "gemini"
-
-        prompt_text = captured_payloads[0]["contents"][0]["parts"][0]["text"]
-        assert "RECENTLY_PUBLISHED (25 headlines):" in prompt_text
-        json_part = prompt_text.split("headlines):\n", 1)[1]
-        sent_items = json.loads(json_part)
-        assert len(sent_items) == 25
-        # All 12 same-category (ai_tech) items appear before politics_world items
-        assert all(item["category"] == "ai_tech" for item in sent_items[:12])
-
-        # Verify fail-open when Gemini throws network error
-        broken_session = MagicMock()
-        broken_session.post = MagicMock(side_effect=RuntimeError("Timeout"))
-        dedup._gemini._get_session = AsyncMock(return_value=broken_session)
-
-        fail_open_res = await dedup.check_duplicate(cand)
-        assert fail_open_res.is_duplicate is False
-        assert fail_open_res.used_fallback is True
-        assert fail_open_res.stage == "fail_open"
+        assert res.stage == "local_semantic"

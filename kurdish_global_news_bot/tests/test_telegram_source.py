@@ -303,7 +303,8 @@ class TestTelegramHtmlParsing:
         assert first.source_name == "Sabereen News"
         assert first.region == "iraq_region"
         assert first.country == "iraq_region"
-        assert first.image_url == "https://cdn4.telegram-cdn.org/file/photo_single.jpg"
+        # Static watermarked Telegram photos are intentionally ignored (card_generator uses clean theme background)
+        assert first.image_url is None
         assert '"تنفيذ ضربات جوية"' in first.summary
         assert "الحدود & تعزيز" in first.summary
         assert "٤٥" in first.summary
@@ -316,12 +317,12 @@ class TestTelegramHtmlParsing:
 
         second = articles[1]
         assert second.url == "https://t.me/SabrenNewss/12346"
-        assert second.image_url == "https://cdn4.telegram-cdn.org/file/photo_unquoted.jpg"
+        assert second.image_url is None
         assert second.publication_date.endswith("+00:00")
 
         third = articles[2]
         assert third.url == "https://t.me/SabrenNewss/12347"
-        assert third.image_url == ""
+        assert third.image_url is None
 
     def test_extract_telegram_photo_url_all_quote_and_entity_variants(self):
         cases = [
@@ -972,7 +973,8 @@ class TestTelegramPipelineAndEngineIntegration:
             ok = await pipeline.process_article(baghdad_tg_art)
 
         assert ok is True
-        publisher._image_handler.download_image.assert_awaited_once_with(tg_photo_url)
+        # Telegram channel static photos/og:image are suppressed so branded card avoids channel watermarks
+        publisher._image_handler.download_image.assert_not_awaited()
         send_kwargs = mock_bot.send_photo.call_args.kwargs
         assert send_kwargs["disable_notification"] is True
         assert "🔴 بەپەلە | " not in send_kwargs["caption"]
@@ -1043,7 +1045,7 @@ class TestTelegramPipelineAndEngineIntegration:
         assert "🔴 بەپەلە | " in brk_kwargs["caption"]
         assert is_strict_breaking(breaking_tg) is True
 
-        # Case 2C: Same military event later arriving from another Telegram channel -> SemanticDeduplicator skips!
+        # Case 2C: Same military event later arriving from another Telegram channel -> zero-API local dedup skips!
         dup_tg = Article(
             original_url="https://t.me/SabrenNewss/9004",
             canonical_url="https://t.me/SabrenNewss/9004",
@@ -1057,16 +1059,6 @@ class TestTelegramPipelineAndEngineIntegration:
             publication_date=_iso_hours_ago(0.05),
         )
         dup_tg.id = await temp_db.insert_article(dup_tg)
-        pipeline._semantic_dedup = SemanticDeduplicator(temp_db, api_key="gem_test_key", base_backoff=0.0)
-        pipeline._semantic_dedup._gemini._get_session = AsyncMock(
-            return_value=_make_gemini_json_session(
-                {
-                    "is_duplicate": True,
-                    "matched_id": breaking_tg.id,
-                    "reason": "Both report the exact same ballistic missile strike on the central airbase.",
-                }
-            )
-        )
         with patch.object(
             pipeline._ranker,
             "evaluate_global_relevance",
@@ -1178,26 +1170,26 @@ class TestTelegramVideoAndMediaExtraction:
 
         assert len(articles) == 4
 
-        # 1. Direct <video src> + video thumb
+        # 1. Direct <video src> -> video_url extracted, thumb image_url ignored
         assert articles[0].url == "https://t.me/SabrenNewss/7001"
         assert articles[0].source_name == "Sabereen News"
         assert articles[0].video_url == "https://cdn4.telegram-cdn.org/file/clip_7001.mp4"
-        assert articles[0].image_url == "https://cdn4.telegram-cdn.org/file/vthumb_1.jpg"
+        assert articles[0].image_url is None
 
-        # 2. Nested <video><source src> + entity-escaped thumb
+        # 2. Nested <video><source src> -> video_url extracted, thumb image_url ignored
         assert articles[1].url == "https://t.me/SabrenNewss/7002"
         assert articles[1].video_url == "https://cdn4.telegram-cdn.org/file/clip_7002.mp4"
-        assert articles[1].image_url == "https://cdn4.telegram-cdn.org/file/vthumb_2.jpg"
+        assert articles[1].image_url is None
 
-        # 3. "Media is too big" -> video_url is None, thumbnail image_url extracted reliably
+        # 3. "Media is too big" -> video_url is None, static thumbnail ignored
         assert articles[2].url == "https://t.me/SabrenNewss/7003"
         assert articles[2].video_url is None
-        assert articles[2].image_url == "https://cdn4.telegram-cdn.org/file/too_big_thumb.jpg"
+        assert articles[2].image_url is None
 
-        # 4. Multi-media (photo + video) -> retains both video_url and photo image_url
+        # 4. Multi-media (photo + video) -> retains video_url, static photo image_url ignored
         assert articles[3].url == "https://t.me/SabrenNewss/7004"
         assert articles[3].video_url == "https://cdn4.telegram-cdn.org/file/album_vid.mp4"
-        assert articles[3].image_url == "https://cdn4.telegram-cdn.org/file/album_photo.jpg"
+        assert articles[3].image_url is None
 
         # Verify helper functions directly ignore malformed/non-http video attrs
         bad_soup = BeautifulSoup(

@@ -659,3 +659,901 @@
 2026-11-24 11:24:56 │ INFO     │ metrics              │ log_report:68 │   discovery_cycle_time: avg=98.541s, min=98.541s, max=98.541s, count=1
 2026-11-24 11:24:56 │ INFO     │ core.engine          │ stop:344 │ Engine stopped. Total discovery cycles: 1
 2026-11-24 11:24:56 │ INFO     │ main                 │ run_bot_with_web_server:84 │ Shutting down embedded health server...
+2026-11-25 02:14:03 │ INFO     │ newsbot              │ setup_logging:79 │ Logging initialized. Level: INFO, Log dir: D:\guevara hawal\logs
+2026-11-25 02:14:03 │ INFO     │ newsbot              │ main:116 │ ============================================================
+2026-11-25 02:14:03 │ INFO     │ newsbot              │ main:117 │   Kurdish Global News Bot — Starting [Single-Run Mode (--once)]
+2026-11-25 02:14:03 │ INFO     │ newsbot              │ main:118 │   Autonomous International News Platform
+2026-11-25 02:14:03 │ INFO     │ newsbot              │ main:119 │ ============================================================
+2026-11-25 02:14:03 │ INFO     │ newsbot              │ main:140 │ Running single discovery and publishing cycle...
+2026-11-25 02:14:03 │ WARNING  │ processing.card_generator │ <module>:39 │ Pillow libraqm is not available in this environment; using arabic-reshaper + python-bidi RTL fallback (install libfribidi0 libharfbuzz0b libraqm0 for native raqm shaping).
+2026-11-25 02:14:03 │ INFO     │ storage              │ create_database:43 │ Using local SQLite database backend.
+2026-11-25 02:14:03 │ INFO     │ core.engine          │ run_once:146 │ ╔══════════════════════════════════════════╗
+2026-11-25 02:14:03 │ INFO     │ core.engine          │ run_once:147 │ ║   Kurdish Global News Bot — Single Run   ║
+2026-11-25 02:14:03 │ INFO     │ core.engine          │ run_once:148 │ ╚══════════════════════════════════════════╝
+2026-11-25 02:14:03 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:14:03 │ INFO     │ database             │ connect:61 │ Database connected: D:\guevara hawal\kurdish_global_news_bot\data\news_bot.db
+2026-11-25 02:14:03 │ INFO     │ migrations           │ run_migrations:67 │ Current database version: 5
+2026-11-25 02:14:03 │ INFO     │ migrations           │ run_migrations:97 │ Database version after migrations: 5
+2026-11-25 02:14:03 │ INFO     │ processing.translator │ __init__:476 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:14:04 │ INFO     │ tg_bot.publisher     │ initialize:75 │ Telegram bot connected: @guevaraappBot (KurdishGlobalNews Ai)
+2026-11-25 02:14:04 │ INFO     │ tg_bot.publisher     │ test_connection:380 │ Channel verified: Kurdish Global News (type=channel)
+2026-11-25 02:14:04 │ INFO     │ core.engine          │ _init_sources:416 │ Initialized 6 news sources: ['DuckDuckGo', 'RSS', 'GDELT', 'OfficialSources', 'KurdistanRegions', 'TelegramPublicWeb']
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ run_startup_recovery:91 │ ═══ Starting crash recovery ═══
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ recover_interrupted_jobs:37 │ Found 6 interrupted jobs to recover.
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ recover_interrupted_jobs:48 │ Recovered article 216: PROCESSING -> DISCOVERED (title: 'France: Seven masculinists stand trial in Paris')
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ recover_interrupted_jobs:48 │ Recovered article 217: PROCESSING -> DISCOVERED (title: 'Xi Jinping, Donald Trump and Vladimir Putin begin unpreceden')
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ recover_interrupted_jobs:48 │ Recovered article 221: PROCESSING -> DISCOVERED (title: 'ICJ: Myanmar committed genocide against Rohingya')
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ recover_interrupted_jobs:48 │ Recovered article 273: TRANSLATING -> PROCESSING (title: 'Zimbabwean convicted in South Africa of trying to fight in U')
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ recover_interrupted_jobs:48 │ Recovered article 275: TRANSLATING -> PROCESSING (title: 'DR Congo says military aircraft missing as rebels claim to s')
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ recover_interrupted_jobs:48 │ Recovered article 284: TRANSLATING -> PROCESSING (title: 'Israel’s Ben-Gvir accused of seeking ‘religious war’ over mo')
+2026-11-25 02:14:04 │ INFO     │ core.recovery        │ run_startup_recovery:101 │ Recovery complete: {'interrupted_recovered': 6, 'retry_pending': 0}
+2026-11-25 02:14:04 │ INFO     │ core.engine          │ _process_recovered_articles:559 │ Processing 20 recovered articles.
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 113: 'Musk says Jensen Huang is irreplaceable, regrets midterm spending' (source: CNBC World, pub_date: Thu, 19 Nov 2026 02:49:35 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 113 rejected (Article too old (151.4h > 3.0h limit)): 'Musk says Jensen Huang is irreplaceable, regrets midterm spending'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 116: 'I watched Trump, Xi and Putin gather in China. Here are my top takeaways' (source: CNBC World, pub_date: Wed, 18 Nov 2026 19:47:05 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 116 rejected (Article too old (158.4h > 3.0h limit)): 'I watched Trump, Xi and Putin gather in China. Here are my top takeaways'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 107: 'Tech Life' (source: BBC Technology, pub_date: Tue, 03 Nov 2026 20:30:00 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 107 rejected (Title too short: 9 chars): 'Tech Life'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 106: 'Tech Life' (source: BBC Technology, pub_date: Tue, 10 Nov 2026 20:30:00 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 106 rejected (Title too short: 9 chars): 'Tech Life'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 108: 'Tech Life' (source: BBC Technology, pub_date: Tue, 27 Oct 2026 20:30:00 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 108 rejected (Title too short: 9 chars): 'Tech Life'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 101: 'How important are Nvidia and Jensen Huang to the US economy?' (source: BBC Technology, pub_date: Wed, 18 Nov 2026 06:04:21 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 101 rejected (Article too old (172.2h > 3.0h limit)): 'How important are Nvidia and Jensen Huang to the US economy?'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 100: 'Security flaw found in Java, world's third-largest programming language' (source: BBC Technology, pub_date: Wed, 18 Nov 2026 08:47:06 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 100 rejected (Article too old (169.4h > 3.0h limit)): 'Security flaw found in Java, world's third-largest programming language'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 118: 'Trump arrives in China for historic meeting with Xi, Putin' (source: CNBC World, pub_date: Wed, 18 Nov 2026 12:24:24 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 118 rejected (Article too old (165.8h > 3.0h limit)): 'Trump arrives in China for historic meeting with Xi, Putin'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 111: 'Tech Now' (source: BBC Technology, pub_date: Sat, 03 Oct 2026 01:00:00 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 111 rejected (Title too short: 8 chars): 'Tech Now'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 110: 'Tech Now' (source: BBC Technology, pub_date: Sat, 10 Oct 2026 01:00:00 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 110 rejected (Title too short: 8 chars): 'Tech Now'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 109: 'Tech Now' (source: BBC Technology, pub_date: Sat, 14 Nov 2026 01:00:00 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 109 rejected (Title too short: 8 chars): 'Tech Now'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 112: 'Anthropic IPO raises over $81 billion in largest offering on record, topping Spa' (source: CNBC World, pub_date: Thu, 19 Nov 2026 01:13:20 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 112 rejected (Article too old (153.0h > 3.0h limit)): 'Anthropic IPO raises over $81 billion in largest offering on record, topping Spa'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 115: 'Nasdaq-100 futures gain as traders gear up for Anthropic’s highly anticipated de' (source: CNBC World, pub_date: Thu, 19 Nov 2026 05:32:25 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 115 rejected (Article too old (148.7h > 3.0h limit)): 'Nasdaq-100 futures gain as traders gear up for Anthropic’s highly anticipated de'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 117: 'The 'exceptional' dollar scenario that forced Deutsche Bank to change its FX for' (source: CNBC World, pub_date: Thu, 19 Nov 2026 05:34:08 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 117 rejected (Article too old (148.7h > 3.0h limit)): 'The 'exceptional' dollar scenario that forced Deutsche Bank to change its FX for'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 104: 'How new US chip restrictions on South East Asia will hit China' (source: BBC Technology, pub_date: Tue, 17 Nov 2026 14:25:45 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 104 rejected (Article too old (187.8h > 3.0h limit)): 'How new US chip restrictions on South East Asia will hit China'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 105: 'Tech Life' (source: BBC Technology, pub_date: Tue, 17 Nov 2026 20:30:00 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 105 rejected (Title too short: 9 chars): 'Tech Life'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 103: 'Europe plans to catch the next computer chip wave' (source: BBC Technology, pub_date: Wed, 18 Nov 2026 00:00:24 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 103 rejected (Article too old (178.2h > 3.0h limit)): 'Europe plans to catch the next computer chip wave'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 102: 'Watch: Marco Rubio says recent tech outages are 'completely unrelated' to one an' (source: BBC Technology, pub_date: Wed, 18 Nov 2026 05:10:02 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 102 rejected (Article too old (173.1h > 3.0h limit)): 'Watch: Marco Rubio says recent tech outages are 'completely unrelated' to one an'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 99: 'Hacks, AI or just overdue updates - why have there been so many outages?' (source: BBC Technology, pub_date: Wed, 18 Nov 2026 13:16:53 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 99 rejected (Article too old (165.0h > 3.0h limit)): 'Hacks, AI or just overdue updates - why have there been so many outages?'
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 114: 'Nvidia interim CEO Kress tells employees ‘let’s move forward’ at first all-hands' (source: CNBC World, pub_date: Wed, 18 Nov 2026 23:45:50 GMT)
+2026-11-25 02:14:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 114 rejected (Article too old (154.5h > 3.0h limit)): 'Nvidia interim CEO Kress tells employees ‘let’s move forward’ at first all-hands'
+2026-11-25 02:14:04 │ INFO     │ core.engine          │ run_once:193 │ Executing single discovery and publishing cycle...
+2026-11-25 02:14:05 │ WARNING  │ sources.rss          │ fetch_rss_feed:111 │ RSS feed 'Reuters Technology' error: Cannot connect to host feeds.reuters.com:443 ssl:default [getaddrinfo failed]
+2026-11-25 02:14:05 │ WARNING  │ sources.rss          │ fetch_rss_feed:111 │ RSS feed 'Reuters Business' error: Cannot connect to host feeds.reuters.com:443 ssl:default [getaddrinfo failed]
+2026-11-25 02:14:05 │ WARNING  │ sources.rss          │ fetch_rss_feed:111 │ RSS feed 'Reuters Science' error: Cannot connect to host feeds.reuters.com:443 ssl:default [getaddrinfo failed]
+2026-11-25 02:14:05 │ WARNING  │ sources.rss          │ fetch_rss_feed:111 │ RSS feed 'Reuters World' error: Cannot connect to host feeds.reuters.com:443 ssl:default [getaddrinfo failed]
+2026-11-25 02:14:05 │ WARNING  │ sources.official     │ _fetch_feed:116 │ Official feed 'EU News' error: Cannot connect to host ec.europa.eu:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)')]
+2026-11-25 02:14:05 │ INFO     │ primp                │ None:397 │ response: https://duckduckgo.com/?q=Kurdistan+Erbil+Sulaymaniyah+Kirkuk 200
+2026-11-25 02:14:05 │ WARNING  │ sources.official     │ _fetch_feed:102 │ Official feed 'NATO News' status 404.
+2026-11-25 02:14:06 │ WARNING  │ sources.rss          │ fetch_rss_feed:97 │ RSS feed 'AP News' returned status 403.
+2026-11-25 02:14:06 │ INFO     │ sources.kurdistan    │ fetch_articles:179 │ Kurdistan regional adapter discovered 149 articles across 13 feeds.
+2026-11-25 02:14:06 │ INFO     │ primp                │ None:397 │ response: https://duckduckgo.com/news.js?l=wt-wt&o=json&noamp=1&q=Kurdistan+Erbil+Sulaymaniyah+Kirkuk&vqd=4-248593502150113572775205529952679176148&p=-2 200
+2026-11-25 02:14:06 │ INFO     │ sources.telegram     │ fetch_articles:475 │ Telegram public-web source discovered 31 posts across 2 channels.
+2026-11-25 02:14:08 │ INFO     │ primp                │ None:397 │ response: https://duckduckgo.com/?q=Rojava+Qamishli+Kobani+SDF+Syria 202
+2026-11-25 02:14:08 │ WARNING  │ sources.duckduckgo   │ _do_search:71 │ DDG search error for 'Rojava Qamishli Kobani SDF Syria': https://duckduckgo.com/?q=Rojava+Qamishli+Kobani+SDF+Syria 202 Ratelimit
+2026-11-25 02:14:10 │ INFO     │ primp                │ None:397 │ response: https://duckduckgo.com/?q=Diyarbakir+Amed+Van+Kurdish+Turkey 202
+2026-11-25 02:14:10 │ WARNING  │ sources.duckduckgo   │ _do_search:71 │ DDG search error for 'Diyarbakir Amed Van Kurdish Turkey': https://duckduckgo.com/?q=Diyarbakir+Amed+Van+Kurdish+Turkey 202 Ratelimit
+2026-11-25 02:14:10 │ INFO     │ sources.duckduckgo   │ fetch_articles:54 │ DDG discovered 10 articles from 3 keywords.
+2026-11-25 02:14:10 │ WARNING  │ sources.official     │ _fetch_feed:102 │ Official feed 'UN News' status 404.
+2026-11-25 02:14:10 │ INFO     │ sources.official     │ fetch_articles:88 │ Official sources discovered 30 articles.
+2026-11-25 02:14:11 │ WARNING  │ sources.rss          │ fetch_rss_feed:97 │ RSS feed 'UN News' returned status 404.
+2026-11-25 02:14:11 │ INFO     │ sources.rss          │ fetch_articles:153 │ RSS discovered 225 articles from 20 feeds.
+2026-11-25 02:14:16 │ WARNING  │ sources.gdelt        │ _search_gdelt:107 │ GDELT API returned status 429
+2026-11-25 02:14:29 │ WARNING  │ sources.gdelt        │ _search_gdelt:107 │ GDELT API returned status 429
+2026-11-25 02:14:29 │ INFO     │ sources.gdelt        │ fetch_articles:88 │ GDELT discovered 0 articles.
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _discovery_cycle:449 │ Discovered 445 raw articles from 6 sources.
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 644 from Basnews: 'Iraq Expands Oil Smuggling Probe to Kirkuk-Sulaymaniyah Shipments Bound for Iran' (pub_date: 2026-11-15T10:15:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 645 from Alhurra: 'Iraqi Oil Blended in Iran, Relabeled to Dodge Sanctions, Report Says' (pub_date: 2026-11-14T05:30:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 646 from Middle East Eye: 'Who wins from Baghdad's move to clip Kurdish autonomy - the US or Iran?' (pub_date: 2026-11-24T22:27:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 647 from Basnews: 'Iraqi Committee to Visit Sulaymaniyah in Oil Smuggling Investigation' (pub_date: 2026-11-18T15:44:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 648 from MSN: 'As US withdraws from Iraq, Kurdish region is left exposed to Iran's threats' (pub_date: 2026-09-28T14:00:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 649 from TRT World: 'Most say 'yes' in KRG vote on support for independence in northern Iraq' (pub_date: 2017-09-28T08:07:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 650 from Yahoo: 'New drone strike near Erbil adds to growing attacks on Kurdistan region' (pub_date: 2025-07-30T14:14:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 651 from ijr: 'Drones reportedly target Kurdish groups in Erbil, Sulaymaniyah' (pub_date: 2026-11-04T07:20:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 652 from jpost.com: 'Widespread blackout caused by drone attack on Khor Mor gas field, exposing Iraqi' (pub_date: 2026-11-09T14:32:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 653 from Kurdistan 24: 'Kurdistan Region Secures $80 Million for Two Major Road Projects in 2027 Budget ' (pub_date: 2026-11-11T15:53:00+00:00)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 654 from BBC World: 'Russia's own figures show it has lost almost 500,000 people in Ukraine war' (pub_date: Wed, 25 Nov 2026 00:56:51 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 655 from BBC World: 'Huawei found guilty of stealing US trade secrets but acquitted of racketeering' (pub_date: Wed, 25 Nov 2026 02:59:27 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 656 from BBC World: 'Four years after huge asteroid crash, a spacecraft has now returned to assess th' (pub_date: Wed, 25 Nov 2026 06:00:36 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 657 from BBC World: 'The rising cost of putting food on the table in India' (pub_date: Wed, 25 Nov 2026 01:02:13 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 658 from BBC World: 'Thomas Markle charged in US for possessing child sex abuse images' (pub_date: Wed, 25 Nov 2026 01:40:42 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 659 from BBC World: 'Kilmar Ábrego García leaves US for Spain, ending Trump deportation battle' (pub_date: Wed, 25 Nov 2026 06:36:00 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 660 from BBC World: 'These North Koreans say they were spied on, beaten and jailed for being Christia' (pub_date: Tue, 24 Nov 2026 23:03:59 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 661 from BBC World: 'Zimbabwe issues arrest warrant for Robert Mugabe's son over missed court date' (pub_date: Wed, 25 Nov 2026 07:26:54 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 662 from BBC World: 'Is China behind a wave of AI fake videos targeting Taiwan?' (pub_date: Tue, 24 Nov 2026 23:05:11 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 663 from BBC World: 'Nigerian monarch, 92, suspended after sexual assault claims' (pub_date: Tue, 24 Nov 2026 19:10:31 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 664 from Al Jazeera: 'Sporting Lisbon vs Manchester United: Champions League – teams, prediction' (pub_date: Wed, 25 Nov 2026 09:04:03 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 665 from Al Jazeera: 'Rising prices push families to the brink in Yemen’s Hodeidah' (pub_date: Wed, 25 Nov 2026 09:00:53 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 666 from Al Jazeera: 'Galatasaray defy Israel’s complaint to UEFA over pro-Palestine banners' (pub_date: Wed, 25 Nov 2026 08:53:30 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 667 from Al Jazeera: 'Saudi-led coalition intercepts Houthi attacks after Hodeidah strike' (pub_date: Wed, 25 Nov 2026 08:23:35 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 668 from Al Jazeera: 'Countries that thrive on global cooperation must help sustain it' (pub_date: Wed, 25 Nov 2026 08:23:01 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 669 from Al Jazeera: 'Is Russia really aiming for a new European security architecture?' (pub_date: Wed, 25 Nov 2026 08:20:55 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 670 from Al Jazeera: 'From stargazing to space: Pakistan watches its first astronaut take flight' (pub_date: Wed, 25 Nov 2026 08:11:19 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 671 from Al Jazeera: 'Rescuers search for dozens trapped in flooded Indonesia gold mine' (pub_date: Wed, 25 Nov 2026 08:08:57 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 672 from Al Jazeera: 'Sentences served, but Gaza prisoners remain behind Israeli bars' (pub_date: Wed, 25 Nov 2026 07:31:44 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 673 from Al Jazeera: 'Pakistan rejoices as country’s first astronaut enters orbit' (pub_date: Wed, 25 Nov 2026 07:05:59 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 674 from Al Jazeera: 'Bangladesh garment workers win 36% pay rise after weeks of protest' (pub_date: Wed, 25 Nov 2026 06:58:02 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 675 from Al Jazeera: 'Phone spying to missiles: Why India-Israel strategic ties go beyond Modi' (pub_date: Wed, 25 Nov 2026 05:27:32 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 676 from Al Jazeera: 'The Gambia election: Can the next president deliver on a decade of promise' (pub_date: Wed, 25 Nov 2026 05:03:04 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 677 from Al Jazeera: 'UK warns companies of potential Russian sabotage threat' (pub_date: Wed, 25 Nov 2026 04:48:57 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 678 from Al Jazeera: 'Protesters clash with police over Venezuela’s poor minimum wage' (pub_date: Wed, 25 Nov 2026 04:27:10 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 679 from Al Jazeera: 'Israeli strike kills four people in Gaza' (pub_date: Wed, 25 Nov 2026 04:13:58 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 680 from Al Jazeera: 'Galatasaray says Israel complained to UEFA over Palestine banners' (pub_date: Wed, 25 Nov 2026 04:12:11 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 681 from Al Jazeera: 'Asia’s markets dive as return of Nvidia’s Huang fails to quell AI doubts' (pub_date: Wed, 25 Nov 2026 03:31:59 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 682 from Al Jazeera: 'Pakistani astronaut launches into space aboard Chinese rocket' (pub_date: Wed, 25 Nov 2026 02:44:45 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 683 from Al Jazeera: 'Kilmar Abrego Garcia self-deports to Spain after lengthy US legal battle' (pub_date: Wed, 25 Nov 2026 02:40:59 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 684 from France24 EN: 'Surprise Eurostar strike cancels London, Paris and Brussels trains' (pub_date: Wed, 25 Nov 2026 10:02:32 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 685 from France24 EN: 'AFCON 2025: CAS gives title back to Senegal as Morocco vows to challenge verdict' (pub_date: Wed, 25 Nov 2026 06:20:48 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 686 from France24 EN: 'Amnesty calls for ICC genocide probe over Israel's impact on births in Gaza' (pub_date: Wed, 25 Nov 2026 04:01:48 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 687 from France24 EN: 'Live: Two Libyan soldiers killed in Ukrainian attack on Russian vessels in Bengh' (pub_date: Wed, 25 Nov 2026 03:46:51 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 688 from France24 EN: 'Ukraine seeks €115 billion in foreign aid for 2027, Zelensky says' (pub_date: Wed, 25 Nov 2026 01:19:31 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 689 from France24 EN: 'New York jury convicts Huawei of stealing trade secrets' (pub_date: Tue, 24 Nov 2026 23:31:22 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 690 from France24 EN: 'Champions League: Real Madrid thrash PSV 5-1 in comeback win as Manchester City ' (pub_date: Tue, 24 Nov 2026 22:59:39 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 691 from France24 EN: 'Tech executives' investment in Trump 'clearly paying off' as Huang reinstated at' (pub_date: Tue, 24 Nov 2026 22:03:43 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 692 from France24 EN: 'Tech executives' investment in Trump 'clearly paying off' as Huang reinstated at' (pub_date: Tue, 24 Nov 2026 21:57:38 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 693 from France24 EN: ''Quid pro quo’: Nvidia too big to fail or ‘too close to personal interest of peo' (pub_date: Tue, 24 Nov 2026 21:43:07 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 694 from France24 EN: 'Jensen Huang's Nvidia comeback sends AI videos into overdrive' (pub_date: Tue, 24 Nov 2026 21:28:36 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 695 from France24 EN: 'Did Nvidia knowingly send chips to China 'cutout'? Was there ‘pay-to-play’ invol' (pub_date: Tue, 24 Nov 2026 21:20:31 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 696 from France24 EN: 'Senegal reinstated as AFCON 2025 winners' (pub_date: Tue, 24 Nov 2026 21:14:42 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 697 from France24 EN: 'UN slams Iran after it flogs singer for performing without veil' (pub_date: Tue, 24 Nov 2026 20:53:57 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 698 from France24 EN: 'Russian nuclear satellites plan 'foolhardy', expert says' (pub_date: Tue, 24 Nov 2026 20:31:17 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 699 from France24 EN: 'The Bukele method: Will Salvadoran leader's strong-arm tactics work for Haiti?' (pub_date: Tue, 24 Nov 2026 19:59:35 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 700 from France24 EN: 'Senegal AFCON ruling 'good in the books of sports law', expert says' (pub_date: Tue, 24 Nov 2026 19:54:12 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 701 from France24 EN: 'Senegal regain AFCON title on appeal at Morocco's expense' (pub_date: Tue, 24 Nov 2026 19:52:29 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 702 from France24 EN: 'Car bomb destroys buildings in central Colombian city' (pub_date: Tue, 24 Nov 2026 19:27:10 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 703 from DW News: 'The loss and damage fund exists, but the money doesn't' (pub_date: 2026-11-25T09:49:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 704 from DW News: 'Germany's women footballers take stand against domestic violence' (pub_date: 2026-11-25T09:30:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 705 from DW News: 'German auto workers on back foot as costs, competition bite' (pub_date: 2026-11-25T08:51:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 706 from DW News: 'Germany news: 'We can no longer afford everything,' Merz says' (pub_date: 2026-11-25T08:35:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 707 from DW News: 'Colombian security forces storm supermarket, free hostages' (pub_date: 2026-11-25T08:27:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 708 from DW News: 'Domestic violence soars to record high in Germany' (pub_date: 2026-11-25T06:57:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 709 from DW News: 'India news: US prepares new tariffs after trade probe' (pub_date: 2026-11-25T04:44:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 710 from DW News: 'Libya: 2 dead after Ukrainian attack on Russian warship in Benghazi' (pub_date: 2026-11-25T04:41:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 711 from DW News: 'China launches Shenzhou-24 to Tiangong station' (pub_date: 2026-11-25T02:56:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 712 from DW News: 'US jury convicts Huawei of violating sanctions, stealing trade secrets' (pub_date: 2026-11-25T02:01:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 713 from DW News: 'Scientists discover quasar formed 630 million years after the Big Bang' (pub_date: 2026-11-24T22:34:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 714 from DW News: 'European court finds states can turn back migrants in some cases' (pub_date: 2026-11-24T17:43:00Z)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 715 from The Guardian World: 'All hostages rescued after Colombian security forces storm supermarket, says pre' (pub_date: Wed, 25 Nov 2026 09:26:25 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 716 from The Guardian World: 'Kilmar Ábrego García, man at center of Trump deportation battle, leaves US' (pub_date: Tue, 24 Nov 2026 23:50:31 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 717 from The Guardian World: 'China investigates politburo star in Xi Jinping’s latest purge' (pub_date: Wed, 25 Nov 2026 01:31:46 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 718 from The Guardian World: 'Large bushfire threatens homes and properties on remote island off Tasmania' (pub_date: Wed, 25 Nov 2026 09:04:13 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 719 from The Guardian World: 'IVF, elective abortion, gender-affirming care and VAD to cease under Catholic ow' (pub_date: Wed, 25 Nov 2026 08:05:27 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 720 from The Guardian World: '‘You’re protecting Trump’: Hanson-Young clashes with Liberal senator before digi' (pub_date: Wed, 25 Nov 2026 07:34:44 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 721 from The Guardian World: 'Labor wins Greens support for trust changes in exchange for scrapping jet fuel s' (pub_date: Wed, 25 Nov 2026 07:16:33 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 722 from The Guardian World: 'Books, wisdom keepers and psychic abilities among sources of birth keeper’s know' (pub_date: Wed, 25 Nov 2026 06:38:51 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 723 from NPR News: 'Buying new things feels wonderful. But it can also be a trap' (pub_date: Wed, 25 Nov 2026 05:02:00 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 724 from NPR News: 'In a time of rising costs, one Thanksgiving commodity is cheaper: cannabis' (pub_date: Wed, 25 Nov 2026 05:00:00 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 725 from NPR News: 'A quintessential Route 66 diner has been serving up Americana for nearly 100 yea' (pub_date: Wed, 25 Nov 2026 05:00:00 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 726 from NPR News: 'China investigates Politburo member and Shanghai party chief Chen Jining' (pub_date: Wed, 25 Nov 2026 04:44:13 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 727 from NPR News: 'Kilmar Abrego Garcia leaves U.S. voluntarily for Spain' (pub_date: Wed, 25 Nov 2026 04:19:50 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 728 from NPR News: 'Africa Cup title given back to Senegal after sports court rules against Morocco' (pub_date: Wed, 25 Nov 2026 01:43:23 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 729 from NPR News: 'These deer walk 300 miles a year. The race is on to save their migration' (pub_date: Tue, 24 Nov 2026 17:52:44 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 730 from NPR News: 'How tariffs, fuel and fertilizer costs are squeezing the U.S.'s biggest apple re' (pub_date: Tue, 24 Nov 2026 16:09:29 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 731 from NPR News: 'The U.S. government is investigating Iranian ties to as many as 50 hacked commer' (pub_date: Tue, 24 Nov 2026 16:04:50 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 732 from Defense News Global: 'Czech jet engine maker eyes growing role as US supplier in drones, missiles' (pub_date: Wed, 25 Nov 2026 09:33:18 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 733 from Military Times: 'House measure aims to fill gaps in prenatal care after PCS moves' (pub_date: Tue, 24 Nov 2026 23:01:07 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 734 from Military Times: 'Ford in talks with the Pentagon to supply military vehicles' (pub_date: Tue, 24 Nov 2026 21:30:00 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 735 from Military Times: 'Army sergeant pleads guilty in plot to sell military secrets to China' (pub_date: Tue, 24 Nov 2026 20:53:30 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 736 from Military Times: 'Coast Guard tests capabilities of new icebreaker with 5-month Arctic mission' (pub_date: Tue, 24 Nov 2026 19:57:33 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 737 from BBC Technology: 'EA adds AI-generated John Motson to FC 27 video game' (pub_date: Wed, 25 Nov 2026 10:11:34 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 738 from BBC Technology: 'Zoe Kleinman: Nobody is irreplaceable - unless you're Jensen Huang' (pub_date: Wed, 25 Nov 2026 10:03:12 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 739 from BBC Technology: 'Why tiny cars are taking off across Europe' (pub_date: Wed, 25 Nov 2026 00:34:05 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 740 from BBC Technology: 'Tech Life' (pub_date: Tue, 24 Nov 2026 21:00:00 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 741 from The Hacker News: 'Hackers Exploited CVSS 10.0 Hex.pm RCE Flaw to Compromise 6 Package Registry Ser' (pub_date: Wed, 25 Nov 2026 14:36:59 +0530)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 742 from The Hacker News: 'Hackers Compromise 24 Check Point Management Servers in Suspected AI-Driven Atta' (pub_date: Wed, 25 Nov 2026 12:20:19 +0530)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 743 from The Hacker News: 'Com-Affiliated Hackers Hijack Cloud Accounts via Vishing for Data Theft and Exto' (pub_date: Wed, 25 Nov 2026 12:07:06 +0530)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 744 from The Hacker News: 'WordPress Blocks Six Backdoored WP Connect Plugins Before Malicious Releases Go ' (pub_date: Wed, 25 Nov 2026 11:51:12 +0530)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 745 from BleepingComputer: 'Hackers now exploit critical Drupal RCE flaw to hijack sites' (pub_date: Wed, 25 Nov 2026 05:10:20 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 746 from BleepingComputer: 'Microsoft confirms authentication issues after November updates' (pub_date: Wed, 25 Nov 2026 04:02:57 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 747 from BleepingComputer: 'Hackers reportedly breached CIA intelligence analysis system' (pub_date: Wed, 25 Nov 2026 02:45:03 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 748 from BleepingComputer: 'Rackspace shuts down Spot cloud platform after security breach' (pub_date: Tue, 24 Nov 2026 16:37:30 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 749 from BleepingComputer: 'New Inception extortion gang launches large-scale vishing campaign' (pub_date: Tue, 24 Nov 2026 15:21:20 -0500)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 750 from CNBC World: 'AI debt worries grow as Nvidia rebound masks Big Tech spending squeeze' (pub_date: Wed, 25 Nov 2026 06:29:46 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 751 from CNBC World: 'Budget carrier Norse Atlantic falls 74% after warning its finances are ‘critical' (pub_date: Wed, 25 Nov 2026 09:56:05 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 752 from CNBC World: 'Nasdaq futures slide amid reports of fresh U.S. tariffs as tech sell-off intensi' (pub_date: Wed, 25 Nov 2026 09:45:33 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 753 from CNBC World: 'Tech rout deepens globally; Softbank falls 15%, Nvidia down 4.5% premarket' (pub_date: Wed, 25 Nov 2026 09:42:15 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 754 from CNBC World: 'Ukraine tells Putin to ‘stop complaining’ over oil refinery attacks as Russia pr' (pub_date: Wed, 25 Nov 2026 09:18:37 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 755 from CNBC World: 'Houthi attack on Saudi Arabian sovereign wealth fund PIF's tower injures 11' (pub_date: Wed, 25 Nov 2026 02:36:43 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 756 from CNBC World: '‘Ready for any storm’: UAE minister optimistic on economy as IMF lifts forecast' (pub_date: Wed, 25 Nov 2026 04:06:01 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 757 from CNBC World: 'Treasury yields fall as investors await key inflation signal' (pub_date: Wed, 25 Nov 2026 07:44:24 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 758 from CNBC World: 'Crypto talent will return ‘when AI implodes,’ Arthur Hayes says' (pub_date: Wed, 25 Nov 2026 06:09:44 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 759 from CNBC World: 'U.S. jury convicts Huawei in a criminal trial over fraud and trade secrets' (pub_date: Wed, 25 Nov 2026 02:43:33 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 760 from CNBC World: 'Trump Account contributions from friends and family pass $1 billion mark, Treasu' (pub_date: Tue, 24 Nov 2026 22:18:47 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 761 from CNBC World: 'CNBC's The China Connection newsletter: AI race spreads from robots to smartphon' (pub_date: Mon, 23 Nov 2026 23:00:01 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 762 from CNBC World: 'Trump open to pardoning Jensen Huang if needed: NY Post' (pub_date: Wed, 25 Nov 2026 02:09:45 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 763 from CNBC World: 'China’s Xiamen Airlines to buy 50 Boeing jets in $7.4 billion deal' (pub_date: Wed, 25 Nov 2026 03:58:32 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 764 from CNBC World: 'Jensen Huang's Nvidia return shows the U.S.-China AI race is about more than chi' (pub_date: Wed, 25 Nov 2026 01:13:56 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 765 from CNBC World: 'Trump wanted Jensen Huang back. Now, the president is all alone in Washington' (pub_date: Tue, 24 Nov 2026 21:13:39 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 766 from CNBC World: 'Saudi national charged in OpenAI bugging to be released on $1 million bond' (pub_date: Tue, 24 Nov 2026 22:03:01 GMT)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 767 from Space.com: 'How to watch 'Blade Runner 2099' online — stream the sci-fi sequel series from a' (pub_date: Wed, 25 Nov 2026 01:00:00 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 768 from Space.com: 'SpaceX launches secretive spy satellites from California for US Space Force (vid' (pub_date: Tue, 24 Nov 2026 22:37:19 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 769 from Space.com: 'On this day in space! Nov. 24, 1947: The US Navy launches the 1st Aerobee soundi' (pub_date: Tue, 24 Nov 2026 21:47:34 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 770 from Space.com: ''Blade Runner 2099' executive producers talk architectural easter eggs and franc' (pub_date: Tue, 24 Nov 2026 21:00:00 +0000)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 771 from Kurdistan24 EN: 'Kurdistan Region Cabinet Rejects Baghdad’s Measures, Demands Full Implementation' (pub_date: Wed, 25 Nov 2026 12:55:45 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 772 from Kurdistan24 EN: 'Houthis Claim Attacks on Riyadh Financial District and Saudi Oil Refinery' (pub_date: Wed, 25 Nov 2026 11:20:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 773 from Kurdistan24 EN: 'Italian Consulate Brings Contemporary Cinema to Erbil in Cultural Exchange Initi' (pub_date: Wed, 25 Nov 2026 10:44:38 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 774 from Kurdistan24 EN: 'Kurdistan Region Cabinet to Formally Respond to Baghdad’s Decisions and Constitu' (pub_date: Wed, 25 Nov 2026 10:12:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 775 from Kurdistan24 EN: 'Iraqi Judiciary Urges Baghdad and Kurdistan Region to Uphold Constitution' (pub_date: Wed, 25 Nov 2026 09:10:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 776 from Kurdistan24 EN: 'ISW: Kataib Hezbollah Retains Positions in Jurf al-Sakhar Despite Deal With Bagh' (pub_date: Wed, 25 Nov 2026 08:37:51 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 777 from Kurdistan24 EN: 'Christian Alliance Rejects Military Threats Against Kurdistan Region, Calls for ' (pub_date: Tue, 24 Nov 2026 23:53:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 778 from Kurdistan24 EN: 'Coordination Framework Calls for Dialogue Between Baghdad and Erbil' (pub_date: Tue, 24 Nov 2026 23:33:52 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 779 from Kurdistan24 Sorani: 'ئەنجوومەنی وەزیران: بەکارهێنانی زمانی سەربازی و هەڕەشە رەتدەکەینەوە' (pub_date: Wed, 25 Nov 2026 12:55:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 780 from Kurdistan24 Sorani: 'عەبدوڵڵا شێرکاوەیی: زمانی هەڕەشە خزمەت بە عێراق ناکات و پێویستە بە دیالۆگ هەنگاو' (pub_date: Wed, 25 Nov 2026 12:50:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 781 from Kurdistan24 Sorani: 'شاندێکی پارتی و سوودانی جەخت لە چارەکردنی کێشەکان بەپێی دەستوور دەکەنەوە' (pub_date: Wed, 25 Nov 2026 12:43:29 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 782 from Kurdistan24 Sorani: 'یەکێتیی قوتابییان و لاوانی کوردستان داوای خۆپیشاندانی سەرتاسەری دەکات' (pub_date: Wed, 25 Nov 2026 12:41:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 783 from Kurdistan24 Sorani: 'سەرچاوەیەک بۆ کوردستان24: چەکدارانی حزبوڵڵا لە جورف سەخر دەمێننەوە' (pub_date: Wed, 25 Nov 2026 12:13:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 784 from Kurdistan24 Sorani: 'جێگری سەرۆکی سابیس: کار بۆ گۆڕانکاریی پەروەردەیی لە هەرێمی کوردستان دەکەین' (pub_date: Wed, 25 Nov 2026 11:46:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 785 from Kurdistan24 Sorani: 'هەڤاڵ ئەبوبەکر: دەبێت کورد لە هەموو بارودۆخێکدا تەبا بێت' (pub_date: Wed, 25 Nov 2026 11:28:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 786 from Kurdistan24 Sorani: 'حزبی موتەحیدوون پێشنیازی دیالۆگێکی نیشتمانی لەگەڵ هەرێمی کوردستان دەکات' (pub_date: Wed, 25 Nov 2026 11:17:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 787 from Kurdistan24 Sorani: 'قوتابیانی کورد لە کەرکووک دژی قەدەخەکردنی زمانی کوردی گردبوونەوە' (pub_date: Wed, 25 Nov 2026 11:04:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 788 from Kurdistan24 Sorani: 'هاووڵاتییان داوای یەکڕیزیی نێوان لایەنە کوردییەکان دەکەن' (pub_date: Wed, 25 Nov 2026 10:57:00 +0300)
+2026-11-25 02:14:29 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 789 from Kurdistan24 Sorani: 'جێگری پارێزگاری هەولێر: ئەمڕۆ کارەکانی تۆمارکردنی زیانەکانی لافاو کۆتایی دێت' (pub_date: Wed, 25 Nov 2026 10:44:00 +0300)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 790 from Kurdistan24 Sorani: 'لە هەولێر زنجیرەیەک فیلمی ئیتاڵی نمایش دەکرێت' (pub_date: Wed, 25 Nov 2026 10:30:00 +0300)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 791 from PUKMedia Sorani: 'بەڕێوەبەرایەتی کەشناسی: هەفتەى داهاتوو شەپۆلی باران بارین دەستپێدەکات' (pub_date: Wed, 25 Nov 2026 10:51:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 792 from PUKMedia Sorani: 'ئەنجومەنى  باڵاى دادوەری: داوا دەکەین پابەندی دەستوور بن' (pub_date: Wed, 25 Nov 2026 09:31:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 793 from PUKMedia Sorani: 'سێ بەڕێوەبەری ناحیە دەست بەكاردەبن' (pub_date: Wed, 25 Nov 2026 09:16:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 794 from PUKMedia Sorani: 'پڕۆژەی ( چوارگۆشەی ژیان ) لە سلێمانی جێبەجێکرا' (pub_date: Tue, 24 Nov 2026 23:04:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 795 from Google News - South Kurdistan: 'Kurdistan finance minister warns of ‘existential threat,’ signals readiness to r' (pub_date: Mon, 23 Nov 2026 08:00:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 796 from Google News - South Kurdistan: 'Iraq seizes two drone launch platforms in southeast - Rudaw' (pub_date: Tue, 24 Nov 2026 21:43:53 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 797 from Google News - South Kurdistan: 'KDP, PUK slam Baghdad’s ‘unilateral’ decisions, support dialogue - Rudaw' (pub_date: Tue, 24 Nov 2026 14:43:50 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 798 from Google News - South Kurdistan: 'German cyclist on Berlin-to-Nepal expedition died in southern Iraq crash - Rudaw' (pub_date: Wed, 25 Nov 2026 01:19:33 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 799 from Google News - South Kurdistan: 'News, Politics, Culture - Rudaw' (pub_date: Thu, 04 Jul 2019 12:24:24 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 800 from Google News - South Kurdistan: 'Iran determined to ‘break US blockade’: Security chief vows forceful response to' (pub_date: Tue, 24 Nov 2026 22:24:05 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 801 from Google News - South Kurdistan: 'Three attack drones target KDPI camps in Kurdistan Region - Rudaw' (pub_date: Tue, 24 Nov 2026 19:40:11 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 802 from Google News - South Kurdistan: 'UN urges Baghdad, Erbil to resolve differences through constitution - Rudaw' (pub_date: Wed, 25 Nov 2026 05:00:23 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 803 from Google News - Kurdistan Sorani: 'اتحاد علماء الدين الإسلامي في كوردستان لرووداو: انتهاك الدستور جريمة - rudawarab' (pub_date: Wed, 25 Nov 2026 07:23:26 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 804 from Google News - Kurdistan Sorani: 'المالية الاتحادية تباشر بصرف رواتب الموظفين - PUKmedia' (pub_date: Wed, 25 Nov 2026 07:28:01 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 805 from Google News - Kurdistan Sorani: 'المجلس القيادي يجتمع باشراف الرئيس بافل جلال طالباني - PUKmedia' (pub_date: Wed, 25 Nov 2026 07:22:39 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 806 from Google News - Kurdistan Sorani: 'باحث سياسي لرووداو: قرارات الزيدي مخالفة للدستور وتحظى بدعم خارجي - rudawarabia.' (pub_date: Wed, 25 Nov 2026 07:33:47 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 807 from Google News - Kurdistan Sorani: 'التحالف المسيحي: نرفض مخاطبة إقليم كوردستان بلغة عسكرية أو التلويح باستخدام القو' (pub_date: Tue, 24 Nov 2026 21:50:42 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 808 from Google News - Kurdistan Sorani: 'الرئيس بارزاني: إقليم كوردستان لن يخضع لأي قرار غير دستوري أو لفرض إرادة أي شخص ' (pub_date: Tue, 24 Nov 2026 15:26:06 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 809 from Google News - Kurdistan Sorani: 'بيان مهم من الرئيس بافل جلال طالباني: الاحتكام الى الدستور لحل المشكلات - PUKmed' (pub_date: Tue, 24 Nov 2026 16:22:07 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 810 from Google News - Kurdistan Sorani: 'حركة التغيير تصف قرارات الزيدي بــ"التطور الخطِر" - rudawarabia.net' (pub_date: Tue, 24 Nov 2026 15:26:06 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 811 from Google News - Kurdistan Sorani: 'ريبر أحمد لرووداو: لن نلتزم بأي قرار يخالف الدستور - rudawarabia.net' (pub_date: Tue, 24 Nov 2026 17:56:35 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 812 from North Press Agency: 'Mastercard, BBSF launch internationally accepted cards in Syria' (pub_date: Wed, 25 Nov 2026 09:26:45 +0000)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 813 from North Press Agency: 'UN urges Baghdad, Erbil to resolve disputes through constitutional channels' (pub_date: Wed, 25 Nov 2026 07:49:59 +0000)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 814 from North Press Agency: 'U.S. court sentences man to 15 years for creating ISIS propaganda' (pub_date: Wed, 25 Nov 2026 06:55:40 +0000)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 815 from Google News - West Kurdistan: 'Rojava University Media students reaffirm commitment to rights, pride in degrees' (pub_date: Sat, 21 Nov 2026 10:46:27 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 816 from Bianet EN: 'Five Turkish Air Force personnel killed in Eskişehir helicopter crash' (pub_date: Wed, 25 Nov 2026 12:50:00 +0300)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 817 from Google News - North Kurdistan: 'How the surprise package of Turkey’s top flight symbolise a shift in the nation’' (pub_date: Sat, 10 Oct 2026 07:00:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 818 from Google News - East Kurdistan: 'Iraq’s Prime Minister Aims to Wrest More Power From Kurdistan Region - The New Y' (pub_date: Wed, 25 Nov 2026 07:36:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 819 from Google News - East Kurdistan: 'Iraqi Prime Minister Takes on Powerful Iran-Backed Groups and Kurds - https://gl' (pub_date: Wed, 25 Nov 2026 08:40:20 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 820 from Google News - East Kurdistan: 'Who wins from Baghdad's move to clip Kurdish autonomy - the US or Iran? - Middle' (pub_date: Tue, 24 Nov 2026 22:27:00 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 821 from Google News - East Kurdistan: 'November 25 – Hengaw documents 159 femicides in Iran over past year - Hengaw' (pub_date: Tue, 24 Nov 2026 17:39:15 GMT)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 822 from Sabereen News: 'انتشار واسع لقوات الجيش العراقي في مناطق متفرقة من محافظة كركوك.' (pub_date: 2026-11-25T07:22:47+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 823 from Sabereen News: 'لليوم الرابع على التوالي، تتواصل تظاهرات جرحى الحشد في بغداد للمطالبة بحقوقهم' (pub_date: 2026-11-25T07:30:01+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 824 from Sabereen News: 'الجيش الإيراني يعلن إسقاط طائرتين مسيّرتين أميركيتين من طرازي «لوكاس» و«MQ-9» فو' (pub_date: 2026-11-25T07:31:06+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 825 from Sabereen News: 'أسعار صرف الدولار مقابل الدينار العراقي' (pub_date: 2026-11-25T08:07:27+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 826 from Sabereen News: 'انتشار مليشيا البيشمركة في اربيل' (pub_date: 2026-11-25T08:09:03+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 827 from Sabereen News: 'صور من استهداف مصفاة رأس تنورة السعودية بالمنطقة الشرقية' (pub_date: 2026-11-25T08:34:17+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 828 from Sabereen News: 'مسيرة في سماء السليمانية' (pub_date: 2026-11-25T08:35:33+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 829 from Sabereen News: 'متداول: مليشيا البيشمركة ترسل تعزيزات عسكرية إلى خارج الخط الأزرق حيث خطوط التما' (pub_date: 2026-11-25T08:41:48+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 830 from Sabereen News: 'وزير النقل والاتصالات في حكومة القچقچي مسعود :' (pub_date: 2026-11-25T08:52:12+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 831 from Sabereen News: 'تقارير' (pub_date: 2026-11-25T09:07:00+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 832 from Sabereen News: 'جمهور صابرين الأعزاء يمكنكم متابعتنا' (pub_date: 2026-11-25T09:50:53+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 833 from Sabereen News: 'هياة النزاهة تعتقل فجر اليوم مدير الوقود في المحطة الحرارية غرب سامراء' (pub_date: 2026-11-25T09:52:00+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 834 from Sabereen News: 'الحرس الثوري الاسلامي يبث مشاهد لانفجار ناقلتي نفط مخالفتين أثناء سلوكهما مساراً' (pub_date: 2026-11-25T09:53:03+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 835 from Sabereen Plus: 'تشير بيانات نظام تتبع الحرائق إلى أن حريقًا كبيرًا اندلع في منشأة صناعية في مدين' (pub_date: 2026-11-25T08:00:48+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 836 from Sabereen Plus: 'مصادر لبنانية: قصف مدفعي صهيوني يستهدف نهر زوطر في النبطية' (pub_date: 2026-11-25T08:01:29+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 837 from Sabereen Plus: 'ألتقى الفريق خليفة حفتر مع رئيس الأركان العامة التركية.' (pub_date: 2026-11-25T08:03:20+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 838 from Sabereen Plus: 'وزير الخارجية اللاتفي يعترف بصعوبة اقتراح إغلاق معابر الحدود مع روسيا، مشيرًا إل' (pub_date: 2026-11-25T08:04:02+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 839 from Sabereen Plus: 'صور أقمار صناعية تُظهر عمود دخان كثيف يتصاعد من رأس تنورة في المنطقة الشرقية بال' (pub_date: 2026-11-25T08:08:52+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 840 from Sabereen Plus: 'المتحدث باسم الجيش الإيراني العميد أكرمي نيا:' (pub_date: 2026-11-25T08:13:49+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 841 from Sabereen Plus: 'صور أقمار صناعية تُظهر عمود دخان كثيف يتصاعد من رأس تنورة في المنطقة الشرقية بال' (pub_date: 2026-11-25T08:32:06+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 842 from Sabereen Plus: 'المتحدث باسم الجيش الإيراني العميد أكرمي نيا: بناءً على أوامر القائد العام للجيش' (pub_date: 2026-11-25T08:48:30+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 843 from Sabereen Plus: 'قال المجرم ترامب في مقابلة مع صحيفة "' (pub_date: 2026-11-25T08:58:16+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 844 from Sabereen Plus: 'دخان يغطي سماء سواحل المنطقة الشرقية بالسعودية إثر هجوم القوات المسلحة اليمنية ع' (pub_date: 2026-11-25T09:07:40+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 845 from Sabereen Plus: 'إعلام أجنبي: أوكرانيا دربت جماعات انفصالية في مالي لاستهداف جنود روس بالمسيّرات' (pub_date: 2026-11-25T09:07:45+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 846 from Sabereen Plus: 'لا يزال مطار نجران ومطار جازان متوقفَين عن استقبال الرحلات منذ أكثر من 1199 ساعة' (pub_date: 2026-11-25T09:13:57+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 847 from Sabereen Plus: 'بلجيكا تعلن تعرض بيانات 1.' (pub_date: 2026-11-25T09:23:25+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 848 from Sabereen Plus: 'سوريا المحتلة: انفجار يهز ريف دمشق وأنباء عن مخلفات حربية.' (pub_date: 2026-11-25T09:27:24+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 849 from Sabereen Plus: 'تفجيرات صهيونية في بلدة برعشيت جنوبي لبنان.' (pub_date: 2026-11-25T09:47:15+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 850 from Sabereen Plus: 'إعلام أجنبي: أوكرانيا دربت جماعات انفصالية في مالي لاستهداف جنود روس بالمسيّرات' (pub_date: 2026-11-25T09:59:44+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 851 from Sabereen Plus: '‏رئيسة المفوضية الأوروبية تقترح تخصيص 45 مليار يورو إضافية لأوكرانيا.' (pub_date: 2026-11-25T10:09:11+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _extract_and_insert:534 │ [DISCOVERED] Article 852 from Sabereen Plus: 'الحرس الثوري ينشر مشاهد من انفجار ناقلتي نفط مخالفتين أثناء عبورهما مساراً غير م' (pub_date: 2026-11-25T10:09:30+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.engine          │ _discovery_cycle:456 │ 209 new articles to process.
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 649: 'Most say 'yes' in KRG vote on support for independence in northern Iraq' (source: TRT World, pub_date: 2017-09-28T08:07:00+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 649 rejected (Article too old (80282.1h > 3.0h limit)): 'Most say 'yes' in KRG vote on support for independence in northern Iraq'
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 650: 'New drone strike near Erbil adds to growing attacks on Kurdistan region' (source: Yahoo, pub_date: 2025-07-30T14:14:00+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 650 rejected (Article too old (11588.0h > 3.0h limit)): 'New drone strike near Erbil adds to growing attacks on Kurdistan region'
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 651: 'Drones reportedly target Kurdish groups in Erbil, Sulaymaniyah' (source: ijr, pub_date: 2026-11-04T07:20:00+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 651 rejected (Article too old (506.9h > 3.0h limit)): 'Drones reportedly target Kurdish groups in Erbil, Sulaymaniyah'
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 652: 'Widespread blackout caused by drone attack on Khor Mor gas field, exposing Iraqi' (source: jpost.com, pub_date: 2026-11-09T14:32:00+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 652 rejected (Article too old (379.7h > 3.0h limit)): 'Widespread blackout caused by drone attack on Khor Mor gas field, exposing Iraqi'
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 646: 'Who wins from Baghdad's move to clip Kurdish autonomy - the US or Iran?' (source: Middle East Eye, pub_date: 2026-11-24T22:27:00+00:00)
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 646 rejected (Article too old (11.8h > 3.0h limit)): 'Who wins from Baghdad's move to clip Kurdish autonomy - the US or Iran?'
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 777: 'Christian Alliance Rejects Military Threats Against Kurdistan Region, Calls for ' (source: Kurdistan24 EN, pub_date: Tue, 24 Nov 2026 23:53:00 +0300)
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 777 rejected (Article too old (13.4h > 3.0h limit)): 'Christian Alliance Rejects Military Threats Against Kurdistan Region, Calls for '
+2026-11-25 02:14:30 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 818: 'Iraq’s Prime Minister Aims to Wrest More Power From Kurdistan Region - The New Y' (source: Google News - East Kurdistan, pub_date: Wed, 25 Nov 2026 07:36:00 GMT)
+2026-11-25 02:14:30 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:30 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:14:32 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:32 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:14:35 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Iraq’s Prime Minister Aims to Wrest More Power From Kurdista'.
+2026-11-25 02:14:35 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 813: 'UN urges Baghdad, Erbil to resolve disputes through constitutional channels' (source: North Press Agency, pub_date: Wed, 25 Nov 2026 07:49:59 +0000)
+2026-11-25 02:14:35 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:35 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:14:37 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:37 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:14:40 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'UN urges Baghdad, Erbil to resolve disputes through constitu'.
+2026-11-25 02:14:40 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:40 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:14:42 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:42 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:14:45 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'UN urges Baghdad, Erbil to resolve disputes through constitutional channels': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:14:45 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 774: 'Kurdistan Region Cabinet to Formally Respond to Baghdad’s Decisions and Constitu' (source: Kurdistan24 EN, pub_date: Wed, 25 Nov 2026 10:12:00 +0300)
+2026-11-25 02:14:45 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 774 rejected (Article too old (3.0h > 3.0h limit)): 'Kurdistan Region Cabinet to Formally Respond to Baghdad’s Decisions and Constitu'
+2026-11-25 02:14:45 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 771: 'Kurdistan Region Cabinet Rejects Baghdad’s Measures, Demands Full Implementation' (source: Kurdistan24 EN, pub_date: Wed, 25 Nov 2026 12:55:45 +0300)
+2026-11-25 02:14:45 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:45 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:14:47 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:47 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:14:50 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Kurdistan Region Cabinet Rejects Baghdad’s Measures, Demands'.
+2026-11-25 02:14:50 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:50 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:14:52 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:52 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:14:55 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Kurdistan Region Cabinet Rejects Baghdad’s Measures, Demands Full Implementation': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:14:55 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 801: 'Three attack drones target KDPI camps in Kurdistan Region - Rudaw' (source: Google News - South Kurdistan, pub_date: Tue, 24 Nov 2026 19:40:11 GMT)
+2026-11-25 02:14:55 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 801 rejected (Article too old (14.6h > 3.0h limit)): 'Three attack drones target KDPI camps in Kurdistan Region - Rudaw'
+2026-11-25 02:14:55 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 784: 'جێگری سەرۆکی سابیس: کار بۆ گۆڕانکاریی پەروەردەیی لە هەرێمی کوردستان دەکەین' (source: Kurdistan24 Sorani, pub_date: Wed, 25 Nov 2026 11:46:00 +0300)
+2026-11-25 02:14:55 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:55 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:14:56 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:14:56 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:00 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'جێگری سەرۆکی سابیس: کار بۆ گۆڕانکاریی پەروەردەیی لە هەرێمی ک'.
+2026-11-25 02:15:00 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:00 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:01 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:01 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:04 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'جێگری سەرۆکی سابیس: کار بۆ گۆڕانکاریی پەروەردەیی لە هەرێمی کوردستان دەکەین': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 648: 'As US withdraws from Iraq, Kurdish region is left exposed to Iran's threats' (source: MSN, pub_date: 2026-09-28T14:00:00+00:00)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 648 rejected (Article too old (1388.3h > 3.0h limit)): 'As US withdraws from Iraq, Kurdish region is left exposed to Iran's threats'
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 644: 'Iraq Expands Oil Smuggling Probe to Kirkuk-Sulaymaniyah Shipments Bound for Iran' (source: Basnews, pub_date: 2026-11-15T10:15:00+00:00)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 644 rejected (Article too old (240.0h > 3.0h limit)): 'Iraq Expands Oil Smuggling Probe to Kirkuk-Sulaymaniyah Shipments Bound for Iran'
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 778: 'Coordination Framework Calls for Dialogue Between Baghdad and Erbil' (source: Kurdistan24 EN, pub_date: Tue, 24 Nov 2026 23:33:52 +0300)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 778 rejected (Article too old (13.7h > 3.0h limit)): 'Coordination Framework Calls for Dialogue Between Baghdad and Erbil'
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 802: 'UN urges Baghdad, Erbil to resolve differences through constitution - Rudaw' (source: Google News - South Kurdistan, pub_date: Wed, 25 Nov 2026 05:00:23 GMT)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 802 rejected (Article too old (5.2h > 3.0h limit)): 'UN urges Baghdad, Erbil to resolve differences through constitution - Rudaw'
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 775: 'Iraqi Judiciary Urges Baghdad and Kurdistan Region to Uphold Constitution' (source: Kurdistan24 EN, pub_date: Wed, 25 Nov 2026 09:10:00 +0300)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 775 rejected (Article too old (4.1h > 3.0h limit)): 'Iraqi Judiciary Urges Baghdad and Kurdistan Region to Uphold Constitution'
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 653: 'Kurdistan Region Secures $80 Million for Two Major Road Projects in 2027 Budget ' (source: Kurdistan 24, pub_date: 2026-11-11T15:53:00+00:00)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 653 rejected (Article too old (330.4h > 3.0h limit)): 'Kurdistan Region Secures $80 Million for Two Major Road Projects in 2027 Budget '
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 647: 'Iraqi Committee to Visit Sulaymaniyah in Oil Smuggling Investigation' (source: Basnews, pub_date: 2026-11-18T15:44:00+00:00)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 647 rejected (Article too old (162.5h > 3.0h limit)): 'Iraqi Committee to Visit Sulaymaniyah in Oil Smuggling Investigation'
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 794: 'پڕۆژەی ( چوارگۆشەی ژیان ) لە سلێمانی جێبەجێکرا' (source: PUKMedia Sorani, pub_date: Tue, 24 Nov 2026 23:04:00 GMT)
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 794 rejected (Article too old (11.2h > 3.0h limit)): 'پڕۆژەی ( چوارگۆشەی ژیان ) لە سلێمانی جێبەجێکرا'
+2026-11-25 02:15:04 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 790: 'لە هەولێر زنجیرەیەک فیلمی ئیتاڵی نمایش دەکرێت' (source: Kurdistan24 Sorani, pub_date: Wed, 25 Nov 2026 10:30:00 +0300)
+2026-11-25 02:15:05 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:05 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:06 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:06 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:09 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'لە هەولێر زنجیرەیەک فیلمی ئیتاڵی نمایش دەکرێت'.
+2026-11-25 02:15:09 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:09 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:11 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:11 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:14 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'لە هەولێر زنجیرەیەک فیلمی ئیتاڵی نمایش دەکرێت': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:15:14 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 789: 'جێگری پارێزگاری هەولێر: ئەمڕۆ کارەکانی تۆمارکردنی زیانەکانی لافاو کۆتایی دێت' (source: Kurdistan24 Sorani, pub_date: Wed, 25 Nov 2026 10:44:00 +0300)
+2026-11-25 02:15:14 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:14 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:16 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:16 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:19 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'جێگری پارێزگاری هەولێر: ئەمڕۆ کارەکانی تۆمارکردنی زیانەکانی '.
+2026-11-25 02:15:19 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:19 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:21 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:21 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:24 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'جێگری پارێزگاری هەولێر: ئەمڕۆ کارەکانی تۆمارکردنی زیانەکانی لافاو کۆتایی دێت': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:15:24 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 773: 'Italian Consulate Brings Contemporary Cinema to Erbil in Cultural Exchange Initi' (source: Kurdistan24 EN, pub_date: Wed, 25 Nov 2026 10:44:38 +0300)
+2026-11-25 02:15:24 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:24 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:26 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:26 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:29 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Italian Consulate Brings Contemporary Cinema to Erbil in Cul'.
+2026-11-25 02:15:29 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:29 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:31 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:31 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:34 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Italian Consulate Brings Contemporary Cinema to Erbil in Cultural Exchange Initi': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:15:34 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 786: 'حزبی موتەحیدوون پێشنیازی دیالۆگێکی نیشتمانی لەگەڵ هەرێمی کوردستان دەکات' (source: Kurdistan24 Sorani, pub_date: Wed, 25 Nov 2026 11:17:00 +0300)
+2026-11-25 02:15:34 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:34 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:36 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:36 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:39 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'حزبی موتەحیدوون پێشنیازی دیالۆگێکی نیشتمانی لەگەڵ هەرێمی کور'.
+2026-11-25 02:15:39 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:39 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:41 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:41 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:44 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'حزبی موتەحیدوون پێشنیازی دیالۆگێکی نیشتمانی لەگەڵ هەرێمی کوردستان دەکات': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 645: 'Iraqi Oil Blended in Iran, Relabeled to Dodge Sanctions, Report Says' (source: Alhurra, pub_date: 2026-11-14T05:30:00+00:00)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 645 rejected (Article too old (268.8h > 3.0h limit)): 'Iraqi Oil Blended in Iran, Relabeled to Dodge Sanctions, Report Says'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 709: 'India news: US prepares new tariffs after trade probe' (source: DW News, pub_date: 2026-11-25T04:44:00Z)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 709 rejected (Article too old (5.5h > 3.0h limit)): 'India news: US prepares new tariffs after trade probe'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 731: 'The U.S. government is investigating Iranian ties to as many as 50 hacked commer' (source: NPR News, pub_date: Tue, 24 Nov 2026 16:04:50 -0500)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 731 rejected (Article too old (13.2h > 3.0h limit)): 'The U.S. government is investigating Iranian ties to as many as 50 hacked commer'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 730: 'How tariffs, fuel and fertilizer costs are squeezing the U.S.'s biggest apple re' (source: NPR News, pub_date: Tue, 24 Nov 2026 16:09:29 -0500)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 730 rejected (Article too old (13.1h > 3.0h limit)): 'How tariffs, fuel and fertilizer costs are squeezing the U.S.'s biggest apple re'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 736: 'Coast Guard tests capabilities of new icebreaker with 5-month Arctic mission' (source: Military Times, pub_date: Tue, 24 Nov 2026 19:57:33 +0000)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 736 rejected (Article too old (14.3h > 3.0h limit)): 'Coast Guard tests capabilities of new icebreaker with 5-month Arctic mission'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 698: 'Russian nuclear satellites plan 'foolhardy', expert says' (source: France24 EN, pub_date: Tue, 24 Nov 2026 20:31:17 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 698 rejected (Article too old (13.7h > 3.0h limit)): 'Russian nuclear satellites plan 'foolhardy', expert says'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 697: 'UN slams Iran after it flogs singer for performing without veil' (source: France24 EN, pub_date: Tue, 24 Nov 2026 20:53:57 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 697 rejected (Article too old (13.4h > 3.0h limit)): 'UN slams Iran after it flogs singer for performing without veil'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 765: 'Trump wanted Jensen Huang back. Now, the president is all alone in Washington' (source: CNBC World, pub_date: Tue, 24 Nov 2026 21:13:39 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 765 rejected (Article too old (13.0h > 3.0h limit)): 'Trump wanted Jensen Huang back. Now, the president is all alone in Washington'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 734: 'Ford in talks with the Pentagon to supply military vehicles' (source: Military Times, pub_date: Tue, 24 Nov 2026 21:30:00 +0000)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 734 rejected (Article too old (12.8h > 3.0h limit)): 'Ford in talks with the Pentagon to supply military vehicles'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 796: 'Iraq seizes two drone launch platforms in southeast - Rudaw' (source: Google News - South Kurdistan, pub_date: Tue, 24 Nov 2026 21:43:53 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 796 rejected (Article too old (12.5h > 3.0h limit)): 'Iraq seizes two drone launch platforms in southeast - Rudaw'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 769: 'On this day in space! Nov. 24, 1947: The US Navy launches the 1st Aerobee soundi' (source: Space.com, pub_date: Tue, 24 Nov 2026 21:47:34 +0000)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 769 rejected (Article too old (12.5h > 3.0h limit)): 'On this day in space! Nov. 24, 1947: The US Navy launches the 1st Aerobee soundi'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 800: 'Iran determined to ‘break US blockade’: Security chief vows forceful response to' (source: Google News - South Kurdistan, pub_date: Tue, 24 Nov 2026 22:24:05 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 800 rejected (Article too old (11.9h > 3.0h limit)): 'Iran determined to ‘break US blockade’: Security chief vows forceful response to'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 768: 'SpaceX launches secretive spy satellites from California for US Space Force (vid' (source: Space.com, pub_date: Tue, 24 Nov 2026 22:37:19 +0000)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 768 rejected (Article too old (11.6h > 3.0h limit)): 'SpaceX launches secretive spy satellites from California for US Space Force (vid'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 733: 'House measure aims to fill gaps in prenatal care after PCS moves' (source: Military Times, pub_date: Tue, 24 Nov 2026 23:01:07 +0000)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 733 rejected (Article too old (11.2h > 3.0h limit)): 'House measure aims to fill gaps in prenatal care after PCS moves'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 716: 'Kilmar Ábrego García, man at center of Trump deportation battle, leaves US' (source: The Guardian World, pub_date: Tue, 24 Nov 2026 23:50:31 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 716 rejected (Article too old (10.4h > 3.0h limit)): 'Kilmar Ábrego García, man at center of Trump deportation battle, leaves US'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 764: 'Jensen Huang's Nvidia return shows the U.S.-China AI race is about more than chi' (source: CNBC World, pub_date: Wed, 25 Nov 2026 01:13:56 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 764 rejected (Article too old (9.0h > 3.0h limit)): 'Jensen Huang's Nvidia return shows the U.S.-China AI race is about more than chi'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 755: 'Houthi attack on Saudi Arabian sovereign wealth fund PIF's tower injures 11' (source: CNBC World, pub_date: Wed, 25 Nov 2026 02:36:43 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 755 rejected (Article too old (7.7h > 3.0h limit)): 'Houthi attack on Saudi Arabian sovereign wealth fund PIF's tower injures 11'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 686: 'Amnesty calls for ICC genocide probe over Israel's impact on births in Gaza' (source: France24 EN, pub_date: Wed, 25 Nov 2026 04:01:48 GMT)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 686 rejected (Article too old (6.2h > 3.0h limit)): 'Amnesty calls for ICC genocide probe over Israel's impact on births in Gaza'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 680: 'Galatasaray says Israel complained to UEFA over Palestine banners' (source: Al Jazeera, pub_date: Wed, 25 Nov 2026 04:12:11 +0000)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 680 rejected (Article too old (6.1h > 3.0h limit)): 'Galatasaray says Israel complained to UEFA over Palestine banners'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 679: 'Israeli strike kills four people in Gaza' (source: Al Jazeera, pub_date: Wed, 25 Nov 2026 04:13:58 +0000)
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 679 rejected (Article too old (6.0h > 3.0h limit)): 'Israeli strike kills four people in Gaza'
+2026-11-25 02:15:44 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 727: 'Kilmar Abrego Garcia leaves U.S. voluntarily for Spain' (source: NPR News, pub_date: Wed, 25 Nov 2026 04:19:50 -0500)
+2026-11-25 02:15:44 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:44 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:45 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:45 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:49 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Kilmar Abrego Garcia leaves U.S. voluntarily for Spain'.
+2026-11-25 02:15:49 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:49 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:50 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:50 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:53 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Kilmar Abrego Garcia leaves U.S. voluntarily for Spain': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:15:53 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 675: 'Phone spying to missiles: Why India-Israel strategic ties go beyond Modi' (source: Al Jazeera, pub_date: Wed, 25 Nov 2026 05:27:32 +0000)
+2026-11-25 02:15:53 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 675 rejected (Article too old (4.8h > 3.0h limit)): 'Phone spying to missiles: Why India-Israel strategic ties go beyond Modi'
+2026-11-25 02:15:53 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 672: 'Sentences served, but Gaza prisoners remain behind Israeli bars' (source: Al Jazeera, pub_date: Wed, 25 Nov 2026 07:31:44 +0000)
+2026-11-25 02:15:54 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:54 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:15:55 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:55 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:15:58 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Sentences served, but Gaza prisoners remain behind Israeli b'.
+2026-11-25 02:15:58 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:15:58 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:00 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:00 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:03 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Sentences served, but Gaza prisoners remain behind Israeli bars': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:16:03 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 776: 'ISW: Kataib Hezbollah Retains Positions in Jurf al-Sakhar Despite Deal With Bagh' (source: Kurdistan24 EN, pub_date: Wed, 25 Nov 2026 08:37:51 +0300)
+2026-11-25 02:16:03 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 776 rejected (Article too old (4.6h > 3.0h limit)): 'ISW: Kataib Hezbollah Retains Positions in Jurf al-Sakhar Despite Deal With Bagh'
+2026-11-25 02:16:03 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 819: 'Iraqi Prime Minister Takes on Powerful Iran-Backed Groups and Kurds - https://gl' (source: Google News - East Kurdistan, pub_date: Wed, 25 Nov 2026 08:40:20 GMT)
+2026-11-25 02:16:03 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:03 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:05 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:05 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:08 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Iraqi Prime Minister Takes on Powerful Iran-Backed Groups an'.
+2026-11-25 02:16:08 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:08 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:10 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:10 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:13 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Iraqi Prime Minister Takes on Powerful Iran-Backed Groups and Kurds - https://gl': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:16:13 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 666: 'Galatasaray defy Israel’s complaint to UEFA over pro-Palestine banners' (source: Al Jazeera, pub_date: Wed, 25 Nov 2026 08:53:30 +0000)
+2026-11-25 02:16:13 │ INFO     │ core.pipeline        │ _reject_blocked_topic:118 │ SKIPPED [Blocked Topic]: Galatasaray defy Israel’s complaint to UEFA over pro-Palestine banners — Blocked topic: sports/tournament news excluded from channel
+2026-11-25 02:16:13 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 812: 'Mastercard, BBSF launch internationally accepted cards in Syria' (source: North Press Agency, pub_date: Wed, 25 Nov 2026 09:26:45 +0000)
+2026-11-25 02:16:13 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:13 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:15 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:15 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:18 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Mastercard, BBSF launch internationally accepted cards in Sy'.
+2026-11-25 02:16:18 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:18 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:20 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:20 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:23 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Mastercard, BBSF launch internationally accepted cards in Syria': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:16:23 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 732: 'Czech jet engine maker eyes growing role as US supplier in drones, missiles' (source: Defense News Global, pub_date: Wed, 25 Nov 2026 09:33:18 +0000)
+2026-11-25 02:16:23 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:23 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:24 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:24 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:28 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Czech jet engine maker eyes growing role as US supplier in d'.
+2026-11-25 02:16:28 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:28 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:29 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:29 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:33 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Czech jet engine maker eyes growing role as US supplier in drones, missiles': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:16:33 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 743: 'Com-Affiliated Hackers Hijack Cloud Accounts via Vishing for Data Theft and Exto' (source: The Hacker News, pub_date: Wed, 25 Nov 2026 12:07:06 +0530)
+2026-11-25 02:16:33 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 743 rejected (Article too old (3.7h > 3.0h limit)): 'Com-Affiliated Hackers Hijack Cloud Accounts via Vishing for Data Theft and Exto'
+2026-11-25 02:16:33 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 816: 'Five Turkish Air Force personnel killed in Eskişehir helicopter crash' (source: Bianet EN, pub_date: Wed, 25 Nov 2026 12:50:00 +0300)
+2026-11-25 02:16:33 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:33 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:34 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:34 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:38 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'Five Turkish Air Force personnel killed in Eskişehir helicop'.
+2026-11-25 02:16:38 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:38 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:39 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:39 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:42 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'Five Turkish Air Force personnel killed in Eskişehir helicopter crash': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:16:42 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 779: 'ئەنجوومەنی وەزیران: بەکارهێنانی زمانی سەربازی و هەڕەشە رەتدەکەینەوە' (source: Kurdistan24 Sorani, pub_date: Wed, 25 Nov 2026 12:55:00 +0300)
+2026-11-25 02:16:43 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:43 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:44 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:44 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:47 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'ئەنجوومەنی وەزیران: بەکارهێنانی زمانی سەربازی و هەڕەشە رەتدە'.
+2026-11-25 02:16:47 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:47 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:49 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:49 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:52 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'ئەنجوومەنی وەزیران: بەکارهێنانی زمانی سەربازی و هەڕەشە رەتدەکەینەوە': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 714: 'European court finds states can turn back migrants in some cases' (source: DW News, pub_date: 2026-11-24T17:43:00Z)
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 714 rejected (Article too old (16.6h > 3.0h limit)): 'European court finds states can turn back migrants in some cases'
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 713: 'Scientists discover quasar formed 630 million years after the Big Bang' (source: DW News, pub_date: 2026-11-24T22:34:00Z)
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 713 rejected (Article too old (11.7h > 3.0h limit)): 'Scientists discover quasar formed 630 million years after the Big Bang'
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 712: 'US jury convicts Huawei of violating sanctions, stealing trade secrets' (source: DW News, pub_date: 2026-11-25T02:01:00Z)
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 712 rejected (Article too old (8.3h > 3.0h limit)): 'US jury convicts Huawei of violating sanctions, stealing trade secrets'
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 711: 'China launches Shenzhou-24 to Tiangong station' (source: DW News, pub_date: 2026-11-25T02:56:00Z)
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 711 rejected (Article too old (7.3h > 3.0h limit)): 'China launches Shenzhou-24 to Tiangong station'
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 710: 'Libya: 2 dead after Ukrainian attack on Russian warship in Benghazi' (source: DW News, pub_date: 2026-11-25T04:41:00Z)
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 710 rejected (Article too old (5.6h > 3.0h limit)): 'Libya: 2 dead after Ukrainian attack on Russian warship in Benghazi'
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 708: 'Domestic violence soars to record high in Germany' (source: DW News, pub_date: 2026-11-25T06:57:00Z)
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:151 │ [FILTERED] Article 708 rejected (Article too old (3.3h > 3.0h limit)): 'Domestic violence soars to record high in Germany'
+2026-11-25 02:16:52 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 822: 'انتشار واسع لقوات الجيش العراقي في مناطق متفرقة من محافظة كركوك.' (source: Sabereen News, pub_date: 2026-11-25T07:22:47+00:00)
+2026-11-25 02:16:52 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:52 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:54 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:54 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:16:57 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'انتشار واسع لقوات الجيش العراقي في مناطق متفرقة من محافظة كر'.
+2026-11-25 02:16:57 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:57 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:16:59 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:16:59 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:17:02 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'انتشار واسع لقوات الجيش العراقي في مناطق متفرقة من محافظة كركوك.': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:17:02 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 823: 'لليوم الرابع على التوالي، تتواصل تظاهرات جرحى الحشد في بغداد للمطالبة بحقوقهم' (source: Sabereen News, pub_date: 2026-11-25T07:30:01+00:00)
+2026-11-25 02:17:02 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:02 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:17:04 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:04 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:17:07 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'لليوم الرابع على التوالي، تتواصل تظاهرات جرحى الحشد في بغداد'.
+2026-11-25 02:17:07 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:07 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:17:08 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:08 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:17:12 │ WARNING  │ processing.deduplicator │ check_duplicate:240 │ Gemini semantic deduplication fail-open for 'لليوم الرابع على التوالي، تتواصل تظاهرات جرحى الحشد في بغداد للمطالبة بحقوقهم': Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: ht
+2026-11-25 02:17:12 │ INFO     │ core.pipeline        │ _evaluate_candidate:136 │ [DISCOVERED] Processing article 824: 'الجيش الإيراني يعلن إسقاط طائرتين مسيّرتين أميركيتين من طرازي «لوكاس» و«MQ-9» فو' (source: Sabereen News, pub_date: 2026-11-25T07:31:06+00:00)
+2026-11-25 02:17:12 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:12 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:17:13 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:13 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:17:16 │ WARNING  │ core.importance      │ evaluate_global_relevance:581 │ Gemini relevance classifier error (Gemini API error (HTTP 429: {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing detail); failing open to rule-based score for 'الجيش الإيراني يعلن إسقاط طائرتين مسيّرتين أميركيتين من طراز'.
+2026-11-25 02:17:17 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:17 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 1.5s...
+2026-11-25 02:17:18 │ WARNING  │ processing.gemini    │ _execute_with_retries:187 │ Gemini key [0] hit HTTP 429. Rotating to key [0].
+2026-11-25 02:17:18 │ INFO     │ processing.gemini    │ _execute_with_retries:200 │ Gemini HTTP 429 backoff: sleeping 3.0s...
+2026-11-25 02:17:21 │ INFO     │ core.engine          │ stop:301 │ Engine shutting down...
+2026-11-25 02:17:21 │ INFO     │ core.scheduler       │ stop:69 │ Discovery scheduler stopped after 0 cycles.
+2026-11-25 02:17:21 │ INFO     │ database             │ backup:627 │ Database backed up to: D:\guevara hawal\kurdish_global_news_bot\backups\news_bot_backup_20261125_021721.db
+2026-11-25 02:17:21 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:17:21 │ INFO     │ metrics              │ log_report:63 │ ── Metrics Report ──
+2026-11-25 02:17:21 │ INFO     │ metrics              │ log_report:64 │ Uptime: 198.4 seconds
+2026-11-25 02:17:21 │ INFO     │ metrics              │ log_report:66 │   articles_rejected: 65
+2026-11-25 02:17:21 │ INFO     │ metrics              │ log_report:66 │   total_raw_articles: 445
+2026-11-25 02:17:21 │ INFO     │ metrics              │ log_report:66 │   new_articles_inserted: 209
+2026-11-25 02:17:21 │ INFO     │ metrics              │ log_report:66 │   articles_blocked_topic: 1
+2026-11-25 02:17:21 │ INFO     │ metrics              │ log_report:68 │   discovery_cycle_time: avg=196.769s, min=196.769s, max=196.769s, count=1
+2026-11-25 02:17:21 │ INFO     │ core.engine          │ stop:345 │ Engine stopped. Total discovery cycles: 0
+2026-11-25 02:17:21 │ INFO     │ core.engine          │ run_once:198 │ Single run completed cleanly.
+2026-11-25 02:17:21 │ INFO     │ newsbot              │ main:147 │ Shutdown requested by user.
+2026-11-25 02:47:19 │ INFO     │ newsbot              │ setup_logging:79 │ Logging initialized. Level: INFO, Log dir: D:\guevara hawal\logs
+2026-11-25 02:47:19 │ INFO     │ newsbot              │ main:116 │ ============================================================
+2026-11-25 02:47:19 │ INFO     │ newsbot              │ main:117 │   Kurdish Global News Bot — Starting [Nightly Digest Mode (--daily-digest)]
+2026-11-25 02:47:19 │ INFO     │ newsbot              │ main:118 │   Autonomous International News Platform
+2026-11-25 02:47:19 │ INFO     │ newsbot              │ main:119 │ ============================================================
+2026-11-25 02:47:19 │ INFO     │ newsbot              │ main:135 │ Running nightly digest mode (force=True)...
+2026-11-25 02:47:19 │ INFO     │ newsbot              │ main:137 │ Nightly digest run finished cleanly. Exiting with code 0.
+2026-11-25 02:47:19 │ INFO     │ core.duplicates      │ is_meaningful_update:122 │ Meaningful update detected: 9 unique words.
+2026-11-25 02:47:19 │ WARNING  │ processing.gemini    │ _execute_with_retries:334 │ Gemini key [0] hit HTTP 429 (60s cooldown). Rotating immediately to key [1].
+2026-11-25 02:47:19 │ WARNING  │ processing.gemini    │ _execute_with_retries:334 │ Gemini key [0] hit HTTP 429 (300s cooldown). Rotating immediately to key [1].
+2026-11-25 02:47:19 │ WARNING  │ processing.gemini    │ _execute_with_retries:387 │ All 2 Gemini API key(s) exhausted after HTTP 429/quota errors (60s cooldown active). Last error: HTTP 429: Rate limit exceeded
+2026-11-25 02:47:19 │ WARNING  │ processing.gemini    │ generate_json:220 │ All 2 Gemini API key(s) are in HTTP 429 cooldown (60s left); skipping Gemini requests cleanly until reset.
+2026-11-25 02:47:19 │ WARNING  │ processing.gemini    │ _execute_with_retries:387 │ All 1 Gemini API key(s) exhausted after HTTP 429/quota errors (60s cooldown active). Last error: HTTP 429: Rate limit
+2026-11-25 02:47:19 │ WARNING  │ core.importance      │ evaluate_batch_relevance:911 │ Gemini batch classifier hit 429 quota exhaustion (All Gemini API keys exhausted. Last error: HTTP 429: Rate limit); aborting remaining batch LLM calls and failing open cleanly.
+2026-11-25 02:47:19 │ WARNING  │ processing.gemini    │ _execute_with_retries:334 │ Gemini key [0] hit HTTP 429 (60s cooldown). Rotating immediately to key [1].
+2026-11-25 02:47:19 │ WARNING  │ core.importance      │ evaluate_global_relevance:790 │ Gemini relevance classifier error (Gemini request failed: Network failure); failing open to rule-based score for 'Coalition Conducts Precision Strikes Against Military Target'.
+2026-11-25 02:47:19 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:19 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_pipeline_rejects_local_la0\test_rel.db
+2026-11-25 02:47:19 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _local_pre_screen_candidate:164 │ [DISCOVERED] Processing article 1: 'Oregon Contractors Sue State Board Over Routine Permit Licensing Delay' (source: Reuters, pub_date: 2026-11-25T10:47:19.399366+00:00)
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _apply_relevance_evaluation:291 │ SKIPPED [Low Global Relevance 2/10]: Oregon Contractors Sue State Board Over Routine Permit Licensing Delay — Routine US state contractor licensing lawsuit with no global impact.
+2026-11-25 02:47:19 │ INFO     │ storage              │ create_database:43 │ Using local SQLite database backend.
+2026-11-25 02:47:19 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:19 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:19 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_pipeline_overrides_source0\test_cat_override.db
+2026-11-25 02:47:19 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _local_pre_screen_candidate:164 │ [DISCOVERED] Processing article 1: 'Nvidia Stock Surges on Record Chip Revenue' (source: Al Jazeera, pub_date: 2026-11-25T10:47:19.447986+00:00)
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _scrape_translate_and_publish:362 │ Extracted 223 chars of full article text from https://aljazeera.com/economy/nvidia-surge
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _scrape_translate_and_publish:424 │ [TRANSLATED] Article 1 translated: 'Nvidia Stock Surges on Record Chip Revenue' -> 'پشکەکانی کۆمپانیای ئێنڤیدیا بەرزبوونەوەی پێوانەییان تۆمارکرد'
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _scrape_translate_and_publish:476 │ [BALANCER] [SECONDARY] Publishing article 1 ('economy_markets'): Recent publishing history sample small (0 < 5 articles); secondary permitted
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _publish_immediately:618 │ [PUBLISHED] Article 1 published to Telegram: msg_id=7777, title='Nvidia Stock Surges on Record Chip Revenue' (score=8.00, priority=HIGH)
+2026-11-25 02:47:19 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:19 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:19 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_north_press_houston_fbi_i0\test_houston_fbi.db
+2026-11-25 02:47:19 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _local_pre_screen_candidate:164 │ [DISCOVERED] Processing article 1: 'Houston Man Sentenced to 15 Years for Distributing ISIS Propaganda and Lying to ' (source: North Press Agency, pub_date: 2026-11-25T10:47:19.493486+00:00)
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _reject_blocked_topic:145 │ SKIPPED [Blocked Topic]: Houston Man Sentenced to 15 Years for Distributing ISIS Propaganda and Lying to FBI — Blocked topic: foreign/domestic crime or individual court sentencing
+2026-11-25 02:47:19 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:19 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:19 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_npr_morocco_afcon_sports_0\test_sports_block.db
+2026-11-25 02:47:19 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _local_pre_screen_candidate:164 │ [DISCOVERED] Processing article 1: 'Morocco Faces Senegal in Chaotic Africa Cup of Nations Football Final' (source: NPR News, pub_date: 2026-11-25T10:47:19.537873+00:00)
+2026-11-25 02:47:19 │ INFO     │ core.pipeline        │ _reject_blocked_topic:145 │ SKIPPED [Blocked Topic]: Morocco Faces Senegal in Chaotic Africa Cup of Nations Football Final — Blocked topic: sports/tournament news excluded from channel
+2026-11-25 02:47:19 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:19 │ INFO     │ tg_bot.publisher     │ initialize:75 │ Telegram bot connected: @test_bot (Test)
+2026-11-25 02:47:20 │ WARNING  │ tg_bot.publisher     │ initialize:80 │ Telegram connection attempt 1/3 timed out or network error: Connect timeout. Retrying in 2s...
+2026-11-25 02:47:20 │ INFO     │ tg_bot.publisher     │ initialize:75 │ Telegram bot connected: @test_bot (Test)
+2026-11-25 02:47:20 │ WARNING  │ tg_bot.publisher     │ initialize:80 │ Telegram connection attempt 1/3 timed out or network error: Connect timeout. Retrying in 2s...
+2026-11-25 02:47:20 │ WARNING  │ tg_bot.publisher     │ initialize:80 │ Telegram connection attempt 2/3 timed out or network error: Connect timeout. Retrying in 4s...
+2026-11-25 02:47:20 │ ERROR    │ tg_bot.publisher     │ initialize:86 │ Failed to connect to Telegram after 3 attempts: Connect timeout
+2026-11-25 02:47:20 │ INFO     │ tg_bot.publisher     │ _publish_with_video:170 │ Published branded video: msg_id=8842, breaking=False, silent=True, source=Sabereen News, category=military_conflict, title='Defense systems activated during overnight aerial alert'
+2026-11-25 02:47:20 │ INFO     │ tg_bot.publisher     │ publish_article:133 │ Video publish/branding failed or unavailable, falling back to branded image card.
+2026-11-25 02:47:20 │ INFO     │ tg_bot.publisher     │ _publish_with_card:218 │ Published branded card: msg_id=8843, breaking=False, silent=True, category=politics_world, title='Parliament security committee holds emergency session'
+2026-11-25 02:47:20 │ INFO     │ tg_bot.publisher     │ _publish_with_video:170 │ Published branded video: msg_id=8844, breaking=True, silent=False, source=Sabereen News, category=military_conflict, title='Missile strikes reported on regional airbase'
+2026-11-25 02:47:20 │ INFO     │ core.scheduler       │ start:54 │ Discovery scheduler started. Interval: 1 seconds. NO hourly publishing schedule exists.
+2026-11-25 02:47:20 │ INFO     │ core.scheduler       │ _run_loop:78 │ ═══ Discovery cycle #1 starting ═══
+2026-11-25 02:47:20 │ INFO     │ core.scheduler       │ _run_loop:82 │ ═══ Discovery cycle #1 completed in 0.0s ═══
+2026-11-25 02:47:21 │ INFO     │ core.scheduler       │ _run_loop:78 │ ═══ Discovery cycle #2 starting ═══
+2026-11-25 02:47:21 │ INFO     │ core.scheduler       │ _run_loop:82 │ ═══ Discovery cycle #2 completed in 0.0s ═══
+2026-11-25 02:47:22 │ INFO     │ core.scheduler       │ _run_loop:78 │ ═══ Discovery cycle #3 starting ═══
+2026-11-25 02:47:22 │ INFO     │ core.scheduler       │ _run_loop:82 │ ═══ Discovery cycle #3 completed in 0.0s ═══
+2026-11-25 02:47:22 │ INFO     │ core.scheduler       │ stop:69 │ Discovery scheduler stopped after 3 cycles.
+2026-11-25 02:47:22 │ INFO     │ core.scheduler       │ start:54 │ Discovery scheduler started. Interval: 1 seconds. NO hourly publishing schedule exists.
+2026-11-25 02:47:22 │ INFO     │ core.scheduler       │ _run_loop:78 │ ═══ Discovery cycle #1 starting ═══
+2026-11-25 02:47:22 │ ERROR    │ core.scheduler       │ _run_loop:89 │ Discovery cycle #1 error: First cycle fails
+2026-11-25 02:47:23 │ INFO     │ core.scheduler       │ _run_loop:78 │ ═══ Discovery cycle #2 starting ═══
+2026-11-25 02:47:23 │ INFO     │ core.scheduler       │ _run_loop:82 │ ═══ Discovery cycle #2 completed in 0.0s ═══
+2026-11-25 02:47:24 │ INFO     │ core.scheduler       │ _run_loop:78 │ ═══ Discovery cycle #3 starting ═══
+2026-11-25 02:47:24 │ INFO     │ core.scheduler       │ _run_loop:82 │ ═══ Discovery cycle #3 completed in 0.0s ═══
+2026-11-25 02:47:25 │ INFO     │ core.scheduler       │ _run_loop:78 │ ═══ Discovery cycle #4 starting ═══
+2026-11-25 02:47:25 │ INFO     │ core.scheduler       │ _run_loop:82 │ ═══ Discovery cycle #4 completed in 0.0s ═══
+2026-11-25 02:47:26 │ INFO     │ core.scheduler       │ stop:69 │ Discovery scheduler stopped after 4 cycles.
+2026-11-25 02:47:26 │ INFO     │ tg_bot.publisher     │ _publish_text_only:259 │ Published text-only: msg_id=1234, breaking=False, silent=True, title='Test News Title'
+2026-11-25 02:47:26 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:26 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_pipeline_skips_insufficie0\test_detail.db
+2026-11-25 02:47:26 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:26 │ INFO     │ core.pipeline        │ _local_pre_screen_candidate:164 │ [DISCOVERED] Processing article 1: 'Breaking: Brief Update from Geneva' (source: Reuters, pub_date: 2026-11-25T10:47:26.445130+00:00)
+2026-11-25 02:47:26 │ INFO     │ core.pipeline        │ _scrape_translate_and_publish:381 │ [FILTERED] SKIPPED: insufficient article detail for article 1 ('Breaking: Brief Update from Geneva'): Text too thin (23 chars < 160 min limit)
+2026-11-25 02:47:26 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:26 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:26 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_pipeline_uses_full_scrape0\test_scraped.db
+2026-11-25 02:47:26 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:26 │ INFO     │ core.pipeline        │ _local_pre_screen_candidate:164 │ [DISCOVERED] Processing article 1: 'Space Treaty Regulating Satellites Signed in Vienna' (source: Reuters, pub_date: 2026-11-25T10:47:26.486812+00:00)
+2026-11-25 02:47:26 │ INFO     │ core.pipeline        │ _scrape_translate_and_publish:362 │ Extracted 338 chars of full article text from https://reuters.com/rich-space-news
+2026-11-25 02:47:26 │ INFO     │ core.pipeline        │ _scrape_translate_and_publish:424 │ [TRANSLATED] Article 1 translated: 'Space Treaty Regulating Satellites Signed in Vienna' -> 'ڕێککەوتنی بۆشایی ئاسمان واژۆکرا'
+2026-11-25 02:47:26 │ INFO     │ core.pipeline        │ _scrape_translate_and_publish:476 │ [BALANCER] [SECONDARY] Publishing article 1 ('science_space'): Recent publishing history sample small (0 < 5 articles); secondary permitted
+2026-11-25 02:47:26 │ INFO     │ core.pipeline        │ _publish_immediately:618 │ [PUBLISHED] Article 1 published to Telegram: msg_id=8888, title='Space Treaty Regulating Satellites Signed in Vienna' (score=8.00, priority=HIGH)
+2026-11-25 02:47:26 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:26 │ INFO     │ storage              │ create_database:43 │ Using local SQLite database backend.
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ run_once:150 │ ╔══════════════════════════════════════════╗
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ run_once:151 │ ║   Kurdish Global News Bot — Single Run   ║
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ run_once:152 │ ╚══════════════════════════════════════════╝
+2026-11-25 02:47:26 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:26 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_engine_run_once0\test_once.db
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:67 │ Current database version: 0
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:77 │ Running migration 2: Add image_url column if missing
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:84 │ Column image_url already exists, skipping.
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:90 │ Migration 2 completed.
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:77 │ Running migration 3: Add country and region columns if missing
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:84 │ Column country already exists, skipping.
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:90 │ Migration 3 completed.
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:77 │ Running migration 4: Add skipped_urls table for persisting low-relevance URL hashes
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:90 │ Migration 4 completed.
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:77 │ Running migration 5: Add daily_digests table for duplicate nightly digest protection
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:90 │ Migration 5 completed.
+2026-11-25 02:47:26 │ INFO     │ migrations           │ run_migrations:97 │ Database version after migrations: 5
+2026-11-25 02:47:26 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ run_once:186 │ Cold start detected: database is empty. Startup safety guard active (ignoring articles older than 30 minutes).
+2026-11-25 02:47:26 │ INFO     │ core.recovery        │ run_startup_recovery:91 │ ═══ Starting crash recovery ═══
+2026-11-25 02:47:26 │ INFO     │ core.recovery        │ recover_interrupted_jobs:34 │ No interrupted jobs found.
+2026-11-25 02:47:26 │ INFO     │ core.recovery        │ run_startup_recovery:101 │ Recovery complete: {'interrupted_recovered': 0, 'retry_pending': 0}
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ run_once:197 │ Executing single discovery and publishing cycle...
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ stop:305 │ Engine shutting down...
+2026-11-25 02:47:26 │ INFO     │ core.scheduler       │ stop:69 │ Discovery scheduler stopped after 0 cycles.
+2026-11-25 02:47:26 │ INFO     │ database             │ backup:627 │ Database backed up to: D:\guevara hawal\kurdish_global_news_bot\backups\news_bot_backup_20261125_024726.db
+2026-11-25 02:47:26 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:26 │ INFO     │ metrics              │ log_report:63 │ ── Metrics Report ──
+2026-11-25 02:47:26 │ INFO     │ metrics              │ log_report:64 │ Uptime: 0.0 seconds
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ stop:349 │ Engine stopped. Total discovery cycles: 0
+2026-11-25 02:47:26 │ INFO     │ core.engine          │ run_once:202 │ Single run completed cleanly.
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:116 │ ============================================================
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:117 │   Kurdish Global News Bot — Starting [Single-Run Mode (--once)]
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:118 │   Autonomous International News Platform
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:119 │ ============================================================
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:140 │ Running single discovery and publishing cycle...
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:142 │ Single cycle completed successfully. Exiting with code 0.
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:116 │ ============================================================
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:117 │   Kurdish Global News Bot — Starting [Continuous Mode]
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:118 │   Autonomous International News Platform
+2026-11-25 02:47:26 │ INFO     │ newsbot              │ main:119 │ ============================================================
+2026-11-25 02:47:29 │ INFO     │ sources.duckduckgo   │ fetch_articles:54 │ DDG discovered 3 articles from 3 keywords.
+2026-11-25 02:47:29 │ INFO     │ storage              │ create_database:43 │ Using local SQLite database backend.
+2026-11-25 02:47:29 │ INFO     │ storage              │ create_database:43 │ Using local SQLite database backend.
+2026-11-25 02:47:29 │ INFO     │ storage              │ create_database:40 │ Using Supabase PostgREST persistent backend (https://proj123.supabase.co).
+2026-11-25 02:47:29 │ INFO     │ storage              │ create_database:40 │ Using Supabase PostgREST persistent backend (https://proj123.supabase.co).
+2026-11-25 02:47:29 │ INFO     │ storage.supabase_db  │ connect:88 │ Supabase PostgREST client initialized: https://testproj.supabase.co/rest/v1
+2026-11-25 02:47:29 │ WARNING  │ storage.supabase_db  │ _request:154 │ Supabase transport error on POST daily_digests (attempt 1/3): Transient network hiccup; retrying in 0.00s
+2026-11-25 02:47:29 │ WARNING  │ storage.supabase_db  │ _request:132 │ Supabase POST daily_digests returned HTTP 503 (attempt 2/3); retrying in 0.00s
+2026-11-25 02:47:29 │ INFO     │ storage              │ create_database:40 │ Using Supabase PostgREST persistent backend (https://proj.supabase.co).
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ run_daily_digest:214 │ ╔══════════════════════════════════════════╗
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ run_daily_digest:215 │ ║  Kurdish Global News — Nightly Digest    ║
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ run_daily_digest:216 │ ╚══════════════════════════════════════════╝
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ run_daily_digest:229 │ SKIPPED: Daily digest for 2026-11-25 already published (pass --force to re-publish).
+2026-11-25 02:47:29 │ WARNING  │ sources.telegram     │ fetch_channel:437 │ Telegram channel 'SabrenNewss' returned HTTP 500.
+2026-11-25 02:47:29 │ INFO     │ sources.telegram     │ fetch_articles:475 │ Telegram public-web source discovered 1 posts across 2 channels.
+2026-11-25 02:47:29 │ WARNING  │ sources.telegram     │ fetch_channel:445 │ Telegram channel 'SabrenNewss' timed out.
+2026-11-25 02:47:29 │ WARNING  │ sources.telegram     │ fetch_channel:437 │ Telegram channel 'Sabren_News1' returned HTTP 429.
+2026-11-25 02:47:29 │ INFO     │ sources.telegram     │ fetch_articles:475 │ Telegram public-web source discovered 0 posts across 2 channels.
+2026-11-25 02:47:29 │ WARNING  │ sources.telegram     │ parse_channel_html:325 │ Telegram channel 'SabrenNewss' preview restricted or unavailable.
+2026-11-25 02:47:29 │ WARNING  │ sources.telegram     │ fetch_channel:448 │ Telegram channel 'Sabren_News1' HTTP client error: network down
+2026-11-25 02:47:29 │ INFO     │ sources.telegram     │ fetch_articles:475 │ Telegram public-web source discovered 0 posts across 2 channels.
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ translate_article:607 │ Gemini single-pass Sorani translation completed for headline 'Report on regional security developments'
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ _translate_with_fallback:661 │ Translation Tier: Gemini translated text (15 chars)
+2026-11-25 02:47:29 │ INFO     │ database             │ _init_schema:175 │ Database schema initialized.
+2026-11-25 02:47:29 │ INFO     │ database             │ connect:61 │ Database connected: C:\Users\gevara\AppData\Local\Temp\pytest-of-gevara\pytest-83\test_news_engine_registers_tel0\engine_tg.db
+2026-11-25 02:47:29 │ INFO     │ storage              │ create_database:43 │ Using local SQLite database backend.
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _init_sources:420 │ Initialized 6 news sources: ['DuckDuckGo', 'RSS', 'GDELT', 'OfficialSources', 'KurdistanRegions', 'TelegramPublicWeb']
+2026-11-25 02:47:29 │ INFO     │ storage              │ create_database:43 │ Using local SQLite database backend.
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _init_sources:420 │ Initialized 5 news sources: ['DuckDuckGo', 'RSS', 'GDELT', 'OfficialSources', 'KurdistanRegions']
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:453 │ Discovered 2 raw articles from 2 sources.
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _extract_and_insert:568 │ [DISCOVERED] Article 1 from Sabereen News: 'Iraq security forces reinforce border perimeter near western Anbar' (pub_date: 2026-11-25T10:23:29+00:00)
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _extract_and_insert:568 │ [DISCOVERED] Article 2 from Reuters: 'Foreign ministers hold urgent talks on Red Sea maritime security corridor' (pub_date: 2026-11-25T10:23:29+00:00)
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:460 │ 2 new articles to process.
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:498 │ Pipeline results: {'published': 0}
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:453 │ Discovered 2 raw articles from 2 sources.
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:460 │ 0 new articles to process.
+2026-11-25 02:47:29 │ ERROR    │ core.engine          │ _discovery_cycle:445 │ Source 'TelegramPublicWeb' error: Telegram network down
+2026-11-25 02:47:29 │ WARNING  │ health               │ record_failure:65 │ Component 'discovery' failure: TelegramPublicWeb: Telegram network down
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:453 │ Discovered 1 raw articles from 2 sources.
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _extract_and_insert:568 │ [DISCOVERED] Article 3 from Reuters: 'G7 envoys release joint declaration on regional ceasefire talks' (pub_date: 2026-11-25T10:23:29+00:00)
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:460 │ 1 new articles to process.
+2026-11-25 02:47:29 │ INFO     │ core.engine          │ _discovery_cycle:498 │ Pipeline results: {'published': 0}
+2026-11-25 02:47:29 │ INFO     │ database             │ close:68 │ Database connection closed.
+2026-11-25 02:47:29 │ WARNING  │ processing.gemini    │ _execute_with_retries:334 │ Gemini key [0] hit HTTP 429 (60s cooldown). Rotating immediately to key [1].
+2026-11-25 02:47:29 │ WARNING  │ processing.gemini    │ _execute_with_retries:348 │ Gemini key [1] hit HTTP 429; all 2 key(s) rate-limited. Backing off 0.1s.
+2026-11-25 02:47:29 │ INFO     │ processing.gemini    │ _execute_with_retries:273 │ All Gemini keys cooling down; transient backoff sleep 0.1s...
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['GoogleTranslate']
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ translate_article:607 │ Gemini single-pass Sorani translation completed for headline 'Eng Title'
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['Gemini', 'GoogleTranslate']
+2026-11-25 02:47:29 │ WARNING  │ processing.translator │ translate_article:614 │ Gemini primary translation failed (All Gemini keys exhausted). Activating fallback.
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['GoogleTranslate']
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ translate_article:633 │ Using verified native Sorani text directly after Gemini fallback.
+2026-11-25 02:47:29 │ INFO     │ processing.translator │ __init__:538 │ Translation engine initialized (Gemini-first, no Groq). Active providers: ['GoogleTranslate']
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ download_and_brand_video:201 │ Invalid video URL skipped: ftp://invalid.com/v.mp4
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ download_and_brand_video:206 │ ffmpeg not found on PATH; skipping video branding and falling back to card.
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ download_and_brand_video:211 │ KGN logo asset (assets/logo.png) not found; skipping video branding.
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ _download_video_to_temp:145 │ Video Content-Length (2097152 bytes) exceeds 1048576 byte cap; aborting download.
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ _download_video_to_temp:163 │ Streamed video exceeded 1048576 byte limit (1228800 bytes); aborting.
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ download_and_brand_video:240 │ FFmpeg branding failed (exit=1): codec error
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ download_and_brand_video:264 │ FFmpeg video branding timed out after 5s.
+2026-11-25 02:47:29 │ WARNING  │ processing.video_processor │ download_and_brand_video:254 │ Branded video size (16 bytes) invalid or exceeds 48 MB Telegram limit; falling back.

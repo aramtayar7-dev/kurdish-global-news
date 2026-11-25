@@ -195,7 +195,32 @@ async def test_acceptance_criteria_15_long_running_simulation_no_duplicates(temp
         
         mock_rel.return_value = RelevanceEvaluation(score=8, is_breaking=False, category="politics_world", reason="Mock relevant", passed=True)
         mock_scrape.return_value = (None, None)
-        mock_tr_article.side_effect = lambda title, summary="": (f"وەرگێڕدراو بۆ کوردی: {title}", f"پوختەی بابەت بە کوردی: {summary}")
+        _sorani_map = {
+            "Global Economy Summit Concludes in Geneva with New Trade Accords": (
+                "لووتکەی ئابووریی جیهان لە جنێڤ بە ڕێککەوتنی نوێ کۆتایی هات",
+                "نوێنەرانی وڵاتان لە جنێڤ لەسەر ڕێککەوتنێکی نوێی بازرگانی گەیشتنە ئەنجام.",
+            ),
+            "Astronomers Discover Water Ice on Distant Martian Crater": (
+                "فەلەکناسەکان سەهۆڵی ئاویان لەسەر مەریخ دۆزییەوە",
+                "تیمێکی توێژەران شوێنەواری سەهۆڵی ئاویان لە چاڵێکی مەریخدا تۆمار کرد.",
+            ),
+            "Magnitude 7.1 Earthquake Strikes Offshore Islands in Pacific Region": (
+                "بوومەلەرزەیەکی بەهێز بە پلەی ٧.١ زەریای هێمنی هەژاند",
+                "دەزگاکانی چاودێری ڕایانگەیاند بوومەلەرزەکە لە نزیک دوورگەکان ڕوویداوە.",
+            ),
+            "Renewable Solar Energy Efficiency Reaches Record 34 Percent Breakthrough": (
+                "توانای وزەی خۆر گەیشتە ئاستێکی پێوانەیی نوێ لە جیهاندا",
+                "زانایان ڕایانگەیاند پەرەپێدانی پانێڵی خۆر بە ڕێژەی لە سەدا ٣٤ سەرکەوتوو بووە.",
+            ),
+            "Cybersecurity Agency Issues Warning on Major Global Banking Vulnerability": (
+                "ئاژانسی ئاسایشی سایبەری هۆشداری لە مەترسییەکی بانکی دا",
+                "شارەزایانی ئاسایشی ئەلیکترۆنی هۆشدارییان لە کەلێنێکی مەترسیداری بانکەکان دا.",
+            ),
+        }
+        mock_tr_article.side_effect = lambda title, summary="": _sorani_map.get(
+            title,
+            ("هەواڵی گرنگی نێودەوڵەتی بڵاوکرایەوە", "پوختەی هەواڵەکە بە زمانی کوردی سۆرانی."),
+        )
 
         distinct_topics = [
             ("Global Economy Summit Concludes in Geneva with New Trade Accords", "https://example.com/world/economy-summit-geneva", "Global Economy & Financial Markets"),

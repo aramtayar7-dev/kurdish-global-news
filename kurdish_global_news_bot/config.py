@@ -79,9 +79,32 @@ PORT: int = _int(os.getenv("PORT"), 10000)
 # ═══════════════════════════════════════════════════
 # Gemini AI Engine (Primary Classification, Translation & Summarization)
 # ═══════════════════════════════════════════════════
-GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+def _load_gemini_keys() -> list[str]:
+    """Load & deduplicate comma-separated keys from GEMINI_API_KEYS and GEMINI_API_KEY."""
+    raw_combined = ",".join(
+        part
+        for part in (os.getenv("GEMINI_API_KEYS", ""), os.getenv("GEMINI_API_KEY", ""))
+        if part
+    )
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in raw_combined.split(","):
+        key = item.strip()
+        if key and key not in seen:
+            keys.append(key)
+            seen.add(key)
+    return keys
+
+
+GEMINI_API_KEYS: list[str] = _load_gemini_keys()
+GEMINI_API_KEY: str = ",".join(GEMINI_API_KEYS)
 ENABLE_GEMINI_PROOFREAD: bool = _bool(os.getenv("ENABLE_GEMINI_PROOFREAD"), True)
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+MAX_GEMINI_CANDIDATES_PER_CYCLE: int = _int(os.getenv("MAX_GEMINI_CANDIDATES_PER_CYCLE"), 25)
+GEMINI_RANK_BATCH_SIZE: int = max(1, min(15, _int(os.getenv("GEMINI_RANK_BATCH_SIZE"), 12)))
+GEMINI_KEY_COOLDOWN_SECONDS: float = _float(os.getenv("GEMINI_KEY_COOLDOWN_SECONDS"), 60.0)
+GEMINI_QUOTA_COOLDOWN_SECONDS: float = _float(os.getenv("GEMINI_QUOTA_COOLDOWN_SECONDS"), 300.0)
+GEMINI_REQUEST_PACING_SECONDS: float = _float(os.getenv("GEMINI_REQUEST_PACING_SECONDS"), 0.5)
 
 # Branding & Card Generation
 CHANNEL_HANDLE: str = os.getenv("CHANNEL_HANDLE", "@KurdishGlobalNews").strip() or "@KurdishGlobalNews"
@@ -120,6 +143,11 @@ BASHUR_QUOTA_PER_8: int = _int(os.getenv("BASHUR_QUOTA_PER_8"), 5)
 GLOBAL_QUOTA_PER_8: int = max(0, 8 - BASHUR_QUOTA_PER_8)
 BASHUR_TARGET_RATIO: float = BASHUR_QUOTA_PER_8 / 8.0
 GLOBAL_TARGET_RATIO: float = 1.0 - BASHUR_TARGET_RATIO
+
+# Strict Topic Mix Quota per 8 posts: min 7 Politics/War + max 1 Economy OR Cybersecurity
+POLITICS_WAR_MIN_PER_8: int = _int(os.getenv("POLITICS_WAR_MIN_PER_8"), 7)
+ECON_CYBER_MAX_PER_8: int = max(0, 8 - POLITICS_WAR_MIN_PER_8)
+ECON_CYBER_MIN_SCORE: float = _float(os.getenv("ECON_CYBER_MIN_SCORE"), 7.5)
 
 # ═══════════════════════════════════════════════════
 # Network

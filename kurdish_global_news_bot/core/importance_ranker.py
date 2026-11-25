@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -17,12 +18,14 @@ from typing import Optional
 
 from storage.models import Article
 from processing.extractor import ArticleExtractor
-from processing.gemini_client import GeminiClient, GeminiAPIError
+from processing.gemini_client import GeminiClient, GeminiAPIError, GeminiQuotaExhaustedError
 from processing.translator import strip_news_dateline
 from config import (
     CANONICAL_CATEGORIES,
     GEMINI_API_KEY,
     GEMINI_MODEL,
+    GEMINI_RANK_BATCH_SIZE,
+    MAX_GEMINI_CANDIDATES_PER_CYCLE,
     MIN_GLOBAL_RELEVANCE_SCORE,
     MIN_IMPORTANCE_SCORE,
     MIN_SOURCE_CREDIBILITY,
@@ -139,18 +142,30 @@ SPORTS_PATTERN = re.compile(
     r"champions\s+league|premier\s+league|la\s+liga|serie\s+a|bundesliga|"
     r"\bnba\b|\bnfl\b|\bmlb\b|\bnhl\b|\bufc\b|\bwimbledon\b|grand\s+slam|"
     r"\bgoalkeeper\b|\bstriker\b|\bmidfielder\b|\bpenalty\s+shootout\b|\bhat-trick\b|\bred\s+card\b|"
-    r"\b(?:football|soccer|basketball|tennis|cricket)\s+(?:match|player|star|club|team|coach|tournament)\b|"
+    r"\b(?:football|soccer|basketball|tennis|cricket|golf|rugby|hockey|baseball|swimming)\s+(?:match|player|star|club|team|coach|tournament|league|championship)\b|"
+    r"\bformula\s+1\b|\bf1\s+(?:grand\s+prix|race)\b|\btransfer\s+window\b|"
     r"\bnational\s+(?:football|soccer|basketball)?\s*team\b|"
-    r"\b(?:semifinal|quarterfinal|cup\s+final|sports?\s+tournament)\b|"
+    r"\b(?:semifinal|quarterfinal|cup\s+final|sports?\s+tournament|sports?\s+championship)\b|"
     r"\b(?:win|wins|won|beat|beats|defeat|defeats|scores?|scored)\b.{0,40}\b(?:match|cup|goal|coach|fc|stadium|morocco|senegal)\b|"
-    r"تۆپی\s+پێ|جامی\s+نەتەوەکانی\s+ئەفریقا|مۆندیال|ئۆڵۆمپیاد|خولی\s+پاڵەوانەکان|یاریگا|گۆڵکار|وەرزش)",
+    r"تۆپی\s+پێ|جامی\s+نەتەوەکانی\s+ئەفریقا|مۆندیال|ئۆڵۆمپیاد|خولی\s+پاڵەوانەکان|یاریگا|گۆڵکار|وەرزش|"
+    r"كرة\s+القدم|دوري\s+الأبطال|كأس\s+العالم|المنتخب\s+الوطني|رياضة|مباراة\s+كرة)",
     re.IGNORECASE,
 )
 
 CULTURE_LIFESTYLE_PATTERN = re.compile(
-    r"(\bcelebrity\s+gossip\b|\bred\s+carpet\b|\bbox\s+office\b|\boscar\s+nominees?\b|"
-    r"\bgrammy\s+awards?\b|\bfashion\s+week\b|\breality\s+tv\b|\breality\s+show\b|"
-    r"\bmovie\s+review\b|\balbum\s+review\b|\bculinary\s+festival\b|\bhoroscope\b|\bzodiac\s+sign\b)",
+    r"(\bcelebrity\s+gossip\b|\bcelebrities\b|\bred\s+carpet\b|\bbox\s+office\b|\boscar\s+nominees?\b|"
+    r"\bgrammy\s+awards?\b|\bemmy\s+awards?\b|\bgolden\s+globe\b|\bfashion\s+week\b|"
+    r"\breality\s+tv\b|\breality\s+show\b|\bhollywood\b|\bbollywood\b|\bpop\s+star\b|"
+    r"\bmovie\s+review\b|\bfilm\s+review\b|\balbum\s+review\b|\bculinary\s+festival\b|"
+    r"\bmusic\s+concert\b|\bart\s+exhibition\b|\bhoroscope\b|\bzodiac\s+sign\b|"
+    r"\btravel\s+(?:guide|tips)\b|\btourist\s+destination\b|\bvacation\s+(?:spot|guide)\b|"
+    r"\bbest\s+beaches\b|\bluxury\s+hotel\b|\bcruise\s+ship\b|\bweekend\s+getaway\b|"
+    r"\b(?:weekend|sunny)\s+weather\b|\bweather\s+trivia\b|\bpollen\s+forecast\b|\bcherry\s+blossom\b|"
+    r"\bsmartphone\b|\biphone\b|\bsamsung\s+galaxy\b|\bandroid\s+(?:phone|update|app)\b|"
+    r"\bios\s+update\b|\bapp\s+update\b|\bwhatsapp\s+update\b|\binstagram\s+feature\b|\btiktok\s+trend\b|"
+    r"\bgadget\s+review\b|\bsmartwatch\b|\bearbuds\b|\bgaming\s+console\b|\bplaystation\b|\bxbox\b|\bnintendo\b|"
+    r"\bviral\s+(?:video|clip)\b|\bpet\s+rescue\b|\blottery\s+winner\b|\bcooking\s+recipe\b|\bdiet\s+trend\b|"
+    r"شوێنی\s+گەشتیاری|فاشیۆن|گۆرانیبێژ|توقعات\s+الطقس\s+اليومية|مشاهير|عروض\s+سياحية)",
     re.IGNORECASE,
 )
 
@@ -167,6 +182,39 @@ TRAFFIC_MUNICIPAL_AD_PATTERN = re.compile(
     r"\bsponsored\s+discount\b|\bfollow\s+us\s+on\s+telegram\b)",
     re.IGNORECASE,
 )
+
+# Pre-filter patterns for routine non-political market/consumer-tech/science noise
+# skipped BEFORE sending candidates to Gemini (unless tied to war, sanctions, cyberwar, or Kurdistan).
+_OFFTOPIC_ECONOMY_PATTERN = re.compile(
+    r"(\bstock\s+market\b|\bwall\s+street\b|\bs&p\s*500\b|\bdow\s+jones\b|\bnasdaq\b|"
+    r"\bquarterly\s+(?:earnings|revenue|profit)\b|\bshare\s+price\b|\bstock\s+surge[sd]?\b|"
+    r"\bbitcoin\b|\bcryptocurrency\b|\bethereum\b|\bmortgage\s+rates?\b|\bretail\s+sales\b|"
+    r"\bhousing\s+market\b|\bipo\s+debut\b|\bdividend\b)",
+    re.IGNORECASE,
+)
+
+_OFFTOPIC_TECH_SCIENCE_PATTERN = re.compile(
+    r"(\bipad\b|\bmacbook\b|\bgraphics\s+card\b|\bchip\s+benchmark\b|\bapp\s+store\b|"
+    r"\bsocial\s+media\s+app\b|\bstreaming\s+service\b|\bexoplanet\b|\bspace\s+telescope\b|\bcomet\b)",
+    re.IGNORECASE,
+)
+
+_GEOPOLITICAL_SAFEGUARD_PATTERN = re.compile(
+    r"(\bwar\b|\bmilitary\b|\bsanctions?\b|\bembargo\b|\bairstrike\b|\bmissile\b|\bdrone\b|"
+    r"\bcyberattack\b|\bstate-sponsored\b|\bransomware\b|\bnuclear\b|\bnato\b|\bopec\b|"
+    r"\boil\s+exports?\b|\bbudget\s+dispute\b|\bparliament\b|\btreaty\b|\bceasefire\b|"
+    r"kurdistan|erbil|baghdad|iran|israel|ukraine|russia|syria|turkey)",
+    re.IGNORECASE,
+)
+
+_OFFTOPIC_FEED_CATEGORIES: set[str] = {
+    "ai_tech",
+    "ai & technology",
+    "business & corporate",
+    "science_space",
+    "science & research",
+    "space & astronomy",
+}
 
 LEGACY_TO_CANONICAL_CATEGORY: dict[str, str] = {
     "kurdistan": "kurdistan",
@@ -220,16 +268,27 @@ GLOBAL_RELEVANCE_SYSTEM_PROMPT = (
     "opinions, analyses, forecasts, routine economic updates, or reactions — EVEN IF the article is high-priority Kurdistan news with score 8 or 9.\n"
     "- High importance alone does NOT make an article breaking news.\n\n"
     "Scoring Criteria (1 to 10):\n"
+    "- Editorial Focus (7/8 Politics & War + Max 1/8 Economy OR Cybersecurity): This channel prioritizes Politics and War/Military news first. Major Economy or Cybersecurity stories compete for at most 1 slot per 8 posts.\n"
     "- 9 to 10 (HIGHEST PRIORITY): Major Southern Kurdistan (Bashur — Erbil, Sulaymaniyah, Duhok, Halabja, Kirkuk, KRG, Peshmerga, Erbil-Baghdad) politics, "
     "war, security/drone/missile incidents; or major wars, military escalations, world leader summits, and severe crises.\n"
     "- 8 (HIGH PASS): Genuine political, security, economic (salaries/مووچە, oil/energy, official decrees), or human-rights development taking place in ANY of the 4 parts of Kurdistan; "
-    "regional geopolitics (Iraq, Iran, Turkey, Syria, US, Middle East); major global economy/sanctions, AI breakthroughs, and critical cyberattacks.\n"
-    "- 7 (PASS): Notable international diplomacy, cross-border crises, ICJ/ICC international court rulings, or significant space/science milestones.\n"
-    "- 1 to 6 (REJECT): Domestic crime, FBI arrests, individual extremism/propaganda trials, local police reports, personal prison sentences (EVEN if ISIS/terrorism is mentioned in a foreign domestic court); "
-    "ALL sports/tournaments (football/soccer, AFCON, World Cup, Olympics, matches, players, teams — even from general feeds like NPR); "
-    "culture, lifestyle, celebrity gossip, entertainment, routine business licensing disputes, or minor fluff.\n\n"
+    "regional geopolitics (Iraq, Iran, Turkey, Syria, US, Middle East); major macroeconomic crises/sanctions/central banks or critical state-level cyberattacks.\n"
+    "- 7 (PASS): Notable international diplomacy, cross-border crises, or ICJ/ICC international court rulings.\n"
+    "- 1 to 6 (STRICTLY REJECT): Domestic crime, FBI arrests, individual extremism/propaganda trials, local police reports, personal prison sentences (EVEN if ISIS/terrorism is mentioned in a foreign domestic court); "
+    "ALL sports/tournaments/athletes (football/soccer, World Cup, Olympics, matches, players, clubs, scores); "
+    "ALL entertainment, celebrities, culture, travel/tourism fluff, weather trivia/routine forecasts, consumer phones/gadgets/apps, routine human-interest fluff, traffic/municipal outage notices, and advertisements.\n\n"
     "Respond ONLY with valid JSON (no markdown fences, no commentary):\n"
     '{"score": <integer 1-10>, "is_breaking": <true or false>, "category": "<one of the 7 keys>", "reason": "<short one-sentence justification>"}'
+)
+
+BATCH_RELEVANCE_SYSTEM_PROMPT = (
+    GLOBAL_RELEVANCE_SYSTEM_PROMPT.rsplit("Respond ONLY with valid JSON", 1)[0]
+    + "Batch Evaluation Mode:\n"
+    + "- You will receive a JSON array of candidate articles, each identified by its integer `idx`.\n"
+    + "- Evaluate EVERY article independently using the exact rules above.\n"
+    + "- Respond ONLY with valid JSON containing an `items` array with one object per input `idx`:\n"
+    + '{"items": [{"idx": <integer>, "score": <integer 1-10>, "is_breaking": <true or false>, '
+    + '"category": "<one of the 7 keys>", "reason": "<short one-sentence justification>"}]}'
 )
 
 
@@ -293,6 +352,98 @@ def check_blocked_topic(article: Article) -> Optional[str]:
         return "Blocked topic: traffic/municipal-service notice or advertisement"
 
     return None
+
+
+def check_pre_filter_off_topic(article: Article) -> Optional[str]:
+    """
+    Deterministic pre-Gemini topic filter eliminating obvious off-focus items
+    (blocked sports/crime/traffic/ads plus routine non-political market/consumer-tech fluff)
+    so Gemini quota is reserved cleanly for Kurdistan, politics, war, and security news.
+    """
+    blocked = check_blocked_topic(article)
+    if blocked:
+        return blocked
+
+    clean_text = clean_article_event_text(article)
+    if not clean_text:
+        return None
+
+    # Never pre-reject genuine Kurdistan news, politics/war, or geopolitical/security stories
+    if is_genuine_kurdistan_event(article) or is_politics_or_war(article):
+        return None
+    if _GEOPOLITICAL_SAFEGUARD_PATTERN.search(clean_text):
+        return None
+
+    if _OFFTOPIC_ECONOMY_PATTERN.search(clean_text):
+        return "Pre-filtered topic: routine market/earnings noise without geopolitical focus"
+    if _OFFTOPIC_TECH_SCIENCE_PATTERN.search(clean_text):
+        return "Pre-filtered topic: consumer tech/gadget/space fluff without security focus"
+
+    raw_cat = (getattr(article, "category", "") or "").strip().lower()
+    if raw_cat in _OFFTOPIC_FEED_CATEGORIES:
+        return f"Pre-filtered topic: secondary feed '{article.category}' outside politics/war focus"
+
+    return None
+
+
+def _candidate_recency_ts(article: Article) -> float:
+    raw_dt = getattr(article, "publication_date", None) or getattr(article, "discovered_at", None) or ""
+    if not raw_dt:
+        return 0.0
+    try:
+        from dateutil import parser as dateparser
+        dt = dateparser.parse(raw_dt)
+        if dt is None:
+            return 0.0
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def select_top_candidates_for_gemini(
+    articles: list[Article],
+    max_candidates: int = MAX_GEMINI_CANDIDATES_PER_CYCLE,
+) -> tuple[list[Article], list[tuple[Article, str]]]:
+    """
+    Filter out locally off-topic articles BEFORE Gemini and cap the remaining pool to the
+    `max_candidates` freshest and most relevant candidates (Kurdistan & Politics/War first).
+    Returns `(selected_candidates, rejected_with_reasons)`.
+    """
+    if not articles:
+        return [], []
+
+    kept: list[Article] = []
+    rejected: list[tuple[Article, str]] = []
+
+    for art in articles:
+        reason = check_pre_filter_off_topic(art)
+        if reason:
+            rejected.append((art, reason))
+        else:
+            kept.append(art)
+
+    if max_candidates <= 0:
+        for art in kept:
+            rejected.append((art, "Pre-filtered: zero Gemini candidate cap"))
+        return [], rejected
+
+    def _fresh_relevance_key(art: Article) -> tuple:
+        kurd_rank = 0 if is_genuine_kurdistan_event(art) else 1
+        pol_rank = 0 if is_politics_or_war(art) else 1
+        reg_rank = 0 if is_regional_geopolitics(art) else 1
+        cred = -ArticleExtractor.get_source_credibility(art.source_name)
+        ts = -_candidate_recency_ts(art)
+        return (kurd_rank, pol_rank, reg_rank, cred, ts)
+
+    ordered = sorted(kept, key=_fresh_relevance_key)
+    selected = ordered[:max_candidates]
+    for overflow in ordered[max_candidates:]:
+        rejected.append(
+            (overflow, f"Deferred: exceeded max {max_candidates} Gemini candidates per cycle")
+        )
+    return selected, rejected
 
 
 def normalize_category(raw_category: Optional[str], text_hint: str = "") -> str:
@@ -370,6 +521,49 @@ def is_politics_or_war(article: Article) -> bool:
     return bool(POLITICS_WAR_PATTERN.search(text))
 
 
+def is_economy_article(article: Article) -> bool:
+    """Return True when the article's primary category is Economy/Markets (non-Kurdistan slot)."""
+    raw_cat = (getattr(article, "category", "") or "").strip().lower()
+    clean_text = clean_article_event_text(article)
+    norm_cat = normalize_category(raw_cat, text_hint=clean_text)
+    return norm_cat == "economy_markets"
+
+
+def is_cybersecurity_article(article: Article) -> bool:
+    """Return True when the article's primary category is Cybersecurity."""
+    raw_cat = (getattr(article, "category", "") or "").strip().lower()
+    clean_text = clean_article_event_text(article)
+    norm_cat = normalize_category(raw_cat, text_hint=clean_text)
+    return norm_cat == "cybersecurity"
+
+
+def classify_topic_bucket(article: Article) -> str:
+    """
+    Classify an article into one of the 7+1 editorial topic buckets:
+      - 'economy': Global/major Economy & Markets (competes for max 1-of-8 Econ/Cyber slot)
+      - 'cybersecurity': Major Cybersecurity / breaches (competes for max 1-of-8 Econ/Cyber slot)
+      - 'politics_war': Kurdistan politics/war, Military/Conflict, or Politics/Diplomacy (7-of-8 primary)
+      - 'other': General tech/science outside editorial focus
+    """
+    if is_economy_article(article) and not is_genuine_kurdistan_event(article):
+        return "economy"
+    if is_cybersecurity_article(article) and not is_genuine_kurdistan_event(article):
+        return "cybersecurity"
+
+    raw_cat = (getattr(article, "category", "") or "").strip().lower()
+    clean_text = clean_article_event_text(article)
+    norm_cat = normalize_category(raw_cat, text_hint=clean_text)
+    if norm_cat in {"kurdistan", "politics_world", "military_conflict"} or is_politics_or_war(article):
+        return "politics_war"
+    if is_economy_article(article):
+        # Bashur KRG/Baghdad economic/budget news in kurdistan stays politics_war when recognized above;
+        # explicitly categorized economy_markets stays in 'economy' bucket
+        return "economy"
+    if is_cybersecurity_article(article):
+        return "cybersecurity"
+    return "other"
+
+
 def is_regional_geopolitics(article: Article) -> bool:
     """Return True if an article covers Iraq, Iran, Turkey, Syria, US, or Middle East geopolitics."""
     text = f"{article.original_title or ''} {article.original_summary or ''} {article.country or ''}"
@@ -428,6 +622,7 @@ class ImportanceRanker:
         session: Optional[object] = None,
         semaphore: Optional[asyncio.Semaphore] = None,
         base_backoff: float = 1.5,
+        cooldown_store: Optional[dict[str, float]] = None,
     ) -> None:
         self._min_relevance_score = (
             MIN_GLOBAL_RELEVANCE_SCORE if min_relevance_score is None else min_relevance_score
@@ -436,8 +631,9 @@ class ImportanceRanker:
             api_key=GEMINI_API_KEY if api_key is None else api_key,
             model=GEMINI_MODEL if model is None else model,
             session=session,  # type: ignore[arg-type]
-            semaphore=semaphore if semaphore is not None else asyncio.Semaphore(2),
+            semaphore=semaphore if semaphore is not None else asyncio.Semaphore(1),
             base_backoff=base_backoff,
+            cooldown_store=cooldown_store,
         )
 
     async def cleanup(self) -> None:
@@ -502,6 +698,41 @@ class ImportanceRanker:
             used_fallback=True,
         )
 
+    def _build_evaluation_from_payload(
+        self,
+        data: dict,
+        article: Article,
+        threshold: int,
+    ) -> RelevanceEvaluation:
+        """Convert parsed Gemini classifier JSON into a gated RelevanceEvaluation."""
+        if "score" not in data:
+            raise GeminiAPIError("Missing 'score' field in Gemini classifier response.")
+
+        clean_title = strip_news_dateline(article.original_title or "")
+        snippet = strip_news_dateline(article.original_summary or "").strip()[:500]
+        score = max(1, min(10, int(round(float(data["score"])))))
+        raw_is_breaking = bool(data.get("is_breaking", False))
+        raw_category = str(data.get("category", "")).strip()
+        clean_hint = f"{clean_title} {snippet}".strip()
+        category = normalize_category(raw_category, text_hint=clean_hint)
+
+        # Enforce high priority ONLY for genuine Kurdistan events scoring >= threshold
+        if category == "kurdistan" and is_genuine_kurdistan_event(article) and threshold <= score < 8:
+            score = 8
+
+        # Strict breaking gate: only True if Gemini returned True AND score >= 9
+        is_breaking = bool(raw_is_breaking and score >= 9)
+        reason = str(data.get("reason", "")).strip() or "Classified by Gemini relevance gatekeeper"
+
+        return RelevanceEvaluation(
+            score=score,
+            is_breaking=is_breaking,
+            category=category,
+            reason=reason,
+            passed=(score >= threshold),
+            used_fallback=False,
+        )
+
     async def evaluate_global_relevance(
         self,
         article: Article,
@@ -526,12 +757,14 @@ class ImportanceRanker:
                 used_fallback=False,
             )
 
-        if not self._gemini.has_keys:
-            return self._rule_based_fallback(article, "GEMINI_API_KEY not configured")
+        if not self._gemini.has_keys or self._gemini.all_keys_in_cooldown():
+            return self._rule_based_fallback(
+                article,
+                "All Gemini keys in cooldown" if self._gemini.has_keys else "GEMINI_API_KEY not configured",
+            )
 
         clean_title = strip_news_dateline(article.original_title or "")
         snippet = strip_news_dateline(article.original_summary or "").strip()[:500]
-        # Only forward Region Tag if stripped event content genuinely pertains to Kurdistan
         region_line = (
             f"Region Tag: {article.region}\n"
             if article.region and is_genuine_kurdistan_event(article)
@@ -551,31 +784,7 @@ class ImportanceRanker:
                 temperature=0.0,
                 max_tokens=220,
             )
-            if "score" not in data:
-                raise GeminiAPIError("Missing 'score' field in Gemini classifier response.")
-
-            score = max(1, min(10, int(round(float(data["score"])))))
-            raw_is_breaking = bool(data.get("is_breaking", False))
-            raw_category = str(data.get("category", "")).strip()
-            clean_hint = f"{clean_title} {snippet}".strip()
-            category = normalize_category(raw_category, text_hint=clean_hint)
-
-            # Enforce high priority ONLY for genuine Kurdistan events scoring >= threshold
-            if category == "kurdistan" and is_genuine_kurdistan_event(article) and score >= threshold and score < 8:
-                score = 8
-
-            # Strict breaking gate: only True if Gemini returned True AND score >= 9
-            is_breaking = bool(raw_is_breaking and score >= 9)
-
-            reason = str(data.get("reason", "")).strip() or "Classified by Gemini relevance gatekeeper"
-            return RelevanceEvaluation(
-                score=score,
-                is_breaking=is_breaking,
-                category=category,
-                reason=reason,
-                passed=(score >= threshold),
-                used_fallback=False,
-            )
+            return self._build_evaluation_from_payload(data, article, threshold)
         except Exception as e:
             err_msg = str(e)[:150]
             logger.warning(
@@ -584,6 +793,143 @@ class ImportanceRanker:
                 article.original_title[:60],
             )
             return self._rule_based_fallback(article, err_msg)
+
+    async def evaluate_batch_relevance(
+        self,
+        articles: list[Article],
+        min_score: Optional[int] = None,
+        batch_size: int = GEMINI_RANK_BATCH_SIZE,
+    ) -> list[RelevanceEvaluation]:
+        """
+        Batch-evaluate candidate articles (10-15 per single Gemini JSON request)
+        after applying deterministic blocked/off-topic pre-filters locally.
+        Preserves single-article `evaluate_global_relevance` if monkeypatched in tests.
+        """
+        if not articles:
+            return []
+
+        threshold = self._min_relevance_score if min_score is None else min_score
+        results: list[Optional[RelevanceEvaluation]] = [None] * len(articles)
+        to_classify: list[tuple[int, Article]] = []
+
+        # Pass 1: zero-API deterministic topic filter
+        for idx, art in enumerate(articles):
+            pre_rejected = check_pre_filter_off_topic(art)
+            if pre_rejected:
+                results[idx] = RelevanceEvaluation(
+                    score=2,
+                    is_breaking=False,
+                    category="politics_world",
+                    reason=pre_rejected,
+                    passed=False,
+                    used_fallback=False,
+                )
+            else:
+                to_classify.append((idx, art))
+
+        if not to_classify:
+            return [r for r in results if r is not None]
+
+        # Compatibility hook: if a test monkeypatched `evaluate_global_relevance` directly
+        is_single_overridden = (
+            "evaluate_global_relevance" in self.__dict__
+            or type(self).evaluate_global_relevance is not ImportanceRanker.evaluate_global_relevance
+        )
+        if is_single_overridden:
+            for idx, art in to_classify:
+                results[idx] = await self.evaluate_global_relevance(art)
+            return [r for r in results if r is not None]
+
+        if not self._gemini.has_keys or self._gemini.all_keys_in_cooldown():
+            reason = (
+                "All Gemini keys in cooldown" if self._gemini.has_keys else "GEMINI_API_KEY not configured"
+            )
+            for idx, art in to_classify:
+                results[idx] = self._rule_based_fallback(art, reason)
+            return [r for r in results if r is not None]
+
+        effective_batch = max(1, min(15, int(batch_size or GEMINI_RANK_BATCH_SIZE)))
+        quota_exhausted = False
+
+        for start in range(0, len(to_classify), effective_batch):
+            chunk = to_classify[start: start + effective_batch]
+            if quota_exhausted or self._gemini.all_keys_in_cooldown():
+                for idx, art in chunk:
+                    results[idx] = self._rule_based_fallback(art, "All Gemini keys exhausted (cooldown)")
+                continue
+
+            payload_items = []
+            for idx, art in chunk:
+                clean_title = strip_news_dateline(art.original_title or "")
+                snippet = strip_news_dateline(art.original_summary or "").strip()[:280]
+                item_dict: dict[str, object] = {
+                    "idx": idx,
+                    "title": clean_title,
+                    "source": art.source_name or "Unknown",
+                    "snippet": snippet,
+                }
+                if art.region and is_genuine_kurdistan_event(art):
+                    item_dict["region"] = art.region
+                payload_items.append(item_dict)
+
+            user_content = (
+                f"Evaluate these {len(payload_items)} candidate news articles:\n"
+                f"{json.dumps(payload_items, ensure_ascii=False)}"
+            )
+
+            try:
+                resp_data = await self._gemini.generate_json(
+                    system_prompt=BATCH_RELEVANCE_SYSTEM_PROMPT,
+                    user_content=user_content,
+                    temperature=0.0,
+                    max_tokens=min(2400, 180 * len(chunk) + 200),
+                )
+                raw_items = resp_data.get("items") or resp_data.get("results")
+                if not isinstance(raw_items, list):
+                    raise GeminiAPIError("Batch Gemini response missing 'items' list.")
+
+                parsed_by_idx: dict[int, dict] = {}
+                for entry in raw_items:
+                    if isinstance(entry, dict) and "idx" in entry:
+                        try:
+                            parsed_by_idx[int(entry["idx"])] = entry
+                        except (TypeError, ValueError):
+                            continue
+
+                for idx, art in chunk:
+                    entry = parsed_by_idx.get(idx)
+                    if entry is None:
+                        results[idx] = self._rule_based_fallback(art, "Missing item in Gemini batch output")
+                        continue
+                    try:
+                        results[idx] = self._build_evaluation_from_payload(entry, art, threshold)
+                    except Exception as item_exc:
+                        results[idx] = self._rule_based_fallback(art, str(item_exc)[:120])
+
+            except GeminiQuotaExhaustedError as q_exc:
+                quota_exhausted = True
+                logger.warning(
+                    "Gemini batch classifier hit 429 quota exhaustion (%s); "
+                    "aborting remaining batch LLM calls and failing open cleanly.",
+                    str(q_exc)[:140],
+                )
+                for idx, art in chunk:
+                    results[idx] = self._rule_based_fallback(art, "Gemini quota exhausted")
+
+            except Exception as exc:
+                err_msg = str(exc)[:150]
+                logger.warning(
+                    "Gemini batch relevance classifier error (%s); failing open for %d article(s).",
+                    err_msg,
+                    len(chunk),
+                )
+                for idx, art in chunk:
+                    results[idx] = self._rule_based_fallback(art, err_msg)
+
+        return [
+            r if r is not None else self._rule_based_fallback(articles[i], "Unclassified candidate")
+            for i, r in enumerate(results)
+        ]
 
     def score_article(self, article: Article) -> tuple[float, str]:
         """

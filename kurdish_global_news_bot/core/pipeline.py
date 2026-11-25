@@ -13,21 +13,25 @@ import time
 from typing import Optional
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from storage.database import Database
 from storage.models import Article, Event
 from core.importance_ranker import (
     ImportanceRanker,
+    RelevanceEvaluation,
     article_selection_sort_key,
     check_blocked_topic,
+    check_pre_filter_off_topic,
     classify_priority_tier,
     is_bashur_article,
+    select_top_candidates_for_gemini,
 )
 from core.balancer import QuotaBalancer
 from core.duplicate_detector import DuplicateDetector
 from processing.deduplicator import SemanticDeduplicator
 from processing.extractor import ArticleExtractor
 from processing.validator import ArticleValidator
-from processing.translator import TranslationEngine, TranslationError
+from processing.translator import TranslationEngine, TranslationError, is_valid_kurdish_sorani
 from processing.content_formatter import ContentFormatter, normalize_neutral_terminology
 from tg_bot.publisher import TelegramPublisher
 from monitoring.health import HealthMonitor
@@ -37,10 +41,31 @@ from config import (
     MAX_CONCURRENT_ARTICLES, PRIMARY_CATEGORIES,
     PRIMARY_CATEGORY_RATIO, SECONDARY_CATEGORY_RATIO,
     FALLBACK_WINDOW_MINUTES, MAX_ARTICLE_AGE_MINUTES,
-    BATCH_PUBLISH_LIMIT, is_primary_category,
+    BATCH_PUBLISH_LIMIT, GEMINI_RANK_BATCH_SIZE, MAX_GEMINI_CANDIDATES_PER_CYCLE,
+    is_primary_category,
 )
 
 logger = logging.getLogger("core.pipeline")
+
+
+def _is_telegram_channel_url(url: str) -> bool:
+    """Return True for public Telegram post links so watermarked preview screenshots are never scraped."""
+    try:
+        host = (urlparse((url or "").strip()).netloc or "").lower()
+    except Exception:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    return host in {"t.me", "telegram.me", "telegram.dog"}
+
+
+def _is_transient_quota_or_sorani_error(err_msg: str) -> bool:
+    """Return True when translation failed due to API 429/quota exhaustion or temporary timeout."""
+    lower = (err_msg or "").lower()
+    return any(
+        tok in lower
+        for tok in ("429", "quota", "cooldown", "exhausted", "rate limit", "timed out", "timeout")
+    )
 
 
 class ArticlePipeline:
@@ -65,11 +90,13 @@ class ArticlePipeline:
         self._metrics = metrics
         self._extractor = ArticleExtractor()
         self._validator = ArticleValidator()
-        self._ranker = ImportanceRanker()
+        # Share one per-key 429 cooldown map between Gemini ranking and translation
+        self._gemini_cooldowns: dict[str, float] = {}
+        self._ranker = ImportanceRanker(cooldown_store=self._gemini_cooldowns)
         self._dedup = DuplicateDetector(db)
         self._semantic_dedup = SemanticDeduplicator(db)
         self._quota_balancer = QuotaBalancer(batch_limit=BATCH_PUBLISH_LIMIT)
-        self._translator = TranslationEngine()
+        self._translator = TranslationEngine(cooldown_store=self._gemini_cooldowns)
         self._formatter = ContentFormatter()
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_ARTICLES)
         self._cold_start: Optional[bool] = None
@@ -123,14 +150,15 @@ class ArticlePipeline:
         self._metrics.increment("articles_blocked_topic")
         return False
 
-    async def _evaluate_candidate(
+    async def _local_pre_screen_candidate(
         self,
         article: Article,
         extra_recent: Optional[list[dict]] = None,
+        use_off_topic_prefilter: bool = True,
     ) -> bool:
         """
-        Run validation, scoring, local + semantic cross-source dedup, and Gemini
-        global relevance classification BEFORE scraping/translation or slot allocation.
+        Zero-API local validation, topic pre-filtering, heuristic scoring, and
+        cross-source deduplication BEFORE sending any candidate to Gemini.
         """
         article_id = article.id
         logger.info(
@@ -153,8 +181,12 @@ class ArticlePipeline:
             self._metrics.increment("articles_rejected")
             return False
 
-        # ── Deterministic Blocked Topic Guard (Pre-LLM) ──
-        blocked_reason = check_blocked_topic(article)
+        # ── Deterministic Blocked / Off-Topic Guard (Pre-LLM) ──
+        blocked_reason = (
+            check_pre_filter_off_topic(article)
+            if use_off_topic_prefilter
+            else check_blocked_topic(article)
+        )
         if blocked_reason:
             return await self._reject_blocked_topic(article, blocked_reason)
 
@@ -176,7 +208,7 @@ class ArticlePipeline:
             self._metrics.increment("articles_below_threshold")
             return False
 
-        # ── Step 3: Duplicate detection ──
+        # ── Step 3: Duplicate detection (Zero-API local + cross-source) ──
         is_dup, dup_reason = await self._dedup.is_duplicate(article)
         if is_dup:
             await self._db.update_article_status(
@@ -205,8 +237,43 @@ class ArticlePipeline:
             else:
                 logger.info("Article %s is a meaningful update to existing event.", article_id)
 
-        # ── Step 4: Global Importance & Relevance Gatekeeper (LLM Check) ──
-        relevance = await self._ranker.evaluate_global_relevance(article)
+        dedup_res = await self._semantic_dedup.check_duplicate(article, extra_recent=extra_recent)
+        if dedup_res.is_duplicate:
+            matched_ref = f"#{dedup_res.matched_id}" if dedup_res.matched_id is not None else "#unknown"
+            dedup_reason = dedup_res.reason or "Duplicate event"
+            await self._db.update_article_status(
+                article_id,
+                ArticleStatus.REJECTED_DUPLICATE,
+                error_message=f"SKIPPED [Duplicate Event]: matches {matched_ref} ({dedup_reason})",
+                importance_score=score,
+                priority=priority,
+            )
+            await self._db.mark_url_skipped(
+                article.canonical_url or article.original_url,
+                title=article.original_title,
+                score=float(score),
+                reason=f"Duplicate Event {matched_ref}: {dedup_reason}",
+            )
+            logger.info(
+                "SKIPPED [Duplicate Event]: %s — matches %s (%s)",
+                article.original_title[:100],
+                matched_ref,
+                dedup_reason,
+            )
+            self._metrics.increment("articles_semantic_duplicate")
+            return False
+
+        return True
+
+    async def _apply_relevance_evaluation(
+        self,
+        article: Article,
+        relevance: RelevanceEvaluation,
+    ) -> bool:
+        """Apply Gemini relevance threshold, strict breaking gate, and blocked-topic check."""
+        article_id = article.id
+        priority = article.priority
+
         if not relevance.passed:
             reason_text = relevance.reason or "Below global relevance threshold"
             await self._db.update_article_status(
@@ -252,34 +319,25 @@ class ArticlePipeline:
         if post_blocked:
             return await self._reject_blocked_topic(article, post_blocked)
 
-        # ── Step 4.5: Cross-Source Semantic Event Deduplication (After Classification, Before Scrape/Translate) ──
-        dedup_res = await self._semantic_dedup.check_duplicate(article, extra_recent=extra_recent)
-        if dedup_res.is_duplicate:
-            matched_ref = f"#{dedup_res.matched_id}" if dedup_res.matched_id is not None else "#unknown"
-            dedup_reason = dedup_res.reason or "Duplicate event"
-            await self._db.update_article_status(
-                article_id,
-                ArticleStatus.REJECTED_DUPLICATE,
-                error_message=f"SKIPPED [Duplicate Event]: matches {matched_ref} ({dedup_reason})",
-                importance_score=relevance.score / 10.0,
-                priority=priority,
-            )
-            await self._db.mark_url_skipped(
-                article.canonical_url or article.original_url,
-                title=article.original_title,
-                score=float(relevance.score),
-                reason=f"Duplicate Event {matched_ref}: {dedup_reason}",
-            )
-            logger.info(
-                "SKIPPED [Duplicate Event]: %s — matches %s (%s)",
-                article.original_title[:100],
-                matched_ref,
-                dedup_reason,
-            )
-            self._metrics.increment("articles_semantic_duplicate")
+        return True
+
+    async def _evaluate_candidate(
+        self,
+        article: Article,
+        extra_recent: Optional[list[dict]] = None,
+    ) -> bool:
+        """
+        Single-article evaluation path: local pre-screening + zero-API cross-source
+        dedup + Gemini relevance check.
+        """
+        local_ok = await self._local_pre_screen_candidate(
+            article, extra_recent=extra_recent, use_off_topic_prefilter=False
+        )
+        if not local_ok:
             return False
 
-        return True
+        relevance = await self._ranker.evaluate_global_relevance(article)
+        return await self._apply_relevance_evaluation(article, relevance)
 
     async def _scrape_translate_and_publish(
         self,
@@ -292,7 +350,10 @@ class ArticlePipeline:
 
         # ── Step 5: Extract full article text & og:image, verify depth ──
         full_text, og_image = await self._extractor.fetch_article_content_and_image(article.original_url)
-        if not article.image_url and og_image:
+        if _is_telegram_channel_url(article.original_url):
+            # Ignore watermarked static screenshots / og:image previews on Telegram source channels
+            article.image_url = ""
+        elif not article.image_url and og_image:
             article.image_url = og_image
 
         if full_text and len(full_text) >= 160:
@@ -344,26 +405,48 @@ class ArticlePipeline:
             title_ok = await self._translator.validate_translation(
                 article.translated_title, article.original_title
             )
-            if not title_ok:
-                raise TranslationError("Title translation validation failed.")
+            if not title_ok or not is_valid_kurdish_sorani(article.translated_title or ""):
+                raise TranslationError("Headline failed strict Central Kurdish (Sorani) gate.")
+            if (article.translated_summary or "").strip() and not is_valid_kurdish_sorani(article.translated_summary):
+                raise TranslationError("Summary failed strict Central Kurdish (Sorani) gate.")
 
             article.translated_title = normalize_neutral_terminology(article.translated_title)
             if article.translated_summary:
                 article.translated_summary = normalize_neutral_terminology(article.translated_summary)
 
+            # Final Sorani re-check after terminology normalization
+            if not is_valid_kurdish_sorani(article.translated_title or "") or (
+                (article.translated_summary or "").strip()
+                and not is_valid_kurdish_sorani(article.translated_summary)
+            ):
+                raise TranslationError("Post-normalization text failed strict Sorani gate.")
+
             logger.info("[TRANSLATED] Article %s translated: '%s' -> '%s'",
                         article_id, article.original_title[:60], article.translated_title[:60])
 
         except TranslationError as e:
-            retry_count = await self._db.increment_retry(article_id, str(e))
-            if retry_count >= MAX_RETRIES:
+            err_str = str(e)
+            if _is_transient_quota_or_sorani_error(err_str):
+                # Preserve RETRY_PENDING cleanly so rate-limited stories retry next cycle (never skipped/published)
                 await self._db.update_article_status(
-                    article_id, ArticleStatus.FAILED,
-                    error_message=f"Translation failed after {MAX_RETRIES} retries: {e}",
+                    article_id,
+                    ArticleStatus.RETRY_PENDING,
+                    error_message=f"Retry pending (quota/translation hold): {err_str[:400]}",
+                    translated_title="",
+                    translated_summary="",
                 )
-            self._health.record_failure("translation", str(e))
+            else:
+                retry_count = await self._db.increment_retry(article_id, err_str)
+                if retry_count >= MAX_RETRIES:
+                    await self._db.update_article_status(
+                        article_id, ArticleStatus.FAILED,
+                        error_message=f"Translation failed after {MAX_RETRIES} retries: {e}",
+                        translated_title="",
+                        translated_summary="",
+                    )
+            self._health.record_failure("translation", err_str)
             self._metrics.increment("translation_failures")
-            logger.warning("Translation failed for article %s: %s", article_id, str(e)[:200])
+            logger.warning("Translation aborted/deferred for article %s: %s", article_id, err_str[:200])
             return False
 
         # ── Step 6: Update article with all computed fields ──
@@ -484,8 +567,30 @@ class ArticlePipeline:
         )
 
     async def _publish_immediately(self, article: Article) -> bool:
-        """Publish an article to Telegram IMMEDIATELY. No batching. No waiting."""
+        """Publish an article to Telegram IMMEDIATELY after final topic & Sorani verification."""
         article_id = article.id
+
+        # Never publish blocked topics or non-Sorani/untranslated text (e.g. from older held DB rows)
+        blocked_reason = check_blocked_topic(article)
+        if blocked_reason:
+            return await self._reject_blocked_topic(article, blocked_reason)
+
+        if not is_valid_kurdish_sorani(article.translated_title or "") or (
+            (article.translated_summary or "").strip()
+            and not is_valid_kurdish_sorani(article.translated_summary)
+        ):
+            logger.warning(
+                "[BLOCKED PUBLISH] Article %s failed final Sorani publish gate ('%s'); moving to RETRY_PENDING.",
+                article_id, article.original_title[:60],
+            )
+            await self._db.update_article_status(
+                article_id,
+                ArticleStatus.RETRY_PENDING,
+                error_message="Aborted publish: non-Sorani or incomplete translation",
+                translated_title="",
+                translated_summary="",
+            )
+            return False
 
         try:
             await self._db.update_article_status(article_id, ArticleStatus.PUBLISHING)
@@ -553,17 +658,21 @@ class ArticlePipeline:
 
         # Evaluate highest-priority candidates first so duplicate outlets lose cleanly
         prioritized = sorted(articles, key=article_selection_sort_key)
-        eligible: list[Article] = []
+        pre_screened: list[Article] = []
         accepted_batch_refs: list[dict] = []
 
+        # Pass 1: Zero-API validation, local topic pre-filtering & cross-source dedup
         for art in prioritized:
             try:
-                ok = await self._evaluate_candidate(art, extra_recent=accepted_batch_refs)
+                ok = await self._local_pre_screen_candidate(
+                    art, extra_recent=accepted_batch_refs, use_off_topic_prefilter=True
+                )
                 if ok:
-                    eligible.append(art)
+                    pre_screened.append(art)
                     accepted_batch_refs.append({
                         "id": art.id,
                         "original_title": art.original_title or "",
+                        "original_summary": art.original_summary or "",
                         "translated_title": art.translated_title or "",
                         "category": art.category or "",
                         "published_at": art.published_at or art.discovered_at or "",
@@ -571,8 +680,51 @@ class ArticlePipeline:
                 else:
                     results["rejected"] += 1
             except Exception as exc:
-                logger.error("Batch evaluation error for '%s': %s", art.original_title[:60], str(exc)[:200])
+                logger.error("Batch pre-screen error for '%s': %s", art.original_title[:60], str(exc)[:200])
                 results["failed"] += 1
+
+        if not pre_screened:
+            return results
+
+        # Cap candidates sent to Gemini to freshest & highest-priority items
+        gemini_candidates, capped_overflow = select_top_candidates_for_gemini(
+            pre_screened, max_candidates=MAX_GEMINI_CANDIDATES_PER_CYCLE
+        )
+        for overflow_art, cap_reason in capped_overflow:
+            try:
+                await self._db.update_article_status(
+                    overflow_art.id,
+                    ArticleStatus.SKIPPED,
+                    error_message=cap_reason,
+                    importance_score=overflow_art.importance_score,
+                    priority=overflow_art.priority,
+                )
+            except Exception:
+                pass
+            results["rejected"] += 1
+
+        if not gemini_candidates:
+            return results
+
+        # Pass 2: Batched Gemini Importance Evaluation (10-15 articles per single JSON call)
+        eligible: list[Article] = []
+        try:
+            evaluations = await self._ranker.evaluate_batch_relevance(
+                gemini_candidates, batch_size=GEMINI_RANK_BATCH_SIZE
+            )
+            for art, relevance in zip(gemini_candidates, evaluations):
+                try:
+                    if await self._apply_relevance_evaluation(art, relevance):
+                        eligible.append(art)
+                    else:
+                        results["rejected"] += 1
+                except Exception as exc:
+                    logger.error("Relevance gate error for '%s': %s", art.original_title[:60], str(exc)[:200])
+                    results["failed"] += 1
+        except Exception as exc:
+            logger.error("Batch relevance evaluation failed: %s", str(exc)[:200])
+            results["failed"] += len(gemini_candidates)
+            return results
 
         if not eligible:
             return results

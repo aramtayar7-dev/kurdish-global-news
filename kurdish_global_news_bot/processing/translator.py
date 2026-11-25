@@ -52,6 +52,7 @@ GEMINI_TRANSLATION_SYSTEM_PROMPT = (
     "  * Normalize anti-US epithets ('العدو الأمريكي', 'الاحتلال الأمريكي', 'الشيطان الأكبر', 'ئەمریکای دوژمن', 'دوژمنی ئەمریکی') -> 'ئەمریکا' or 'هێزەکانی ئەمریکا'.\n"
     "  * Normalize anti-Israel epithets ('الكيان الصهيوني', 'العدو الصهيوني', 'الكيان المؤقت', 'قەوارەی زایۆنی', 'دوژمنی زایۆنی') -> 'ئیسرائیل' or 'سوپای ئیسرائیل'.\n"
     "  * Normalize partisan Syria labels ('سوريا المحتلة', 'سووریای داگیرکراو', 'سووریای داگیرکراوە') -> 'سووریا'.\n"
+    "  * Strip partisan insults, slurs, or derogatory adjectives against world leaders or officials (e.g., 'المجرم ترامب' -> 'دۆناڵد ترەمپ', 'تاوانبار نەتەنیاهۆ' -> 'بێنیامین نەتەنیاهۆ') and refer to every leader strictly by neutral name and official title.\n"
     "  * Neutralize derogatory labels against Iran, Iraq, Kurdistan Region, or any state/group while preserving independently verifiable facts of real territorial occupation, military presence, or disputed borders.\n\n"
     "Strict Journalistic & Sorani Quality Rules:\n"
     "1. Informative 3-4 Sentence Body: Write a clear, complete Sorani news report of 3 to 4 complete sentences (350 to 650 characters) "
@@ -71,7 +72,7 @@ GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT = (
     "an independent, non-partisan international news organization.\n"
     "The provided article is ALREADY written in Kurdish Sorani. Do NOT translate from English; instead summarize and rewrite it cleanly in neutral, objective BBC/Reuters-style journalistic Sorani.\n\n"
     "Editorial & Neutrality Rules:\n"
-    "1. Non-Partisan Objectivity: Remove partisan hype, propaganda slogans, insults, slurs, or emotional epithets toward Iran, US, Israel, Iraq, the Kurdistan Region, or any group, attributing disputed claims to their sources.\n"
+    "1. Non-Partisan Objectivity: Remove partisan hype, propaganda slogans, insults, slurs, or emotional epithets toward Iran, US, Israel, Iraq, the Kurdistan Region, or any leader/group (e.g. strip labels like 'تاوانبار'/'المجرم' before leader names), attributing disputed claims to their sources.\n"
     "2. Neutral Terminology: Normalize 'باکووری عێراق'/'باکوری عێراق'/'شمال العراق' -> 'هەرێمی کوردستان'; 'ئەمریکای دوژمن'/'دوژمنی ئەمریکی' -> 'ئەمریکا'; 'قەوارەی زایۆنی'/'دوژمنی زایۆنی' -> 'ئیسرائیل'; 'سووریای داگیرکراو' -> 'سووریا', while preserving documented factual military/territorial realities.\n"
     "3. Headline & Structure: Craft a concise, neutral Sorani headline and a 3 to 4 complete-sentence news report (350 to 650 characters) that never repeats the headline verbatim.\n"
     "4. Complete Sentences & Orthography: End every sentence with proper punctuation (. or ؟ or !) and proper Sorani letters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی).\n"
@@ -124,21 +125,77 @@ def strip_news_dateline(text: str) -> str:
     return cleaned
 
 
-def is_kurdish_sorani(text: str) -> bool:
-    """Return True if the text is predominantly written in Central Kurdish (Sorani) script."""
+_SORANI_DISTINCT_RE = re.compile(r"[پچژڤگڵڕێۆە]")
+_ARABIC_ONLY_LETTERS_RE = re.compile(r"[أإآىًٌٍ]")
+_ARABIC_STOPWORDS_RE = re.compile(
+    r"(?:^|[\s،.؟!:\-\(\)])"
+    r"(?:في|على|إلى|الى|عن|مع|أن|إن|التي|الذي|هذا|هذه|أعلنت|أفادت|قالت|أكدت|"
+    r"خلال|عبر|منذ|كما|فقد|عاجل|بينما|حيث|ذلك|تلك|بعدما|عقب|نحو|ضد|بشأن|"
+    r"وزارة|الدفاع|العراقية|الأمريكي|الأمريكية|القوات|الجيش|الحكومة)"
+    r"(?=$|[\s،.؟!:\-\(\)])"
+)
+_SORANI_STOPWORDS_RE = re.compile(
+    r"(?:^|[\s،.؟!:\-\(\)])"
+    r"(?:لە|بۆ|بە|کە|لەسەر|لەگەڵ|دوای|پێش|ئەم|ئەو|بوو|بوون|دەبێت|دەکات|دەڵێت|"
+    r"ڕایگەیاند|هەرێمی|هەولێر|کوردستان|ئەمریکا|ئیسرائیل|ئێران|عێراق|تورکیا|"
+    r"سووریا|شەڕ|سەربازی|حکوومەت|سەرۆک|وەزیری|ئەمڕۆ|هێزەکانی|سوپای|نوێ|"
+    r"پوختە|هەواڵ|سەردێر)"
+    r"(?=$|[\s،.؟!:\-\(\)])"
+)
+
+
+def is_valid_kurdish_sorani(text: str) -> bool:
+    """
+    Strictly return True ONLY when text is genuine Central Kurdish (Sorani).
+    Rejects English, untranslated Arabic (even though both share Unicode U+0600-U+06FF),
+    empty strings, and heavily Latin-mixed outputs.
+    """
     if not text or not text.strip():
         return False
-    arabic_script_chars = re.findall(r"[\u0600-\u06FF]", text)
-    latin_chars = re.findall(r"[A-Za-z]", text)
+
+    # Ignore URLs and HTML formatting tags when measuring natural language script ratio
+    cleaned = re.sub(r"https?://\S+", " ", text)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned).strip()
+    if not cleaned:
+        return False
+
+    arabic_script_chars = re.findall(r"[\u0600-\u06FF]", cleaned)
+    latin_chars = re.findall(r"[A-Za-z]", cleaned)
     total_alpha = len(arabic_script_chars) + len(latin_chars)
-    if total_alpha == 0:
+    if total_alpha == 0 or len(arabic_script_chars) < 3:
         return False
+
     ratio = len(arabic_script_chars) / total_alpha
-    if ratio < 0.45:
+    if ratio < 0.70:
         return False
-    # Confirm Sorani-specific letters (or strong Arabic script proportion)
-    sorani_markers = re.findall(r"[پچژگڤڵڕۆێە]", text)
-    return len(sorani_markers) >= 1 or ratio >= 0.70
+
+    # Arabic teh marbuta ('ة') never occurs in standard Central Kurdish Sorani
+    if "\u0629" in cleaned:
+        return False
+
+    sorani_markers = _SORANI_DISTINCT_RE.findall(cleaned)
+    if not sorani_markers:
+        return False
+
+    arabic_stops = len(_ARABIC_STOPWORDS_RE.findall(cleaned))
+    sorani_stops = len(_SORANI_STOPWORDS_RE.findall(cleaned))
+    arabic_only_diac = len(_ARABIC_ONLY_LETTERS_RE.findall(cleaned))
+
+    if arabic_stops >= 1 and arabic_stops >= sorani_stops:
+        return False
+    if arabic_only_diac >= 1 and len(sorani_markers) < 2:
+        return False
+    if arabic_only_diac >= 2 and sorani_stops == 0:
+        return False
+    if len(arabic_script_chars) >= 35 and len(sorani_markers) < 2 and sorani_stops == 0:
+        return False
+
+    return True
+
+
+def is_kurdish_sorani(text: str) -> bool:
+    """Backward-compatible alias enforcing strict Central Kurdish (Sorani) validation."""
+    return is_valid_kurdish_sorani(text)
 
 
 def trim_at_sentence_boundary(text: str, max_len: int = 650) -> str:
@@ -190,6 +247,7 @@ class GeminiTranslationProvider(TranslationProvider):
         session: Optional[aiohttp.ClientSession] = None,
         semaphore: Optional[asyncio.Semaphore] = None,
         base_backoff: float = 1.5,
+        cooldown_store: Optional[dict[str, float]] = None,
     ) -> None:
         self._client = GeminiClient(
             api_key=GEMINI_API_KEY if api_key is None else api_key,
@@ -197,6 +255,7 @@ class GeminiTranslationProvider(TranslationProvider):
             session=session,
             semaphore=semaphore,
             base_backoff=base_backoff,
+            cooldown_store=cooldown_store,
         )
 
     @property
@@ -274,10 +333,11 @@ class GeminiTranslationProvider(TranslationProvider):
             strip_news_dateline(normalize_sorani_chars(str(data.get("summary", "")).strip()))
         )
 
-        if not final_title:
-            raise TranslationError("Gemini returned an empty Kurdish headline.")
-        if summary and summary.strip() and not final_summary:
-            raise TranslationError("Gemini returned an empty Kurdish summary.")
+        if not final_title or not is_valid_kurdish_sorani(final_title):
+            raise TranslationError("Gemini headline failed strict Sorani Kurdish verification.")
+        if summary and summary.strip():
+            if not final_summary or not is_valid_kurdish_sorani(final_summary):
+                raise TranslationError("Gemini summary failed strict Sorani Kurdish verification.")
 
         return final_title, trim_at_sentence_boundary(final_summary, max_len=650)
 
@@ -454,6 +514,7 @@ class TranslationEngine:
         gemini_api_key: Optional[str | list[str]] = None,
         gemini_model: Optional[str] = None,
         base_backoff: float = 1.5,
+        cooldown_store: Optional[dict[str, float]] = None,
     ) -> None:
         self._delay = delay
         self._semaphore = asyncio.Semaphore(1)
@@ -462,6 +523,7 @@ class TranslationEngine:
             model=gemini_model,
             semaphore=self._semaphore,
             base_backoff=base_backoff,
+            cooldown_store=cooldown_store,
         )
         self._google_fallback = GoogleTranslateProvider(
             delay=self._delay,
@@ -500,14 +562,20 @@ class TranslationEngine:
         if not title.strip():
             return ""
         translated = await self._translate_with_fallback(title, target_lang=target_lang)
-        return self._post_process(translated, title)
+        cleaned = self._post_process(translated, title)
+        if not is_valid_kurdish_sorani(cleaned):
+            raise TranslationError("Translated headline failed strict Sorani Kurdish verification.")
+        return cleaned
 
     async def translate_summary(self, summary: str, target_lang: str = "ckb") -> str:
         """Translate summary to Sorani Kurdish through fallback chain."""
         if not summary.strip():
             return ""
         translated = await self._translate_with_fallback(summary, target_lang=target_lang)
-        return self._post_process(translated, summary)
+        cleaned = self._post_process(translated, summary)
+        if not is_valid_kurdish_sorani(cleaned):
+            raise TranslationError("Translated summary failed strict Sorani Kurdish verification.")
+        return cleaned
 
     async def translate_article(
         self,
@@ -518,9 +586,11 @@ class TranslationEngine:
         """
         Translate or rewrite an article in a single Gemini pass when available;
         fall back cleanly to Google Translate (`ckb`) ONLY if Gemini fails or has no keys.
-        For native Kurdish articles, skips English-to-Kurdish translation.
+        NEVER falls back to raw English or Arabic source text.
+        For strictly verified native Sorani articles, uses Kurdish editorial rewrite.
         """
-        native_kurdish = is_kurdish_sorani(f"{title} {summary}")
+        native_kurdish = is_valid_kurdish_sorani(f"{title} {summary}")
+        has_source_summary = bool(summary and summary.strip())
 
         # Tier 1: Single high-quality Gemini pass (translates+summarizes OR rewrites native Kurdish)
         if self._gemini_provider.has_keys:
@@ -530,6 +600,10 @@ class TranslationEngine:
                     summary=summary,
                     is_kurdish=native_kurdish,
                 )
+                if not is_valid_kurdish_sorani(final_title) or (
+                    has_source_summary and (not final_summary or not is_valid_kurdish_sorani(final_summary))
+                ):
+                    raise TranslationError("Gemini output failed strict Sorani Kurdish verification.")
                 logger.info(
                     "Gemini single-pass %s completed for headline '%s'",
                     "Kurdish editorial rewrite" if native_kurdish else "Sorani translation",
@@ -541,7 +615,7 @@ class TranslationEngine:
                 if not ENABLE_TRANSLATION_FALLBACK:
                     raise
 
-        # Native Kurdish safety fallback (do not send Sorani through Google Translate)
+        # Native Kurdish safety fallback (only when input itself passed strict Sorani verification)
         if native_kurdish:
             from processing.content_formatter import normalize_neutral_terminology
             clean_title = normalize_neutral_terminology(normalize_sorani_chars(title))
@@ -550,23 +624,30 @@ class TranslationEngine:
                     normalize_neutral_terminology(strip_news_dateline(normalize_sorani_chars(summary))),
                     max_len=650,
                 )
-                if summary
+                if has_source_summary
                 else ""
             )
-            logger.info("Using native Sorani text directly after Gemini fallback.")
-            return clean_title, clean_summary
+            if is_valid_kurdish_sorani(clean_title) and (
+                not has_source_summary or (clean_summary and is_valid_kurdish_sorani(clean_summary))
+            ):
+                logger.info("Using verified native Sorani text directly after Gemini fallback.")
+                return clean_title, clean_summary
 
         # Tier 2 Fallback: Lightweight Google Translate ckb safety net
         fallback_title = await self._google_fallback.translate(title, target_lang=target_lang)
         fallback_title = self._post_process(fallback_title, title)
+        if not is_valid_kurdish_sorani(fallback_title):
+            raise TranslationError("Fallback headline failed strict Sorani Kurdish verification.")
 
         fallback_summary = ""
-        if summary and summary.strip():
+        if has_source_summary:
             # Keep fallback summary concise so caption stays within Telegram limit
             trimmed_source = trim_at_sentence_boundary(strip_news_dateline(summary.strip()), max_len=1200)
             translated_sum = await self._google_fallback.translate(trimmed_source, target_lang=target_lang)
             cleaned_sum = strip_news_dateline(self._post_process(translated_sum, trimmed_source))
             fallback_summary = trim_at_sentence_boundary(cleaned_sum, max_len=650)
+            if not fallback_summary or not is_valid_kurdish_sorani(fallback_summary):
+                raise TranslationError("Fallback summary failed strict Sorani Kurdish verification.")
 
         return fallback_title, fallback_summary
 
@@ -596,10 +677,13 @@ class TranslationEngine:
         return normalize_neutral_terminology(cleaned)
 
     async def validate_translation(self, translated: str, original: str) -> bool:
-        """Validate that a translation is acceptable."""
+        """Validate that a translation is strictly acceptable Central Kurdish (Sorani)."""
         if not translated or not translated.strip():
             return False
         if len(translated.strip()) < 5:
+            return False
+        if not is_valid_kurdish_sorani(translated):
+            logger.warning("Translation failed strict Sorani Kurdish verification: '%s'", translated[:60])
             return False
         ratio = len(translated) / max(len(original), 1)
         if ratio < 0.1 or ratio > 10:
