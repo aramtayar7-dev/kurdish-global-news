@@ -730,3 +730,452 @@ class TestPhase4EditorialPolicyIntegrity:
         reason = check_pre_filter_off_topic(art)
         assert reason is None, f"Expected {defense_title} to pass editorial filter"
 
+
+# ============================================================
+# PHASE 9 — DATABASE-AUTHORITATIVE GLOBAL LEASE LIFECYCLE
+# & MULTIPROCESSING CONTENTION TESTS
+# ============================================================
+
+
+def _mp_sqlite_compete_worker(
+    project_root: str,
+    db_path: str,
+    url: str,
+    owner_token: str,
+    barrier,
+    out_queue,
+) -> None:
+    """Spawned child-process worker competing for SQLite Global admission under BEGIN IMMEDIATE."""
+    import asyncio
+    import sys
+
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    from storage.database import Database
+
+    async def _run() -> dict:
+        db = Database(db_path)
+        await db.connect()
+        try:
+            return await db.reserve_global_slot(
+                canonical_url=url,
+                owner_token=owner_token,
+                lease_seconds=180,
+            )
+        finally:
+            await db.close()
+
+    barrier.wait(timeout=15)
+    res = asyncio.run(_run())
+    out_queue.put((owner_token, bool(res.get("admitted")), res.get("reason")))
+
+
+class TestPhase9AuthoritativeGlobalLifecycle:
+    """End-to-end verification of atomic leases, ambiguous quarantine, and multi-process contention."""
+
+    @staticmethod
+    async def _fetch_article_row(db: Database, article_id: int) -> tuple[str, Optional[int]]:
+        async with db.conn.execute(
+            "SELECT status, telegram_message_id FROM articles WHERE id = ?",
+            (article_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None, f"Article {article_id} not found in DB"
+        return str(row["status"]), row["telegram_message_id"]
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_confirmed_publish_atomic_finalize(self, tmp_path):
+        from core.pipeline import ArticlePipeline
+        from monitoring.health import HealthMonitor
+        from monitoring.metrics import Metrics
+
+        db = Database(str(tmp_path / "phase9_commit.db"))
+        await db.connect()
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for i in range(1, 10):
+                me = _make_test_article(i, f"Middle East defense update {i}", region="middle_east")
+                me.status = ArticleStatus.PUBLISHED
+                me.published_at = now_iso
+                await db.insert_article(me)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=100 + i)
+
+            g_art = _make_test_article(10, "NATO defense summit in Washington", region="global")
+            g_art.translated_title = "کۆنگرەی بەرگری ناتۆ لە واشنتن بەڕێوەچوو"
+            g_art.translated_summary = "سەرکردەکانی ناتۆ لە واشنتن کۆبوونەوە و بڕیاری بەرگرییان دا."
+            g_art._require_global_reservation = True
+            g_art.id = await db.insert_article(g_art)
+
+            publisher = MagicMock()
+            publisher.publish_article = AsyncMock(return_value=777)
+            pipeline = ArticlePipeline(db=db, publisher=publisher, health=HealthMonitor(), metrics=Metrics())
+
+            ok = await pipeline._publish_immediately(g_art)
+            assert ok is True
+            publisher.publish_article.assert_awaited_once()
+
+            stored_status, stored_msg_id = await self._fetch_article_row(db, g_art.id)
+            assert stored_status == ArticleStatus.PUBLISHED
+            assert stored_msg_id == 777
+            assert await db.get_active_global_reservations_count() == 0
+            assert await db.get_published_counts_last_24h() == (1, 10)
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_definitive_telegram_failure_releases_reservation_for_reuse(self, tmp_path):
+        from telegram.error import BadRequest
+        from core.pipeline import ArticlePipeline
+        from monitoring.health import HealthMonitor
+        from monitoring.metrics import Metrics
+
+        db = Database(str(tmp_path / "phase9_definitive_fail.db"))
+        await db.connect()
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for i in range(1, 10):
+                me = _make_test_article(i, f"Baghdad border defense {i}", region="middle_east")
+                me.status = ArticleStatus.PUBLISHED
+                me.published_at = now_iso
+                await db.insert_article(me)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=200 + i)
+
+            g_art = _make_test_article(10, "Washington NATO missile shield plan", region="global")
+            g_art.translated_title = "پلانی قەڵغانی مووشەکی ناتۆ لە واشنتن ڕاگەیاندرا"
+            g_art.translated_summary = "بەرپرسانی ناتۆ پلانی نوێی بەرگری مووشەکیان ڕاگەیاند."
+            g_art._require_global_reservation = True
+            g_art.id = await db.insert_article(g_art)
+
+            publisher = MagicMock()
+            publisher.publish_article = AsyncMock(side_effect=BadRequest("Invalid caption entities"))
+            pipeline = ArticlePipeline(db=db, publisher=publisher, health=HealthMonitor(), metrics=Metrics())
+
+            ok = await pipeline._publish_immediately(g_art)
+            assert ok is False
+
+            stored_status, _ = await self._fetch_article_row(db, g_art.id)
+            assert stored_status == ArticleStatus.RETRY_PENDING
+            assert await db.get_active_global_reservations_count() == 0
+
+            # Slot is free again for another valid Global candidate
+            r2 = await db.reserve_global_slot("https://reuters.com/world/other-global", "worker:other")
+            assert r2["admitted"] is True
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_timeout_quarantines_without_retry_or_card_fallback(self, tmp_path):
+        from telegram.error import TimedOut
+        from tg_bot.publisher import TelegramPublisher
+        from core.pipeline import ArticlePipeline
+        from monitoring.health import HealthMonitor
+        from monitoring.metrics import Metrics
+
+        g_sample = _make_test_article(1, "Global NATO pact", region="global")
+        me_sample = _make_test_article(2, "Erbil Peshmerga briefing", region="kurdistan_bashur")
+        assert TelegramPublisher._allow_ambiguous_network_retry(g_sample) is False
+        assert TelegramPublisher._allow_ambiguous_network_retry(me_sample) is True
+
+        # Video TimedOut for Global MUST set _telegram_outcome='ambiguous' and MUST NOT fall back to card
+        dummy_vid = tmp_path / "global_clip.mp4"
+        dummy_vid.write_bytes(b"00" * 64)
+        real_pub = TelegramPublisher()
+        real_pub._bot = MagicMock()
+        real_pub._bot.send_video = AsyncMock(side_effect=TimedOut("Upload stalled after body sent"))
+        real_pub._publish_with_card = AsyncMock(return_value=999)
+        real_pub._send_with_optional_reply = AsyncMock(side_effect=TimedOut("Upload stalled after body sent"))
+        g_vid = _make_test_article(99, "Pentagon Arctic exercise", region="global")
+        g_vid.video_url = "https://video.twimg.com/ext_tw_video/99/pu/vid/720x1280/clip.mp4"
+        g_vid._prepared_branded_video_path = str(dummy_vid)
+        g_vid.translated_title = "ڕاهێنانی سەربازی پێنتاگۆن لە جەمسەری باکوور"
+        g_vid.translated_summary = "هێزەکان ڕاهێنانی بەرگرییان ئەنجامدا."
+        vid_res = await real_pub.publish_article(g_vid)
+        assert vid_res is None
+        assert getattr(g_vid, "_telegram_outcome", None) == "ambiguous"
+        real_pub._publish_with_card.assert_not_awaited()
+
+        db = Database(str(tmp_path / "phase9_ambiguous.db"))
+        await db.connect()
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for i in range(1, 10):
+                me = _make_test_article(i, f"Regional event {i}", region="middle_east")
+                me.status = ArticleStatus.PUBLISHED
+                me.published_at = now_iso
+                await db.insert_article(me)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=300 + i)
+
+            g_art = _make_test_article(10, "Pacific naval exercise", region="global")
+            g_art.translated_title = "ڕاهێنانی دەریایی لە زەریای هێمن ئەنجامدرا"
+            g_art.translated_summary = "کەشتییە جەنگییەکان ڕاهێنانی هاوبەشیان ئەنجامدا."
+            g_art._require_global_reservation = True
+            g_art.id = await db.insert_article(g_art)
+
+            publisher = MagicMock()
+            publisher.publish_article = AsyncMock(side_effect=TimedOut("Telegram read timeout"))
+            pipeline = ArticlePipeline(db=db, publisher=publisher, health=HealthMonitor(), metrics=Metrics())
+
+            ok = await pipeline._publish_immediately(g_art)
+            assert ok is False
+
+            stored_status, _ = await self._fetch_article_row(db, g_art.id)
+            assert stored_status == ArticleStatus.PUBLISHING
+
+            quota = await db.get_global_quota_status()
+            assert quota["active_reservations"] == 1
+            assert quota["ambiguous_reservations"] == 1
+
+            # Second Global must be blocked while AMBIGUOUS occupies the quota slot
+            blocked = await db.reserve_global_slot("https://bbc.com/world/second-global", "worker:two")
+            assert blocked["admitted"] is False
+
+            # Middle East publishing continues normally
+            me_next = _make_test_article(11, "Erbil defense announcement", region="kurdistan_bashur")
+            me_next.translated_title = "وەزارەتی پێشمەرگە ئامادەیی بەرگری لە هەولێر ڕاگەیاند"
+            me_next.translated_summary = "هێزەکانی پێشمەرگە سنوورەکان دەپارێزن."
+            me_next.id = await db.insert_article(me_next)
+            publisher.publish_article = AsyncMock(return_value=888)
+            assert await pipeline._publish_immediately(me_next) is True
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_owner_mismatch_and_ambiguous_state_lock_guards(self, tmp_path):
+        db = Database(str(tmp_path / "phase9_owner.db"))
+        await db.connect()
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for i in range(1, 10):
+                me = _make_test_article(i, f"ME item {i}", region="middle_east")
+                me.status = ArticleStatus.PUBLISHED
+                me.published_at = now_iso
+                await db.insert_article(me)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=400 + i)
+
+            res = await db.reserve_global_slot("https://reuters.com/world/item-owner", "worker:owner-A")
+            assert res["admitted"] is True
+            rid = res["reservation_id"]
+
+            assert (await db.renew_global_reservation(rid, "worker:owner-B"))["reason"] == "owner_mismatch"
+            assert (await db.mark_global_publishing(rid, "worker:owner-B"))["reason"] == "owner_mismatch"
+            assert (await db.release_global_reservation(rid, "worker:owner-B"))["reason"] == "owner_mismatch"
+            assert (await db.finalize_global_publication(rid, "worker:owner-B", 1, 900))["reason"] == "owner_mismatch"
+
+            assert (await db.mark_global_publishing(rid, "worker:owner-A"))["admitted"] is True
+            amb = await db.mark_global_ambiguous(rid, "worker:owner-A", reason="timeout_mid_send")
+            assert amb["state"] == "AMBIGUOUS"
+
+            rel_locked = await db.release_global_reservation(rid, "worker:owner-A")
+            assert rel_locked["ok"] is False
+            assert rel_locked["reason"] == "cannot_release_ambiguous"
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_stale_publishing_transitions_to_ambiguous_and_recovery_quarantines(self, tmp_path):
+        from core.recovery import RecoveryManager
+
+        db = Database(str(tmp_path / "phase9_reconcile.db"))
+        await db.connect()
+        try:
+            stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=25)).isoformat()
+            expired_ts = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+
+            g_interrupted = _make_test_article(50, "Interrupted Global NATO item", region="global")
+            g_interrupted.status = ArticleStatus.PUBLISHING
+            me_interrupted = _make_test_article(51, "Interrupted Erbil item", region="kurdistan_bashur")
+            me_interrupted.status = ArticleStatus.PUBLISHING
+            g_id = await db.insert_article(g_interrupted)
+            await db.update_article_status(g_id, ArticleStatus.PUBLISHING)
+            me_id = await db.insert_article(me_interrupted)
+            await db.update_article_status(me_id, ArticleStatus.PUBLISHING)
+
+            await db.log_system_event(
+                level="RESERVED",
+                component="GLOBAL_RESERVATION",
+                message=db._build_reservation_payload(
+                    reservation_id="res-stale-unused",
+                    owner_token="worker:dead-1",
+                    canonical_url="https://reuters.com/world/stale-unused",
+                    url_hash="h1",
+                    article_id=None,
+                    batch_id="b1",
+                    state="RESERVED",
+                    lease_seconds=180,
+                    expires_at=datetime.fromisoformat(expired_ts),
+                    reason="reserved",
+                ),
+                timestamp=stale_ts,
+            )
+            await db.log_system_event(
+                level="PUBLISHING",
+                component="GLOBAL_RESERVATION",
+                message=db._build_reservation_payload(
+                    reservation_id="res-stale-publishing",
+                    owner_token="worker:dead-2",
+                    canonical_url="https://reuters.com/world/stale-publishing",
+                    url_hash="h2",
+                    article_id=g_id,
+                    batch_id="b2",
+                    state="PUBLISHING",
+                    lease_seconds=180,
+                    expires_at=datetime.fromisoformat(expired_ts),
+                    reason="publishing",
+                ),
+                timestamp=stale_ts,
+            )
+
+            recovery = RecoveryManager(db)
+            await recovery.recover_interrupted_jobs()
+
+            # Unused stale RESERVED -> EXPIRED; interrupted PUBLISHING -> AMBIGUOUS (still counts for quota!)
+            quota = await db.get_global_quota_status()
+            assert quota["active_reservations"] == 1
+            assert quota["ambiguous_reservations"] == 1
+            assert "https://reuters.com/world/stale-publishing" in quota["active_urls"]
+            assert "https://reuters.com/world/stale-unused" not in quota["active_urls"]
+
+            g_after_status, _ = await self._fetch_article_row(db, g_id)
+            me_after_status, _ = await self._fetch_article_row(db, me_id)
+            assert g_after_status == ArticleStatus.FAILED
+            assert me_after_status == ArticleStatus.RETRY_PENDING
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_pre_publish_90_10_revalidation_defers_global_without_telegram_call(self, tmp_path):
+        from core.pipeline import ArticlePipeline
+        from monitoring.health import HealthMonitor
+        from monitoring.metrics import Metrics
+
+        db = Database(str(tmp_path / "phase9_prepublish_reval.db"))
+        await db.connect()
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for i in range(1, 10):
+                me = _make_test_article(i, f"Baghdad update {i}", region="middle_east")
+                me.status = ArticleStatus.PUBLISHED
+                me.published_at = now_iso
+                await db.insert_article(me)
+                await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=500 + i)
+
+            # Insert candidate first so its DB ID is known and distinct
+            g_cand = _make_test_article(10, "Deferred global summit", region="global")
+            g_cand.canonical_url = "https://bbc.com/world/candidate-g"
+            g_cand.original_url = "https://bbc.com/world/candidate-g"
+            g_cand.translated_title = "لووتکەی نێودەوڵەتی دواخرا"
+            g_cand.translated_summary = "سەرکردەکان لە لووتکەدا بەشداربوون."
+            g_cand.id = await db.insert_article(g_cand)
+
+            # Reserve Global slot when 9 ME published (allowed: 10*1 <= 10)
+            res = await db.reserve_global_slot("https://bbc.com/world/candidate-g", "worker:main", article_id=g_cand.id)
+            assert res["admitted"] is True
+            g_cand._global_reservation_id = res["reservation_id"]
+            g_cand._global_owner_token = "worker:main"
+            g_cand._require_global_reservation = True
+
+            # Concurrent worker/digest shifts rolling counts: insert 1 distinct published Global (G=1, T=10 -> 10*2 > 11)
+            g_already = _make_test_article(99, "Earlier global headline", region="global")
+            g_already.canonical_url = "https://reuters.com/world/earlier-g"
+            g_already.original_url = "https://reuters.com/world/earlier-g"
+            g_already.status = ArticleStatus.PUBLISHED
+            g_already.published_at = now_iso
+            g_already.id = await db.insert_article(g_already)
+            await db.update_article_status(g_already.id, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=599)
+
+            publisher = MagicMock()
+            publisher.publish_article = AsyncMock(return_value=999)
+            pipeline = ArticlePipeline(db=db, publisher=publisher, health=HealthMonitor(), metrics=Metrics())
+
+            ok = await pipeline._publish_immediately(g_cand)
+            assert ok is False
+            publisher.publish_article.assert_not_awaited()
+            assert await db.get_active_global_reservations_count() == 0
+            stored_status, _ = await self._fetch_article_row(db, g_cand.id)
+            assert stored_status == ArticleStatus.QUEUED
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_sqlite_canonical_url_dedup_in_published_counts(self, tmp_path):
+        db = Database(str(tmp_path / "phase9_url_dedup.db"))
+        await db.connect()
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            a1 = _make_test_article(1, "Global NATO event", region="global")
+            a1.canonical_url = "https://bbc.com/news/world-1?utm_source=fb"
+            a1.original_url = a1.canonical_url
+            a2 = _make_test_article(2, "Global NATO event copy", region="global")
+            a2.canonical_url = "https://bbc.com/news/world-1/"
+            a2.original_url = a2.canonical_url
+            await db.insert_article(a1)
+            await db.insert_article(a2)
+            await db.update_article_status(a1.id, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=601)
+            await db.update_article_status(a2.id, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=602)
+
+            assert await db.get_published_counts_last_24h() == (1, 1)
+        finally:
+            await db.close()
+
+    def test_real_sqlite_multiprocessing_two_processes_only_one_global_wins(self, tmp_path):
+        import multiprocessing
+        from pathlib import Path
+
+        db_file = str(tmp_path / "phase9_mp_race.db")
+        project_root = str(Path(__file__).resolve().parent.parent)
+
+        async def _seed_9_me() -> None:
+            db = Database(db_file)
+            await db.connect()
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for i in range(1, 10):
+                    me = _make_test_article(i, f"Seeded ME security {i}", region="middle_east")
+                    me.status = ArticleStatus.PUBLISHED
+                    me.published_at = now_iso
+                    await db.insert_article(me)
+                    await db.update_article_status(i, ArticleStatus.PUBLISHED, published_at=now_iso, telegram_message_id=700 + i)
+            finally:
+                await db.close()
+
+        asyncio.run(_seed_9_me())
+
+        ctx = multiprocessing.get_context("spawn")
+        barrier = ctx.Barrier(2)
+        q = ctx.Queue()
+
+        p1 = ctx.Process(
+            target=_mp_sqlite_compete_worker,
+            args=(project_root, db_file, "https://reuters.com/world/mp-race-1", "worker:proc-1", barrier, q),
+        )
+        p2 = ctx.Process(
+            target=_mp_sqlite_compete_worker,
+            args=(project_root, db_file, "https://reuters.com/world/mp-race-2", "worker:proc-2", barrier, q),
+        )
+        p1.start()
+        p2.start()
+        try:
+            p1.join(timeout=20)
+            p2.join(timeout=20)
+            assert p1.exitcode == 0
+            assert p2.exitcode == 0
+        finally:
+            for p in (p1, p2):
+                if p.is_alive():
+                    p.terminate()
+
+        results = [q.get(timeout=5), q.get(timeout=5)]
+        admitted_flags = [admitted for _, admitted, _ in results]
+        assert sum(1 for x in admitted_flags if x) == 1, f"Expected exactly 1 MP winner, got {results}"
+
+        async def _check_active() -> int:
+            db = Database(db_file)
+            await db.connect()
+            try:
+                return await db.get_active_global_reservations_count()
+            finally:
+                await db.close()
+
+        assert asyncio.run(_check_active()) == 1
+

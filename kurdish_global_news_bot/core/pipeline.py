@@ -8,13 +8,19 @@ translation, and formatting — then immediately publishes eligible stories.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import logging
 import time
 from typing import Optional
+import uuid
 
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+import httpx
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError, TimedOut
+import config
 from storage.database import Database
+from storage.supabase_db import SupabaseDatabase
 from storage.models import Article, Event
 from storage.utils import (
     normalize_event_entities,
@@ -27,6 +33,7 @@ from core.importance_ranker import (
     article_selection_sort_key,
     check_blocked_topic,
     check_pre_filter_off_topic,
+    classify_geographic_region,
     classify_priority_tier,
     is_bashur_article,
     is_genuine_kurdistan_event,
@@ -112,11 +119,14 @@ class ArticlePipeline:
         publisher: TelegramPublisher,
         health: HealthMonitor,
         metrics: Metrics,
+        worker_owner_token: Optional[str] = None,
     ) -> None:
         self._db = db
         self._publisher = publisher
         self._health = health
         self._metrics = metrics
+        self._worker_owner_token: str = worker_owner_token or f"worker:{uuid.uuid4()}"
+        self._enforce_global_reservation: bool = False
         self._extractor = ArticleExtractor()
         self._validator = ArticleValidator()
         # Share one per-key 429 cooldown map between Gemini ranking and translation
@@ -850,13 +860,56 @@ class ArticlePipeline:
             f"and primary news was published {elapsed_minutes:.1f}m ago (< {FALLBACK_WINDOW_MINUTES}m)"
         )
 
+    def _requires_authoritative_global_guard(self, article: Article) -> bool:
+        """Return True when publishing a Global article requires an authoritative DB lease."""
+        article_region = getattr(article, "region", None) or classify_geographic_region(article)
+        article.region = article_region
+        if article_region != "global":
+            return False
+        if isinstance(self._db, SupabaseDatabase):
+            return True
+        if getattr(article, "_global_reservation_id", None):
+            return True
+        if getattr(article, "_require_global_reservation", False):
+            return True
+        return bool(self._enforce_global_reservation)
+
+    async def _release_global_reservation_safe(
+        self,
+        reservation_id: Optional[str],
+        owner_token: str,
+        reason: str,
+    ) -> None:
+        """Best-effort release of a reserved/pre-send Global slot."""
+        if not reservation_id or not hasattr(self._db, "release_global_reservation"):
+            return
+        try:
+            await self._db.release_global_reservation(
+                reservation_id=reservation_id,
+                owner_token=owner_token,
+                reason=reason,
+            )
+        except Exception as exc:
+            logger.error(
+                "[GLOBAL GUARD] Failed releasing reservation %s (%s): %s",
+                reservation_id, reason, str(exc)[:200],
+            )
+
     async def _publish_immediately(self, article: Article) -> bool:
         """Publish an article to Telegram IMMEDIATELY after final topic & Sorani verification."""
         article_id = article.id
+        require_global_guard = self._requires_authoritative_global_guard(article)
+        reservation_id: Optional[str] = getattr(article, "_global_reservation_id", None)
+        owner_token: str = getattr(article, "_global_owner_token", None) or self._worker_owner_token
+        article._global_lifecycle_handled = False
+        article._telegram_outcome = "not_sent"
 
         # Never publish blocked topics or non-Sorani/untranslated text (e.g. from older held DB rows)
         blocked_reason = check_blocked_topic(article)
         if blocked_reason:
+            if require_global_guard and reservation_id:
+                await self._release_global_reservation_safe(reservation_id, owner_token, f"blocked_topic:{blocked_reason}")
+                article._global_lifecycle_handled = True
             return await self._reject_blocked_topic(article, blocked_reason)
 
         if not is_valid_kurdish_sorani(article.translated_title or "") or (
@@ -867,6 +920,9 @@ class ArticlePipeline:
                 "[BLOCKED PUBLISH] Article %s failed final Sorani publish gate ('%s'); moving to RETRY_PENDING.",
                 article_id, article.original_title[:60],
             )
+            if require_global_guard and reservation_id:
+                await self._release_global_reservation_safe(reservation_id, owner_token, "sorani_gate_failed")
+                article._global_lifecycle_handled = True
             await self._db.update_article_status(
                 article_id,
                 ArticleStatus.RETRY_PENDING,
@@ -876,25 +932,195 @@ class ArticlePipeline:
             )
             return False
 
+        canonical_url = (
+            getattr(article, "canonical_url", None)
+            or getattr(article, "original_url", None)
+            or f"article:{article_id}"
+        )
+        lease_seconds = int(getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180) or 180)
+        publish_timeout = float(getattr(config, "TELEGRAM_PUBLISH_TIMEOUT_SECONDS", 120.0) or 120.0)
+        global_lifecycle_closed = False
+        renew_task: Optional[asyncio.Task] = None
+        send_started = False
+        send_finished = False
+
         try:
+            if require_global_guard:
+                if not reservation_id:
+                    try:
+                        reserve_res = await self._db.reserve_global_slot(
+                            canonical_url=canonical_url,
+                            owner_token=owner_token,
+                            article_id=article_id,
+                            batch_id=getattr(article, "_global_batch_id", "") or "",
+                            lease_seconds=lease_seconds,
+                            url_hash=getattr(article, "url_hash", "") or "",
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "[GLOBAL GUARD] Authoritative reservation failed closed for article %s: %s",
+                            article_id, str(exc)[:200],
+                        )
+                        return False
+
+                    if not isinstance(reserve_res, dict) or not reserve_res.get("admitted"):
+                        reason = reserve_res.get("reason", "denied") if isinstance(reserve_res, dict) else "invalid_response"
+                        logger.info(
+                            "[GLOBAL GUARD] Deferred Global publish for article %s before Telegram send (%s).",
+                            article_id, reason,
+                        )
+                        if article_id is not None and getattr(article, "status", None) != ArticleStatus.QUEUED:
+                            with suppress(Exception):
+                                await self._db.update_article_status(
+                                    article_id,
+                                    ArticleStatus.QUEUED,
+                                    error_message=f"Deferred Global admission: {reason}",
+                                )
+                        return False
+
+                    reservation_id = reserve_res.get("reservation_id")
+                    owner_token = reserve_res.get("owner_token") or owner_token
+                    article._global_reservation_id = reservation_id
+                    article._global_owner_token = owner_token
+
+                try:
+                    pub_gate = await self._db.mark_global_publishing(
+                        reservation_id=reservation_id,
+                        owner_token=owner_token,
+                        lease_seconds=lease_seconds,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[GLOBAL GUARD] mark_global_publishing failed closed for article %s: %s",
+                        article_id, str(exc)[:200],
+                    )
+                    await self._release_global_reservation_safe(reservation_id, owner_token, "mark_publishing_error")
+                    article._global_lifecycle_handled = True
+                    global_lifecycle_closed = True
+                    return False
+
+                if not isinstance(pub_gate, dict) or not pub_gate.get("ok") or not pub_gate.get("admitted"):
+                    reason = pub_gate.get("reason", "denied") if isinstance(pub_gate, dict) else "invalid_response"
+                    state = pub_gate.get("state", "unknown") if isinstance(pub_gate, dict) else "unknown"
+                    logger.warning(
+                        "[GLOBAL GUARD] Pre-publish Global transition denied for article %s (reason=%s, state=%s).",
+                        article_id, reason, state,
+                    )
+                    if state in ("RESERVED", "RENEWED", "unknown") and reason not in (
+                        "reservation_not_found",
+                        "already_committed",
+                        "owner_mismatch",
+                        "ambiguous_publication_locked",
+                        "invalid_state",
+                    ):
+                        await self._release_global_reservation_safe(
+                            reservation_id, owner_token, f"prepublish_denied:{reason}"
+                        )
+                    article._global_lifecycle_handled = True
+                    global_lifecycle_closed = True
+                    if (
+                        article_id is not None
+                        and reason not in ("ambiguous_publication_locked", "already_committed")
+                        and getattr(article, "status", None) != ArticleStatus.QUEUED
+                    ):
+                        with suppress(Exception):
+                            await self._db.update_article_status(
+                                article_id,
+                                ArticleStatus.QUEUED,
+                                error_message=f"Deferred Global publish: {reason}",
+                            )
+                    return False
+
             await self._db.update_article_status(article_id, ArticleStatus.PUBLISHING)
 
+            if require_global_guard and reservation_id and hasattr(self._db, "renew_global_reservation"):
+                renew_interval = max(15.0, min(60.0, float(lease_seconds) / 3.0))
+
+                async def _renew_lease_loop() -> None:
+                    while True:
+                        await asyncio.sleep(renew_interval)
+                        try:
+                            res = await self._db.renew_global_reservation(
+                                reservation_id=reservation_id,
+                                owner_token=owner_token,
+                                lease_seconds=lease_seconds,
+                            )
+                            if isinstance(res, dict) and not res.get("ok"):
+                                logger.warning(
+                                    "[GLOBAL GUARD] Lease renewal halted for %s (%s)",
+                                    reservation_id, res.get("reason"),
+                                )
+                                return
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.warning(
+                                "[GLOBAL GUARD] Lease renewal error for %s: %s",
+                                reservation_id, str(exc)[:160],
+                            )
+
+                renew_task = asyncio.create_task(_renew_lease_loop())
+
+            send_started = True
             with Timer(self._metrics, "publish_time"):
-                message_id = await self._publisher.publish_article(article)
+                if require_global_guard:
+                    message_id = await asyncio.wait_for(
+                        self._publisher.publish_article(article),
+                        timeout=publish_timeout,
+                    )
+                else:
+                    message_id = await self._publisher.publish_article(article)
+            send_finished = True
+
+            if renew_task is not None:
+                renew_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await renew_task
+                renew_task = None
 
             if message_id is not None:
                 # Success — Telegram confirmed delivery; record message_id & optional thread root anchor
                 article.telegram_message_id = message_id
                 article.published_at = datetime.now(timezone.utc).isoformat()
                 article.status = ArticleStatus.PUBLISHED
-                await self._db.update_article_status(
-                    article_id,
-                    ArticleStatus.PUBLISHED,
-                    published_at=article.published_at,
-                    telegram_message_id=message_id,
-                    thread_root_message_id=article.thread_root_message_id,
-                    is_breaking=bool(getattr(article, "is_breaking", False)),
-                )
+
+                finalized_atomically = False
+                if require_global_guard and reservation_id and hasattr(self._db, "finalize_global_publication"):
+                    try:
+                        fin = await self._db.finalize_global_publication(
+                            reservation_id=reservation_id,
+                            owner_token=owner_token,
+                            article_id=article_id,
+                            telegram_message_id=message_id,
+                            thread_root_message_id=article.thread_root_message_id,
+                            is_breaking=bool(getattr(article, "is_breaking", False)),
+                            published_at=article.published_at,
+                        )
+                        if isinstance(fin, dict) and fin.get("ok"):
+                            article.published_at = fin.get("published_at") or article.published_at
+                            finalized_atomically = True
+                        else:
+                            logger.critical(
+                                "[GLOBAL GUARD] Telegram confirmed msg_id=%s for article %s but finalize_global_publication failed (%s); falling back to article update to prevent double-send.",
+                                message_id, article_id, fin,
+                            )
+                    except Exception as exc:
+                        logger.critical(
+                            "[GLOBAL GUARD] Telegram confirmed msg_id=%s for article %s but finalize_global_publication raised %s; falling back to article update.",
+                            message_id, article_id, str(exc)[:200],
+                        )
+                    article._global_lifecycle_handled = True
+                    global_lifecycle_closed = True
+
+                if not finalized_atomically:
+                    await self._db.update_article_status(
+                        article_id,
+                        ArticleStatus.PUBLISHED,
+                        published_at=article.published_at,
+                        telegram_message_id=message_id,
+                        thread_root_message_id=article.thread_root_message_id,
+                        is_breaking=bool(getattr(article, "is_breaking", False)),
+                    )
 
                 # Track published story & message_id in current cycle history for zero-duplicate & live threading
                 self._record_cycle_published_article(article)
@@ -942,6 +1168,36 @@ class ArticlePipeline:
                     )
                     return False
 
+                telegram_outcome = getattr(article, "_telegram_outcome", "not_sent")
+                if require_global_guard and telegram_outcome == "ambiguous":
+                    if reservation_id and hasattr(self._db, "mark_global_ambiguous"):
+                        with suppress(Exception):
+                            await self._db.mark_global_ambiguous(
+                                reservation_id=reservation_id,
+                                owner_token=owner_token,
+                                reason="telegram_ambiguous_none_return",
+                                article_id=article_id,
+                            )
+                    article._global_lifecycle_handled = True
+                    global_lifecycle_closed = True
+                    self._health.record_failure(
+                        "publishing",
+                        "Ambiguous Telegram outcome for Global article (quarantined in PUBLISHING/AMBIGUOUS)",
+                    )
+                    self._metrics.increment("publish_failures")
+                    logger.error(
+                        "[GLOBAL AMBIGUOUS] Article %s returned ambiguous None from Telegram; keeping status=PUBLISHING to prevent duplicate Global post.",
+                        article_id,
+                    )
+                    return False
+
+                if require_global_guard and reservation_id and not global_lifecycle_closed:
+                    await self._release_global_reservation_safe(
+                        reservation_id, owner_token, telegram_outcome or "definitive_failure"
+                    )
+                    article._global_lifecycle_handled = True
+                    global_lifecycle_closed = True
+
                 # Publish failed — no message_id returned
                 retry_count = await self._db.increment_retry(
                     article_id, "Telegram publish returned no message_id"
@@ -950,12 +1206,93 @@ class ArticlePipeline:
                 self._metrics.increment("publish_failures")
                 return False
 
+        except asyncio.CancelledError:
+            if renew_task is not None:
+                renew_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await renew_task
+                renew_task = None
+            if require_global_guard and reservation_id and not global_lifecycle_closed:
+                if send_started and not send_finished and hasattr(self._db, "mark_global_ambiguous"):
+                    with suppress(Exception):
+                        await asyncio.shield(
+                            self._db.mark_global_ambiguous(
+                                reservation_id=reservation_id,
+                                owner_token=owner_token,
+                                reason="publish_cancelled_mid_send",
+                                article_id=article_id,
+                            )
+                        )
+                else:
+                    with suppress(Exception):
+                        await asyncio.shield(
+                            self._release_global_reservation_safe(
+                                reservation_id, owner_token, "publish_cancelled_before_send"
+                            )
+                        )
+                article._global_lifecycle_handled = True
+                global_lifecycle_closed = True
+            raise
         except Exception as e:
+            telegram_outcome = getattr(article, "_telegram_outcome", "not_sent")
+            is_ambiguous = (
+                telegram_outcome == "ambiguous"
+                or (
+                    isinstance(e, (asyncio.TimeoutError, TimedOut, NetworkError, httpx.TimeoutException))
+                    and not isinstance(e, (BadRequest, Forbidden, RetryAfter))
+                )
+            )
+            if require_global_guard and reservation_id and not global_lifecycle_closed:
+                if is_ambiguous and hasattr(self._db, "mark_global_ambiguous"):
+                    with suppress(Exception):
+                        await self._db.mark_global_ambiguous(
+                            reservation_id=reservation_id,
+                            owner_token=owner_token,
+                            reason=f"publish_exception:{type(e).__name__}",
+                            article_id=article_id,
+                        )
+                    article._global_lifecycle_handled = True
+                    global_lifecycle_closed = True
+                    logger.error(
+                        "[GLOBAL AMBIGUOUS] Ambiguous publish error for article %d (%s): %s; quarantined in PUBLISHING/AMBIGUOUS.",
+                        article_id, type(e).__name__, str(e)[:200],
+                    )
+                    self._health.record_failure("publishing", str(e))
+                    self._metrics.increment("publish_failures")
+                    return False
+
+                await self._release_global_reservation_safe(
+                    reservation_id, owner_token, f"definitive_exception:{type(e).__name__}"
+                )
+                article._global_lifecycle_handled = True
+                global_lifecycle_closed = True
+
             logger.error("Publish error for article %d: %s", article_id, str(e)[:200])
             await self._db.increment_retry(article_id, str(e)[:500])
             self._health.record_failure("publishing", str(e))
             self._metrics.increment("publish_failures")
             return False
+        finally:
+            if renew_task is not None:
+                renew_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await renew_task
+            if require_global_guard and reservation_id and not global_lifecycle_closed:
+                telegram_outcome = getattr(article, "_telegram_outcome", "not_sent")
+                if telegram_outcome == "ambiguous" and hasattr(self._db, "mark_global_ambiguous"):
+                    with suppress(Exception):
+                        await self._db.mark_global_ambiguous(
+                            reservation_id=reservation_id,
+                            owner_token=owner_token,
+                            reason="ambiguous_finally_exit",
+                            article_id=article_id,
+                        )
+                else:
+                    abort_reason = getattr(article, "_watermark_rejected_reason", None) or "early_exit"
+                    await self._release_global_reservation_safe(
+                        reservation_id, owner_token, f"aborted:{abort_reason}"
+                    )
+                article._global_lifecycle_handled = True
 
     @staticmethod
     def _candidate_priority_key(article: Article) -> tuple:

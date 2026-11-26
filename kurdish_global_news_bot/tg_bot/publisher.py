@@ -25,7 +25,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
 )
-from core.importance_ranker import is_strict_breaking
+from core.importance_ranker import classify_geographic_region, is_strict_breaking
 from core.source_verifier import is_official_media_source, is_x_source_url
 from processing.card_generator import NewsCardGenerator
 from processing.content_formatter import ContentFormatter, resolve_category_display
@@ -120,6 +120,9 @@ class TelegramPublisher:
         if not self._bot:
             raise RuntimeError("Publisher not initialized. Call initialize() first.")
 
+        # Track precise Telegram outcome ("not_sent" | "published" | "definitive_failure" | "ambiguous")
+        article._telegram_outcome = "not_sent"  # type: ignore[attr-defined]
+
         # Strict Sorani Kurdish publish gate: never generate cards or publish untranslated/Arabic text
         if not is_valid_kurdish_sorani(article.translated_title or ""):
             logger.warning(
@@ -137,7 +140,14 @@ class TelegramPublisher:
         if getattr(article, "video_url", None):
             message_id = await self._publish_with_video(article)
             if message_id is not None:
+                article._telegram_outcome = "published"  # type: ignore[attr-defined]
                 return message_id
+            if getattr(article, "_telegram_outcome", "") == "ambiguous":
+                logger.warning(
+                    "Video publish outcome AMBIGUOUS for '%s'; aborting card fallback to prevent duplicate Global post.",
+                    (article.original_title or "")[:60],
+                )
+                return None
             if getattr(article, "_watermark_rejected_reason", None):
                 logger.info(
                     "Publish ABORTED (Watermark gate): %s — skipping card/text fallback.",
@@ -149,7 +159,14 @@ class TelegramPublisher:
         if ENABLE_IMAGES:
             message_id = await self._publish_with_card(article)
             if message_id is not None:
+                article._telegram_outcome = "published"  # type: ignore[attr-defined]
                 return message_id
+            if getattr(article, "_telegram_outcome", "") == "ambiguous":
+                logger.warning(
+                    "Card publish outcome AMBIGUOUS for '%s'; aborting text fallback.",
+                    (article.original_title or "")[:60],
+                )
+                return None
             if not getattr(article, "_card_generation_failed", False):
                 logger.warning(
                     "Visual news card was rendered for '%s' but send_photo failed; "
@@ -159,7 +176,27 @@ class TelegramPublisher:
                 return None
             logger.info("Card generation raised an unhandled error, falling back to text-only.")
 
-        return await self._publish_text_only(article)
+        msg_id = await self._publish_text_only(article)
+        if msg_id is not None:
+            article._telegram_outcome = "published"  # type: ignore[attr-defined]
+        return msg_id
+
+    @staticmethod
+    def _allow_ambiguous_network_retry(article: Optional[Article]) -> bool:
+        """
+        Return False for Global stories so a network TimedOut/NetworkError after POST send
+        never retries blindly and risks double-posting to Telegram.
+        """
+        if article is None:
+            return True
+        if getattr(article, "_no_ambiguous_retry", False):
+            return False
+        try:
+            if classify_geographic_region(article) == "global":
+                return False
+        except Exception:
+            return False
+        return True
 
     async def _send_with_optional_reply(
         self,
@@ -167,6 +204,8 @@ class TelegramPublisher:
         *,
         reply_to_message_id: Optional[int] = None,
         rewind_file: Optional[object] = None,
+        allow_ambiguous_retry: bool = True,
+        article_ref: Optional[Article] = None,
         **kwargs,
     ) -> Optional[object]:
         """
@@ -179,7 +218,12 @@ class TelegramPublisher:
             send_kwargs["allow_sending_without_reply"] = True
 
         try:
-            return await self._send_with_retry(method, **send_kwargs)
+            return await self._send_with_retry(
+                method,
+                allow_ambiguous_retry=allow_ambiguous_retry,
+                article_ref=article_ref,
+                **send_kwargs,
+            )
         except BadRequest as exc:
             err_lower = str(exc).lower()
             is_button_err = send_kwargs.get("reply_markup") is not None and any(
@@ -198,7 +242,12 @@ class TelegramPublisher:
                         pass
                 send_kwargs.pop("reply_markup", None)
                 try:
-                    return await self._send_with_retry(method, **send_kwargs)
+                    return await self._send_with_retry(
+                        method,
+                        allow_ambiguous_retry=allow_ambiguous_retry,
+                        article_ref=article_ref,
+                        **send_kwargs,
+                    )
                 except BadRequest as exc2:
                     exc = exc2
                     err_lower = str(exc2).lower()
@@ -221,7 +270,12 @@ class TelegramPublisher:
                     pass
             send_kwargs.pop("reply_to_message_id", None)
             send_kwargs.pop("allow_sending_without_reply", None)
-            return await self._send_with_retry(method, **send_kwargs)
+            return await self._send_with_retry(
+                method,
+                allow_ambiguous_retry=allow_ambiguous_retry,
+                article_ref=article_ref,
+                **send_kwargs,
+            )
 
     async def _publish_with_video(self, article: Article) -> Optional[int]:
         """Download & watermark video with KGN logo, send via send_video, and clean up temp file."""
@@ -278,6 +332,8 @@ class TelegramPublisher:
                     self._bot.send_video,
                     reply_to_message_id=reply_root_id,
                     rewind_file=video_file,
+                    allow_ambiguous_retry=self._allow_ambiguous_network_retry(article),
+                    article_ref=article,
                     chat_id=self._channel_id,
                     video=video_file,
                     caption=caption,
@@ -287,6 +343,7 @@ class TelegramPublisher:
                     **send_extra,
                 )
             if message:
+                article._telegram_outcome = "published"  # type: ignore[attr-defined]
                 logger.info(
                     "Published branded video: msg_id=%d, reply_to=%s, breaking=%s, silent=%s, source=%s, category=%s, title='%s'",
                     message.message_id,
@@ -299,8 +356,14 @@ class TelegramPublisher:
                 )
                 return message.message_id
         except BadRequest as e:
+            article._telegram_outcome = "definitive_failure"  # type: ignore[attr-defined]
             logger.warning("Telegram rejected branded video: %s", str(e)[:200])
+        except (TimedOut, NetworkError, asyncio.TimeoutError, httpx.TimeoutException) as e:
+            article._telegram_outcome = "ambiguous"  # type: ignore[attr-defined]
+            logger.warning("Video publish ambiguous timeout/network error: %s", str(e)[:200])
         except Exception as e:
+            if getattr(article, "_telegram_outcome", "") != "ambiguous":
+                article._telegram_outcome = "ambiguous" if isinstance(e, TelegramError) else "definitive_failure"  # type: ignore[attr-defined]
             logger.error("Video publish error: %s", str(e)[:200])
         finally:
             cleanup_video_file(branded_video_path)
@@ -371,6 +434,7 @@ class TelegramPublisher:
             )
             return None
 
+        allow_net_retry = self._allow_ambiguous_network_retry(article)
         try:
             with open(card_path, "rb") as photo_file:
                 send_extra = {"reply_markup": reply_markup} if reply_markup is not None else {}
@@ -379,6 +443,8 @@ class TelegramPublisher:
                         self._bot.send_photo,
                         reply_to_message_id=reply_root_id,
                         rewind_file=photo_file,
+                        allow_ambiguous_retry=allow_net_retry,
+                        article_ref=article,
                         chat_id=self._channel_id,
                         photo=photo_file,
                         caption=caption,
@@ -404,6 +470,8 @@ class TelegramPublisher:
                         self._bot.send_photo,
                         reply_to_message_id=reply_root_id,
                         rewind_file=photo_file,
+                        allow_ambiguous_retry=allow_net_retry,
+                        article_ref=article,
                         chat_id=self._channel_id,
                         photo=photo_file,
                         caption=compact_caption[:900],
@@ -412,6 +480,7 @@ class TelegramPublisher:
                         **send_extra,
                     )
             if message:
+                article._telegram_outcome = "published"  # type: ignore[attr-defined]
                 logger.info(
                     "Published branded card: msg_id=%d, reply_to=%s, breaking=%s, silent=%s, category=%s, title='%s'",
                     message.message_id,
@@ -423,8 +492,14 @@ class TelegramPublisher:
                 )
                 return message.message_id
         except BadRequest as e:
+            article._telegram_outcome = "definitive_failure"  # type: ignore[attr-defined]
             logger.warning("Telegram rejected branded card: %s", str(e)[:200])
+        except (TimedOut, NetworkError, asyncio.TimeoutError, httpx.TimeoutException) as e:
+            article._telegram_outcome = "ambiguous"  # type: ignore[attr-defined]
+            logger.warning("Card publish ambiguous timeout/network error: %s", str(e)[:200])
         except Exception as e:
+            if getattr(article, "_telegram_outcome", "") != "ambiguous":
+                article._telegram_outcome = "ambiguous" if isinstance(e, TelegramError) else "definitive_failure"  # type: ignore[attr-defined]
             logger.error("Card publish error: %s", str(e)[:200])
         finally:
             if card_path is not None:
@@ -453,6 +528,8 @@ class TelegramPublisher:
             message = await self._send_with_optional_reply(
                 self._bot.send_message,
                 reply_to_message_id=reply_root_id,
+                allow_ambiguous_retry=self._allow_ambiguous_network_retry(article),
+                article_ref=article,
                 chat_id=self._channel_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
@@ -461,6 +538,7 @@ class TelegramPublisher:
                 **send_extra,
             )
             if message:
+                article._telegram_outcome = "published"  # type: ignore[attr-defined]
                 logger.info(
                     "Published text-only: msg_id=%d, reply_to=%s, breaking=%s, silent=%s, title='%s'",
                     message.message_id,
@@ -470,7 +548,15 @@ class TelegramPublisher:
                     article.original_title[:60],
                 )
                 return message.message_id
+        except BadRequest as e:
+            article._telegram_outcome = "definitive_failure"  # type: ignore[attr-defined]
+            logger.warning("Telegram rejected text post: %s", str(e)[:200])
+        except (TimedOut, NetworkError, asyncio.TimeoutError, httpx.TimeoutException) as e:
+            article._telegram_outcome = "ambiguous"  # type: ignore[attr-defined]
+            logger.warning("Text publish ambiguous timeout/network error: %s", str(e)[:200])
         except Exception as e:
+            if getattr(article, "_telegram_outcome", "") != "ambiguous":
+                article._telegram_outcome = "ambiguous" if isinstance(e, TelegramError) else "definitive_failure"  # type: ignore[attr-defined]
             logger.error("Text publish error: %s", str(e)[:200])
 
         return None
@@ -553,24 +639,58 @@ class TelegramPublisher:
             except Exception:
                 pass
 
-    async def _send_with_retry(self, method, max_retries: int = 3, **kwargs) -> Optional[object]:
-        """Send a Telegram message with retry and rate-limit handling."""
+    async def _send_with_retry(
+        self,
+        method,
+        max_retries: int = 3,
+        allow_ambiguous_retry: bool = True,
+        article_ref: Optional[Article] = None,
+        **kwargs,
+    ) -> Optional[object]:
+        """
+        Send a Telegram message with retry on definite rate limits (`RetryAfter`).
+        When `allow_ambiguous_retry` is False (Global articles), network timeouts or uncertain
+        errors after sending do NOT re-POST blindly — instead marking outcome 'ambiguous' to
+        prevent duplicate Global publications.
+        """
         for attempt in range(max_retries):
             try:
                 result = await method(**kwargs)
+                if article_ref is not None and result is not None:
+                    article_ref._telegram_outcome = "published"  # type: ignore[attr-defined]
                 return result
             except RetryAfter as e:
+                if article_ref is not None:
+                    article_ref._telegram_outcome = "definitive_failure"  # type: ignore[attr-defined]
                 wait_time = e.retry_after + 1
                 logger.warning("Telegram rate limit: waiting %d seconds.", wait_time)
                 await asyncio.sleep(wait_time)
-            except TimedOut:
+            except BadRequest as e:
+                if article_ref is not None:
+                    article_ref._telegram_outcome = "definitive_failure"  # type: ignore[attr-defined]
+                logger.error("Telegram BadRequest: %s", str(e)[:200])
+                raise
+            except (TimedOut, asyncio.TimeoutError, httpx.TimeoutException) as e:
+                if article_ref is not None:
+                    article_ref._telegram_outcome = "ambiguous"  # type: ignore[attr-defined]
+                if not allow_ambiguous_retry:
+                    logger.warning(
+                        "Telegram timeout on at-most-once delivery (%s); aborting retry to prevent duplicate.",
+                        str(e)[:120],
+                    )
+                    return None
                 wait_time = 5 * (attempt + 1)
                 logger.warning("Telegram timeout. Retrying in %d seconds.", wait_time)
                 await asyncio.sleep(wait_time)
-            except BadRequest as e:
-                logger.error("Telegram BadRequest: %s", str(e)[:200])
-                raise
             except NetworkError as e:
+                if article_ref is not None:
+                    article_ref._telegram_outcome = "ambiguous"  # type: ignore[attr-defined]
+                if not allow_ambiguous_retry:
+                    logger.warning(
+                        "Telegram network error on at-most-once delivery (%s); aborting retry to prevent duplicate.",
+                        str(e)[:120],
+                    )
+                    return None
                 wait_time = 10 * (attempt + 1)
                 logger.warning(
                     "Telegram network error: %s. Retrying in %ds.",
@@ -579,12 +699,16 @@ class TelegramPublisher:
                 )
                 await asyncio.sleep(wait_time)
             except TelegramError as e:
+                if article_ref is not None:
+                    article_ref._telegram_outcome = "ambiguous"  # type: ignore[attr-defined]
                 logger.error(
                     "Telegram error (attempt %d/%d): %s",
                     attempt + 1,
                     max_retries,
                     str(e)[:200],
                 )
+                if not allow_ambiguous_retry:
+                    return None
                 if attempt < max_retries - 1:
                     await asyncio.sleep(5 * (attempt + 1))
 

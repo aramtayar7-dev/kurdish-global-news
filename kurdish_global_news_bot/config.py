@@ -353,6 +353,9 @@ GLOBAL_MAX_RATIO: float = _float(os.getenv("GLOBAL_MAX_RATIO"), 0.10)
 MAX_GLOBAL_POSTS_PER_DAY: int = max(0, min(4, _int(os.getenv("MAX_GLOBAL_POSTS_PER_DAY"), 4)))
 # At most 1 Global post per batch
 MAX_GLOBAL_POSTS_PER_BATCH: int = max(0, min(1, _int(os.getenv("MAX_GLOBAL_POSTS_PER_BATCH"), 1)))
+# Renewable Global reservation lease TTL (seconds) and bounded Telegram publish deadline
+GLOBAL_RESERVATION_LEASE_SECONDS: int = max(60, min(900, _int(os.getenv("GLOBAL_RESERVATION_LEASE_SECONDS"), 180)))
+TELEGRAM_PUBLISH_TIMEOUT_SECONDS: float = max(30.0, min(300.0, _float(os.getenv("TELEGRAM_PUBLISH_TIMEOUT_SECONDS"), 120.0)))
 
 REGION_KURDISTAN_BASHUR: str = "kurdistan_bashur"
 REGION_MIDDLE_EAST: str = "middle_east"

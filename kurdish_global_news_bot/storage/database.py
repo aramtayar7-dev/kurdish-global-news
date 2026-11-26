@@ -11,9 +11,11 @@ import hashlib
 import json
 import logging
 import shutil
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import aiosqlite
 
@@ -444,42 +446,50 @@ class Database:
 
         return _prioritize_digest_articles(recent_24h, limit=limit)
 
+    async def _query_published_counts_last_24h_unlocked(self, now_dt: Optional[datetime] = None) -> tuple[int, int]:
+        """Execute published Global & Total counts query on active SQLite connection."""
+        ref_now = now_dt or datetime.now(timezone.utc)
+        cutoff = ref_now - timedelta(hours=24)
+        async with self.conn.execute(
+            """SELECT id, canonical_url, region, published_at FROM articles
+               WHERE status = 'PUBLISHED' AND published_at IS NOT NULL
+               ORDER BY published_at DESC, id DESC"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        seen_keys: set[str] = set()
+        global_count = 0
+        total_count = 0
+
+        for row in rows:
+            pub_ts = row["published_at"]
+            if not pub_ts:
+                continue
+            dt = self._parse_utc_timestamp(pub_ts)
+            if dt is not None and dt >= cutoff:
+                raw_canon = str(row["canonical_url"] or "").strip()
+                canon = Article.canonicalize_url(raw_canon) if raw_canon else ""
+                row_id = row["id"]
+                dedup_key = canon or (f"id:{row_id}" if row_id is not None else "")
+                if dedup_key:
+                    if dedup_key in seen_keys:
+                        continue
+                    seen_keys.add(dedup_key)
+                total_count += 1
+                reg = str(row["region"] or "").strip().lower()
+                if reg == "global":
+                    global_count += 1
+        return global_count, total_count
+
     async def get_published_counts_last_24h(self) -> tuple[int, int]:
         """
         Count published articles (global and total) in the rolling 24 hours.
         Fail-closed to MAX_GLOBAL_POSTS_PER_DAY (4), 0 on error to protect 90/10 Middle East ratio.
-        Excludes duplicates by canonical_url and strictly filters on status = 'PUBLISHED'
+        Excludes duplicates by canonical_url / id and strictly filters on status = 'PUBLISHED'
         and published_at (never discovered_at). Unbounded by arbitrary limits.
         """
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            async with self.conn.execute(
-                """SELECT canonical_url, region, published_at FROM articles
-                   WHERE status = 'PUBLISHED' AND published_at IS NOT NULL
-                   ORDER BY published_at DESC, id DESC"""
-            ) as cursor:
-                rows = await cursor.fetchall()
-
-            seen_canonical: set[str] = set()
-            global_count = 0
-            total_count = 0
-
-            for row in rows:
-                pub_ts = row["published_at"]
-                if not pub_ts:
-                    continue
-                dt = self._parse_utc_timestamp(pub_ts)
-                if dt is not None and dt >= cutoff:
-                    canon = str(row["canonical_url"] or "").strip()
-                    if canon:
-                        if canon in seen_canonical:
-                            continue
-                        seen_canonical.add(canon)
-                    total_count += 1
-                    reg = str(row["region"] or "").strip().lower()
-                    if reg == "global":
-                        global_count += 1
-            return global_count, total_count
+            return await self._query_published_counts_last_24h_unlocked()
         except Exception as e:
             logger.error("Failed to query published counts last 24h: %s; failing closed.", e)
             return int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)), 0
@@ -818,36 +828,880 @@ class Database:
     # Global Admission Reservations (Concurrency & 90/10 Ratio)
     # ───────────────────────────────────────────────
 
-    async def get_active_global_reservations(self, ttl_minutes: int = 15) -> list[str]:
-        """
-        Return the list of canonical URLs currently holding active global admission reservations.
-        A reservation is active if its most recent system_logs record within ttl_minutes is 'RESERVED'.
-        """
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(ttl_minutes)))
-            async with self.conn.execute(
-                """SELECT timestamp, level, message FROM system_logs
-                   WHERE component = 'GLOBAL_RESERVATION'
-                   ORDER BY timestamp ASC, id ASC"""
-            ) as cursor:
-                rows = await cursor.fetchall()
+    # ───────────────────────────────────────────────
+    # Global Admission Reservations (SQLite BEGIN IMMEDIATE Atomic Ledger)
+    # ───────────────────────────────────────────────
 
-            active_reservations: dict[str, datetime] = {}
-            for row in rows:
-                dt = self._parse_utc_timestamp(row["timestamp"])
-                url = str(row["message"] or "").strip()
-                lvl = str(row["level"] or "").strip().upper()
-                if not url or dt is None:
+    @asynccontextmanager
+    async def _immediate_tx(self):
+        """
+        Acquire asyncio task lock AND SQLite cross-process BEGIN IMMEDIATE write lock
+        before any reads/writes, committing on exit or rolling back explicitly on error.
+        """
+        async with self._lock:
+            if self.conn.in_transaction:
+                await self.conn.commit()
+            await self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                await self.conn.commit()
+            except Exception:
+                try:
+                    await self.conn.rollback()
+                except Exception:
+                    pass
+                raise
+
+    @staticmethod
+    def _build_reservation_payload(
+        *,
+        reservation_id: str,
+        owner_token: Optional[str],
+        canonical_url: str,
+        url_hash: str,
+        article_id: Optional[int],
+        batch_id: str,
+        state: str,
+        lease_seconds: int,
+        expires_at: datetime,
+        telegram_message_id: Optional[int] = None,
+        reason: str = "",
+    ) -> str:
+        payload = {
+            "v": 1,
+            "reservation_id": reservation_id,
+            "owner_token": owner_token,
+            "canonical_url": canonical_url,
+            "url_hash": url_hash,
+            "article_id": article_id,
+            "batch_id": batch_id,
+            "state": state,
+            "lease_seconds": int(lease_seconds),
+            "expires_at": expires_at.isoformat(),
+            "telegram_message_id": telegram_message_id,
+            "reason": str(reason or "")[:250],
+        }
+        return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+    async def _reconstruct_global_reservations_unlocked(
+        self,
+        now_dt: datetime,
+        default_ttl_minutes: int = 15,
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Deterministically fold `GLOBAL_RESERVATION` events from `system_logs` ordered by
+        `id ASC` (monotonic identity PK). Supports both versioned JSON v1 and legacy raw URLs.
+        """
+        lookback_cutoff = now_dt - timedelta(hours=48)
+        window_24h = now_dt - timedelta(hours=24)
+        async with self.conn.execute(
+            """SELECT id, timestamp, level, message FROM system_logs
+               WHERE component = 'GLOBAL_RESERVATION'
+               ORDER BY id ASC"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        ledger: dict[str, dict[str, Any]] = {}
+        legacy_delta = timedelta(minutes=max(1, int(default_ttl_minutes)))
+
+        for row in rows:
+            dt = self._parse_utc_timestamp(row["timestamp"])
+            if dt is None or dt < lookback_cutoff:
+                continue
+            raw_msg = str(row["message"] or "").strip()
+            row_lvl = str(row["level"] or "").strip().upper()
+            payload: Optional[dict[str, Any]] = None
+            if raw_msg.startswith("{"):
+                try:
+                    parsed = json.loads(raw_msg)
+                    if isinstance(parsed, dict):
+                        payload = parsed
+                except Exception:
+                    payload = None
+
+            if payload is not None:
+                res_id = str(payload.get("reservation_id") or "").strip()
+                if not res_id:
+                    res_id = f"legacy_row:{row['id']}"
+                owner_tok = str(payload.get("owner_token") or "").strip() or None
+                canon_url = str(payload.get("canonical_url") or "").strip()
+                u_hash = str(payload.get("url_hash") or "").strip()
+                raw_aid = payload.get("article_id")
+                art_id = int(raw_aid) if isinstance(raw_aid, int) or (isinstance(raw_aid, str) and raw_aid.isdigit()) else None
+                batch_id = str(payload.get("batch_id") or "").strip()
+                state = str(payload.get("state") or row_lvl).strip().upper()
+                exp_dt = self._parse_utc_timestamp(payload.get("expires_at")) or (dt + legacy_delta)
+                lease_sec = int(payload.get("lease_seconds") or 180)
+                tg_msg_id = payload.get("telegram_message_id")
+                reason = str(payload.get("reason") or "")
+                is_legacy = False
+            else:
+                if not raw_msg:
                     continue
-                if lvl == "RESERVED":
-                    if dt >= cutoff:
-                        active_reservations[url] = dt
-                    else:
-                        active_reservations.pop(url, None)
-                elif lvl in ("RELEASED", "COMMITTED"):
-                    active_reservations.pop(url, None)
+                res_id = f"legacy:{raw_msg}"
+                owner_tok = None
+                canon_url = raw_msg
+                u_hash = ""
+                art_id = None
+                batch_id = ""
+                state = row_lvl
+                exp_dt = dt + legacy_delta
+                lease_sec = int(legacy_delta.total_seconds())
+                tg_msg_id = None
+                reason = ""
+                is_legacy = True
 
-            return [url for url, dt in active_reservations.items() if dt >= cutoff]
+            prev = ledger.get(res_id)
+            reserved_at = prev["reserved_at"] if (prev is not None and prev.get("reserved_at") is not None) else dt
+            if prev is None and state == "RESERVED":
+                reserved_at = dt
+
+            counts_for_quota = (
+                (state in ("RESERVED", "RENEWED") and exp_dt > now_dt and reserved_at >= window_24h)
+                or (state in ("PUBLISHING", "AMBIGUOUS") and dt >= window_24h)
+            )
+            counts_for_batch = bool(batch_id) and (
+                (state in ("RESERVED", "RENEWED") and exp_dt > now_dt and reserved_at >= window_24h)
+                or (state in ("PUBLISHING", "AMBIGUOUS", "COMMITTED") and dt >= window_24h)
+            )
+
+            ledger[res_id] = {
+                "reservation_id": res_id,
+                "owner_token": owner_tok,
+                "canonical_url": canon_url,
+                "url_hash": u_hash,
+                "article_id": art_id,
+                "batch_id": batch_id,
+                "state": state,
+                "is_legacy": is_legacy,
+                "reserved_at": reserved_at,
+                "state_at": dt,
+                "expires_at": exp_dt,
+                "lease_seconds": lease_sec,
+                "telegram_message_id": tg_msg_id,
+                "reason": reason,
+                "counts_for_quota": counts_for_quota,
+                "counts_for_batch": counts_for_batch,
+            }
+
+        return ledger
+
+    async def get_global_quota_status(
+        self,
+        max_daily_global: Optional[int] = None,
+        ttl_minutes: int = 15,
+    ) -> dict[str, Any]:
+        """Return current Global published count, total published count, and active reservation state."""
+        max_daily = int(
+            getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)
+            if max_daily_global is None
+            else max_daily_global
+        )
+        now_dt = datetime.now(timezone.utc)
+        try:
+            g_pub, t_pub = await self._query_published_counts_last_24h_unlocked(now_dt)
+            ledger = await self._reconstruct_global_reservations_unlocked(now_dt, default_ttl_minutes=ttl_minutes)
+            active_entries = [r for r in ledger.values() if r["counts_for_quota"]]
+            return {
+                "ok": True,
+                "now_utc": now_dt.isoformat(),
+                "published_global_24h": g_pub,
+                "published_total_24h": t_pub,
+                "active_reservations": len(active_entries),
+                "ambiguous_reservations": sum(1 for r in active_entries if r["state"] == "AMBIGUOUS"),
+                "active_urls": [r["canonical_url"] for r in active_entries if r["canonical_url"]],
+                "max_daily_global": max_daily,
+            }
+        except Exception as e:
+            logger.error("Failed querying SQLite quota status: %s; failing closed.", e)
+            return {
+                "ok": False,
+                "published_global_24h": max_daily,
+                "published_total_24h": 0,
+                "active_reservations": max_daily,
+                "ambiguous_reservations": 0,
+                "active_urls": [],
+                "max_daily_global": max_daily,
+                "reason": "sqlite_error_fail_closed",
+            }
+
+    async def reserve_global_slot(
+        self,
+        canonical_url: str,
+        owner_token: str,
+        reservation_id: Optional[str] = None,
+        article_id: Optional[int] = None,
+        batch_id: str = "",
+        lease_seconds: Optional[int] = None,
+        url_hash: str = "",
+        max_daily_global: Optional[int] = None,
+        max_batch_global: Optional[int] = None,
+        enforce_ratio: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Atomically check published 24h counts, active reservations, duplicate identity, caps, and 90/10
+        ratio under SQLite `BEGIN IMMEDIATE` across OS processes and reserve a Global slot.
+        """
+        raw_url = str(canonical_url or "").strip()
+        clean_url = Article.canonicalize_url(raw_url) if raw_url else ""
+        owner = str(owner_token or "").strip()
+        if not owner:
+            return {"admitted": False, "state": "REJECTED", "reason": "missing_owner_token"}
+        if not clean_url and article_id is None:
+            return {"admitted": False, "state": "REJECTED", "reason": "missing_article_identity"}
+
+        res_id = str(reservation_id or "").strip() or str(uuid.uuid4())
+        eff_batch = str(batch_id or "").strip()
+        eff_hash = url_hash or (_compute_url_hash(clean_url) if clean_url else "")
+        eff_lease = max(30, min(900, int(getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180) if lease_seconds is None else lease_seconds)))
+        eff_max_daily = max(0, min(4, int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4) if max_daily_global is None else max_daily_global)))
+        eff_max_batch = max(0, min(1, int(getattr(config, "MAX_GLOBAL_POSTS_PER_BATCH", 1) if max_batch_global is None else max_batch_global)))
+        now_dt = datetime.now(timezone.utc)
+        exp_dt = now_dt + timedelta(seconds=eff_lease)
+
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+
+                # 1. Idempotent retry by reservation_id
+                existing = ledger.get(res_id)
+                if existing is not None:
+                    if existing["owner_token"] != owner:
+                        return {
+                            "admitted": False,
+                            "state": existing["state"],
+                            "reservation_id": res_id,
+                            "reason": "reservation_id_owner_mismatch",
+                        }
+                    if existing["counts_for_quota"]:
+                        return {
+                            "admitted": True,
+                            "state": existing["state"],
+                            "reservation_id": res_id,
+                            "owner_token": owner,
+                            "expires_at": existing["expires_at"].isoformat(),
+                            "reason": "idempotent_existing_reservation",
+                        }
+                    if not (
+                        res_id.startswith("legacy_url:")
+                        and existing["state"] in ("RELEASED", "EXPIRED")
+                    ):
+                        return {
+                            "admitted": False,
+                            "state": existing["state"],
+                            "reservation_id": res_id,
+                            "reason": f"reservation_not_active_{existing['state'].lower()}",
+                        }
+
+                # 2. Check if article already PUBLISHED
+                if article_id is not None:
+                    async with self.conn.execute(
+                        "SELECT 1 FROM articles WHERE id = ? AND status = 'PUBLISHED' LIMIT 1",
+                        (article_id,),
+                    ) as cur:
+                        if await cur.fetchone():
+                            return {"admitted": False, "state": "REJECTED", "reason": "article_already_published"}
+                if clean_url:
+                    async with self.conn.execute(
+                        "SELECT 1 FROM articles WHERE (canonical_url = ? OR canonical_url = ?) AND status = 'PUBLISHED' LIMIT 1",
+                        (clean_url, raw_url),
+                    ) as cur:
+                        if await cur.fetchone():
+                            return {"admitted": False, "state": "REJECTED", "reason": "article_already_published"}
+
+                # 3. Check duplicate active/publishing/ambiguous reservation by article identity
+                for item in ledger.values():
+                    if not item["counts_for_quota"]:
+                        continue
+                    same_url = bool(clean_url and (item["canonical_url"] == clean_url or item["canonical_url"] == raw_url))
+                    same_hash = bool(eff_hash and item["url_hash"] == eff_hash)
+                    same_aid = bool(article_id is not None and item["article_id"] == article_id)
+                    if same_url or same_hash or same_aid:
+                        if item["owner_token"] == owner and item["state"] in ("RESERVED", "RENEWED"):
+                            return {
+                                "admitted": True,
+                                "state": item["state"],
+                                "reservation_id": item["reservation_id"],
+                                "owner_token": owner,
+                                "expires_at": item["expires_at"].isoformat(),
+                                "reason": "idempotent_existing_article_reservation",
+                            }
+                        return {
+                            "admitted": False,
+                            "state": item["state"],
+                            "reservation_id": item["reservation_id"],
+                            "reason": "duplicate_active_reservation",
+                        }
+
+                # 4. Compute rolling 24h published counts and active reservations under BEGIN IMMEDIATE
+                g_pub, t_pub = await self._query_published_counts_last_24h_unlocked(now_dt)
+                active_other = sum(1 for r in ledger.values() if r["counts_for_quota"])
+                batch_used = (
+                    sum(1 for r in ledger.values() if r["counts_for_batch"] and r["batch_id"] == eff_batch)
+                    if eff_batch else 0
+                )
+
+                if eff_batch and batch_used >= eff_max_batch:
+                    return {
+                        "admitted": False,
+                        "state": "REJECTED",
+                        "published_global_24h": g_pub,
+                        "published_total_24h": t_pub,
+                        "active_reservations": active_other,
+                        "reason": "batch_global_cap_reached",
+                    }
+
+                if g_pub + active_other + 1 > eff_max_daily:
+                    return {
+                        "admitted": False,
+                        "state": "REJECTED",
+                        "published_global_24h": g_pub,
+                        "published_total_24h": t_pub,
+                        "active_reservations": active_other,
+                        "reason": "daily_global_cap_reached",
+                    }
+
+                if enforce_ratio and (10 * (g_pub + active_other + 1) > (t_pub + active_other + 1)):
+                    return {
+                        "admitted": False,
+                        "state": "REJECTED",
+                        "published_global_24h": g_pub,
+                        "published_total_24h": t_pub,
+                        "active_reservations": active_other,
+                        "reason": "rolling_90_10_ratio_not_satisfied",
+                    }
+
+                msg = self._build_reservation_payload(
+                    reservation_id=res_id,
+                    owner_token=owner,
+                    canonical_url=clean_url or raw_url,
+                    url_hash=eff_hash,
+                    article_id=article_id,
+                    batch_id=eff_batch,
+                    state="RESERVED",
+                    lease_seconds=eff_lease,
+                    expires_at=exp_dt,
+                    reason="admitted",
+                )
+                await self.conn.execute(
+                    """INSERT INTO system_logs (timestamp, level, component, message)
+                       VALUES (?, 'RESERVED', 'GLOBAL_RESERVATION', ?)""",
+                    (now_dt.isoformat(), msg),
+                )
+                logger.info(
+                    "[GLOBAL RESERVATION] Reserved slot %s for %s (g_24h=%d, active_other=%d)",
+                    res_id[:12], (clean_url or raw_url)[:80], g_pub, active_other,
+                )
+                return {
+                    "admitted": True,
+                    "state": "RESERVED",
+                    "reservation_id": res_id,
+                    "owner_token": owner,
+                    "expires_at": exp_dt.isoformat(),
+                    "published_global_24h": g_pub,
+                    "published_total_24h": t_pub,
+                    "active_reservations": active_other,
+                    "reason": "admitted",
+                }
+        except Exception as e:
+            logger.error("SQLite reserve_global_slot error for %s: %s", clean_url[:80], e)
+            return {"admitted": False, "state": "REJECTED", "reason": "sqlite_error_fail_closed"}
+
+    async def renew_global_reservation(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        lease_seconds: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Extend an active reservation lease under BEGIN IMMEDIATE with owner verification."""
+        res_id = str(reservation_id or "").strip()
+        owner = str(owner_token or "").strip()
+        eff_lease = max(30, min(900, int(getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180) if lease_seconds is None else lease_seconds)))
+        now_dt = datetime.now(timezone.utc)
+        exp_dt = now_dt + timedelta(seconds=eff_lease)
+
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+                cur = ledger.get(res_id)
+                if cur is None:
+                    return {"ok": False, "state": "NOT_FOUND", "reason": "reservation_not_found"}
+                if cur["owner_token"] != owner:
+                    return {"ok": False, "state": cur["state"], "reason": "owner_mismatch"}
+                if cur["state"] in ("RESERVED", "RENEWED") and cur["expires_at"] <= now_dt:
+                    exp_msg = self._build_reservation_payload(
+                        reservation_id=res_id, owner_token=owner, canonical_url=cur["canonical_url"],
+                        url_hash=cur["url_hash"], article_id=cur["article_id"], batch_id=cur["batch_id"],
+                        state="EXPIRED", lease_seconds=cur["lease_seconds"], expires_at=cur["expires_at"],
+                        reason="lease_expired_before_renewal",
+                    )
+                    await self.conn.execute(
+                        "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'EXPIRED', 'GLOBAL_RESERVATION', ?)",
+                        (now_dt.isoformat(), exp_msg),
+                    )
+                    return {"ok": False, "state": "EXPIRED", "reason": "reservation_expired"}
+                if cur["state"] not in ("RESERVED", "RENEWED", "PUBLISHING"):
+                    return {"ok": False, "state": cur["state"], "reason": f"invalid_state_{cur['state'].lower()}"}
+
+                next_state = "PUBLISHING" if cur["state"] == "PUBLISHING" else "RENEWED"
+                msg = self._build_reservation_payload(
+                    reservation_id=res_id,
+                    owner_token=owner,
+                    canonical_url=cur["canonical_url"],
+                    url_hash=cur["url_hash"],
+                    article_id=cur["article_id"],
+                    batch_id=cur["batch_id"],
+                    state=next_state,
+                    lease_seconds=eff_lease,
+                    expires_at=exp_dt,
+                    reason="lease_renewed",
+                )
+                await self.conn.execute(
+                    "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, ?, 'GLOBAL_RESERVATION', ?)",
+                    (now_dt.isoformat(), next_state, msg),
+                )
+                return {"ok": True, "state": next_state, "reservation_id": res_id, "expires_at": exp_dt.isoformat(), "reason": "renewed"}
+        except Exception as e:
+            logger.error("SQLite renew_global_reservation error: %s", e)
+            return {"ok": False, "state": "ERROR", "reason": "sqlite_error"}
+
+    async def validate_global_reservation(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        check_ratio: bool = True,
+        max_daily_global: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Validate ownership, active lease, and live rolling 24h 90/10 ratio."""
+        res_id = str(reservation_id or "").strip()
+        owner = str(owner_token or "").strip()
+        eff_max_daily = max(0, min(4, int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4) if max_daily_global is None else max_daily_global)))
+        now_dt = datetime.now(timezone.utc)
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+                cur = ledger.get(res_id)
+                if cur is None:
+                    return {"valid": False, "state": "NOT_FOUND", "reason": "reservation_not_found"}
+                if cur["owner_token"] != owner:
+                    return {"valid": False, "state": cur["state"], "reason": "owner_mismatch"}
+                if not cur["counts_for_quota"]:
+                    return {"valid": False, "state": cur["state"], "reason": "reservation_inactive_or_expired"}
+
+                g_pub, t_pub = await self._query_published_counts_last_24h_unlocked(now_dt)
+                active_other = sum(1 for k, r in ledger.items() if k != res_id and r["counts_for_quota"])
+                if check_ratio:
+                    if (g_pub + active_other + 1) > eff_max_daily:
+                        return {
+                            "valid": False, "state": cur["state"],
+                            "published_global_24h": g_pub, "published_total_24h": t_pub,
+                            "active_reservations_other": active_other,
+                            "reason": "daily_global_cap_reached",
+                        }
+                    if 10 * (g_pub + active_other + 1) > (t_pub + active_other + 1):
+                        return {
+                            "valid": False, "state": cur["state"],
+                            "published_global_24h": g_pub, "published_total_24h": t_pub,
+                            "active_reservations_other": active_other,
+                            "reason": "rolling_90_10_ratio_not_satisfied",
+                        }
+                return {
+                    "valid": True,
+                    "state": cur["state"],
+                    "published_global_24h": g_pub,
+                    "published_total_24h": t_pub,
+                    "active_reservations_other": active_other,
+                    "reason": "valid",
+                }
+        except Exception as e:
+            logger.error("SQLite validate_global_reservation error: %s", e)
+            return {"valid": False, "state": "ERROR", "reason": "sqlite_error"}
+
+    async def mark_global_publishing(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        lease_seconds: Optional[int] = None,
+        max_daily_global: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Transition RESERVED/RENEWED -> PUBLISHING after revalidating live 24h counts and 90/10 ratio."""
+        res_id = str(reservation_id or "").strip()
+        owner = str(owner_token or "").strip()
+        eff_lease = max(30, min(900, int(getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180) if lease_seconds is None else lease_seconds)))
+        eff_max_daily = max(0, min(4, int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4) if max_daily_global is None else max_daily_global)))
+        now_dt = datetime.now(timezone.utc)
+        exp_dt = now_dt + timedelta(seconds=eff_lease)
+
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+                cur = ledger.get(res_id)
+                if cur is None:
+                    return {"ok": False, "admitted": False, "state": "NOT_FOUND", "reason": "reservation_not_found"}
+                if cur["owner_token"] != owner:
+                    return {"ok": False, "admitted": False, "state": cur["state"], "reason": "owner_mismatch"}
+                if cur["state"] == "PUBLISHING":
+                    return {"ok": True, "admitted": True, "state": "PUBLISHING", "reservation_id": res_id, "reason": "already_publishing"}
+                if cur["state"] in ("RESERVED", "RENEWED") and cur["expires_at"] <= now_dt:
+                    exp_msg = self._build_reservation_payload(
+                        reservation_id=res_id, owner_token=owner, canonical_url=cur["canonical_url"],
+                        url_hash=cur["url_hash"], article_id=cur["article_id"], batch_id=cur["batch_id"],
+                        state="EXPIRED", lease_seconds=cur["lease_seconds"], expires_at=cur["expires_at"],
+                        reason="lease_expired_before_publish",
+                    )
+                    await self.conn.execute(
+                        "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'EXPIRED', 'GLOBAL_RESERVATION', ?)",
+                        (now_dt.isoformat(), exp_msg),
+                    )
+                    return {"ok": False, "admitted": False, "state": "EXPIRED", "reason": "reservation_expired"}
+                if cur["state"] not in ("RESERVED", "RENEWED"):
+                    return {"ok": False, "admitted": False, "state": cur["state"], "reason": f"invalid_state_{cur['state'].lower()}"}
+
+                # Ensure article is not already published
+                if cur["article_id"] is not None:
+                    async with self.conn.execute(
+                        "SELECT 1 FROM articles WHERE id = ? AND status = 'PUBLISHED' LIMIT 1",
+                        (cur["article_id"],),
+                    ) as qcur:
+                        if await qcur.fetchone():
+                            return {"ok": False, "admitted": False, "state": cur["state"], "reason": "article_already_published"}
+                elif cur["canonical_url"]:
+                    async with self.conn.execute(
+                        "SELECT 1 FROM articles WHERE canonical_url = ? AND status = 'PUBLISHED' LIMIT 1",
+                        (cur["canonical_url"],),
+                    ) as qcur:
+                        if await qcur.fetchone():
+                            return {"ok": False, "admitted": False, "state": cur["state"], "reason": "article_already_published"}
+
+                g_pub, t_pub = await self._query_published_counts_last_24h_unlocked(now_dt)
+                active_other = sum(1 for k, r in ledger.items() if k != res_id and r["counts_for_quota"])
+                if (g_pub + active_other + 1) > eff_max_daily or 10 * (g_pub + active_other + 1) > (t_pub + active_other + 1):
+                    rel_msg = self._build_reservation_payload(
+                        reservation_id=res_id, owner_token=owner, canonical_url=cur["canonical_url"],
+                        url_hash=cur["url_hash"], article_id=cur["article_id"], batch_id=cur["batch_id"],
+                        state="RELEASED", lease_seconds=cur["lease_seconds"], expires_at=now_dt,
+                        reason="ratio_or_cap_failed_at_publish",
+                    )
+                    await self.conn.execute(
+                        "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'RELEASED', 'GLOBAL_RESERVATION', ?)",
+                        (now_dt.isoformat(), rel_msg),
+                    )
+                    return {
+                        "ok": False, "admitted": False, "state": "RELEASED",
+                        "published_global_24h": g_pub, "published_total_24h": t_pub,
+                        "active_reservations_other": active_other,
+                        "reason": "ratio_or_cap_failed_at_publish",
+                    }
+
+                pub_msg = self._build_reservation_payload(
+                    reservation_id=res_id, owner_token=owner, canonical_url=cur["canonical_url"],
+                    url_hash=cur["url_hash"], article_id=cur["article_id"], batch_id=cur["batch_id"],
+                    state="PUBLISHING", lease_seconds=eff_lease, expires_at=exp_dt,
+                    reason="publishing_started",
+                )
+                await self.conn.execute(
+                    "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'PUBLISHING', 'GLOBAL_RESERVATION', ?)",
+                    (now_dt.isoformat(), pub_msg),
+                )
+                return {
+                    "ok": True, "admitted": True, "state": "PUBLISHING",
+                    "reservation_id": res_id, "expires_at": exp_dt.isoformat(),
+                    "published_global_24h": g_pub, "published_total_24h": t_pub, "reason": "publishing",
+                }
+        except Exception as e:
+            logger.error("SQLite mark_global_publishing error: %s", e)
+            return {"ok": False, "admitted": False, "state": "ERROR", "reason": "sqlite_error"}
+
+    async def finalize_global_publication(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        article_id: Optional[int],
+        telegram_message_id: int,
+        thread_root_message_id: Optional[int] = None,
+        is_breaking: bool = False,
+        published_at: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Atomically update `articles` to PUBLISHED AND commit reservation inside one BEGIN IMMEDIATE tx."""
+        res_id = str(reservation_id or "").strip()
+        owner = str(owner_token or "").strip()
+        now_dt = datetime.now(timezone.utc)
+        pub_ts = published_at or now_dt.isoformat()
+
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+                cur = ledger.get(res_id)
+                if cur is None:
+                    return {"ok": False, "state": "NOT_FOUND", "reason": "reservation_not_found"}
+                if (not cur["is_legacy"] and (not owner or cur["owner_token"] != owner)) or (
+                    cur["is_legacy"] and cur["owner_token"] not in (None, owner)
+                ):
+                    return {"ok": False, "state": cur["state"], "reason": "owner_mismatch"}
+                if cur["state"] == "COMMITTED":
+                    return {
+                        "ok": True, "state": "COMMITTED", "reservation_id": res_id,
+                        "article_id": article_id or cur["article_id"],
+                        "telegram_message_id": telegram_message_id, "reason": "already_committed",
+                    }
+                if cur["state"] not in ("PUBLISHING", "AMBIGUOUS", "RESERVED", "RENEWED"):
+                    return {"ok": False, "state": cur["state"], "reason": f"invalid_state_{cur['state'].lower()}"}
+
+                target_art_id = article_id if article_id is not None else cur["article_id"]
+                if target_art_id is None and cur["canonical_url"]:
+                    async with self.conn.execute(
+                        "SELECT id FROM articles WHERE canonical_url = ? LIMIT 1",
+                        (cur["canonical_url"],),
+                    ) as qcur:
+                        row = await qcur.fetchone()
+                        if row is not None:
+                            target_art_id = int(row["id"])
+
+                if target_art_id is not None:
+                    await self.conn.execute(
+                        """UPDATE articles
+                           SET status = ?, published_at = ?, telegram_message_id = ?,
+                               thread_root_message_id = ?, is_breaking = ?, error_message = ''
+                           WHERE id = ?""",
+                        (
+                            ArticleStatus.PUBLISHED,
+                            pub_ts,
+                            int(telegram_message_id),
+                            int(thread_root_message_id) if thread_root_message_id is not None else None,
+                            int(bool(is_breaking)),
+                            int(target_art_id),
+                        ),
+                    )
+
+                commit_msg = self._build_reservation_payload(
+                    reservation_id=res_id, owner_token=cur["owner_token"], canonical_url=cur["canonical_url"],
+                    url_hash=cur["url_hash"], article_id=target_art_id, batch_id=cur["batch_id"],
+                    state="COMMITTED", lease_seconds=cur["lease_seconds"], expires_at=now_dt,
+                    telegram_message_id=int(telegram_message_id), reason="published_and_committed",
+                )
+                await self.conn.execute(
+                    "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'COMMITTED', 'GLOBAL_RESERVATION', ?)",
+                    (now_dt.isoformat(), commit_msg),
+                )
+                return {
+                    "ok": True, "state": "COMMITTED", "reservation_id": res_id,
+                    "article_id": target_art_id, "telegram_message_id": int(telegram_message_id),
+                    "published_at": pub_ts, "reason": "committed",
+                }
+        except Exception as e:
+            logger.error("SQLite finalize_global_publication error: %s", e)
+            return {"ok": False, "state": "ERROR", "reason": "sqlite_error"}
+
+    async def release_global_reservation(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        reason: str = "definitive_failure",
+    ) -> dict[str, Any]:
+        """Release an unused or definitively-rejected reservation under BEGIN IMMEDIATE."""
+        res_id = str(reservation_id or "").strip()
+        owner = str(owner_token or "").strip()
+        now_dt = datetime.now(timezone.utc)
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+                cur = ledger.get(res_id)
+                if cur is None:
+                    return {"ok": False, "state": "NOT_FOUND", "reason": "reservation_not_found"}
+                if cur["owner_token"] != owner:
+                    return {"ok": False, "state": cur["state"], "reason": "owner_mismatch"}
+                if cur["state"] in ("RELEASED", "EXPIRED"):
+                    return {"ok": True, "state": cur["state"], "reason": "already_released"}
+                if cur["state"] in ("COMMITTED", "AMBIGUOUS"):
+                    return {"ok": False, "state": cur["state"], "reason": f"cannot_release_{cur['state'].lower()}"}
+
+                rel_msg = self._build_reservation_payload(
+                    reservation_id=res_id, owner_token=owner, canonical_url=cur["canonical_url"],
+                    url_hash=cur["url_hash"], article_id=cur["article_id"], batch_id=cur["batch_id"],
+                    state="RELEASED", lease_seconds=cur["lease_seconds"], expires_at=now_dt,
+                    reason=reason,
+                )
+                await self.conn.execute(
+                    "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'RELEASED', 'GLOBAL_RESERVATION', ?)",
+                    (now_dt.isoformat(), rel_msg),
+                )
+                return {"ok": True, "state": "RELEASED", "reservation_id": res_id, "reason": "released"}
+        except Exception as e:
+            logger.error("SQLite release_global_reservation error: %s", e)
+            return {"ok": False, "state": "ERROR", "reason": "sqlite_error"}
+
+    async def mark_global_ambiguous(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        reason: str = "uncertain_telegram_outcome",
+        article_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Mark reservation AMBIGUOUS so quota stays fail-closed until reconciled."""
+        res_id = str(reservation_id or "").strip()
+        owner = str(owner_token or "").strip()
+        now_dt = datetime.now(timezone.utc)
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+                cur = ledger.get(res_id)
+                if cur is None:
+                    return {"ok": False, "state": "NOT_FOUND", "reason": "reservation_not_found"}
+                if cur["owner_token"] != owner:
+                    return {"ok": False, "state": cur["state"], "reason": "owner_mismatch"}
+                if cur["state"] == "AMBIGUOUS":
+                    return {"ok": True, "state": "AMBIGUOUS", "reason": "already_ambiguous"}
+                if cur["state"] == "COMMITTED":
+                    return {"ok": False, "state": "COMMITTED", "reason": "already_committed"}
+
+                target_art_id = article_id if article_id is not None else cur["article_id"]
+                if target_art_id is not None:
+                    await self.conn.execute(
+                        "UPDATE articles SET error_message = ? WHERE id = ? AND status != 'PUBLISHED'",
+                        (f"AMBIGUOUS [Global Delivery Uncertain]: {reason}"[:500], int(target_art_id)),
+                    )
+
+                amb_msg = self._build_reservation_payload(
+                    reservation_id=res_id, owner_token=owner, canonical_url=cur["canonical_url"],
+                    url_hash=cur["url_hash"], article_id=target_art_id, batch_id=cur["batch_id"],
+                    state="AMBIGUOUS", lease_seconds=cur["lease_seconds"], expires_at=now_dt + timedelta(hours=24),
+                    reason=reason,
+                )
+                await self.conn.execute(
+                    "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'AMBIGUOUS', 'GLOBAL_RESERVATION', ?)",
+                    (now_dt.isoformat(), amb_msg),
+                )
+                return {"ok": True, "state": "AMBIGUOUS", "reservation_id": res_id, "reason": "marked_ambiguous"}
+        except Exception as e:
+            logger.error("SQLite mark_global_ambiguous error: %s", e)
+            return {"ok": False, "state": "ERROR", "reason": "sqlite_error"}
+
+    async def reconcile_ambiguous_publication(
+        self,
+        reservation_id: Optional[str] = None,
+        owner_token: Optional[str] = None,
+        outcome: str = "auto",
+        telegram_message_id: Optional[int] = None,
+        reason: str = "reconciled",
+    ) -> dict[str, Any]:
+        """Sweep stale PUBLISHING leases into AMBIGUOUS or finalize/release explicit reconciliation."""
+        res_id = str(reservation_id or "").strip() or None
+        owner = str(owner_token or "").strip() or None
+        eff_outcome = str(outcome or "auto").strip().lower()
+        now_dt = datetime.now(timezone.utc)
+        window_24h = now_dt - timedelta(hours=24)
+
+        try:
+            async with self._immediate_tx():
+                ledger = await self._reconstruct_global_reservations_unlocked(now_dt)
+
+                if eff_outcome == "auto":
+                    reconciled: list[dict[str, str]] = []
+                    ambig_count = 0
+                    for cur in ledger.values():
+                        if res_id is not None and cur["reservation_id"] != res_id:
+                            continue
+                        if cur["state"] not in ("PUBLISHING", "AMBIGUOUS") or cur["state_at"] < window_24h:
+                            continue
+
+                        art_row = None
+                        if cur["article_id"] is not None:
+                            async with self.conn.execute(
+                                "SELECT id, status FROM articles WHERE id = ? LIMIT 1",
+                                (cur["article_id"],),
+                            ) as acur:
+                                art_row = await acur.fetchone()
+                        elif cur["canonical_url"]:
+                            async with self.conn.execute(
+                                "SELECT id, status FROM articles WHERE canonical_url = ? LIMIT 1",
+                                (cur["canonical_url"],),
+                            ) as acur:
+                                art_row = await acur.fetchone()
+
+                        if art_row is not None and art_row["status"] == ArticleStatus.PUBLISHED:
+                            cmsg = self._build_reservation_payload(
+                                reservation_id=cur["reservation_id"], owner_token=cur["owner_token"],
+                                canonical_url=cur["canonical_url"], url_hash=cur["url_hash"],
+                                article_id=int(art_row["id"]), batch_id=cur["batch_id"],
+                                state="COMMITTED", lease_seconds=cur["lease_seconds"], expires_at=now_dt,
+                                telegram_message_id=cur["telegram_message_id"],
+                                reason="auto_reconciled_already_published",
+                            )
+                            await self.conn.execute(
+                                "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'COMMITTED', 'GLOBAL_RESERVATION', ?)",
+                                (now_dt.isoformat(), cmsg),
+                            )
+                            reconciled.append({"reservation_id": cur["reservation_id"], "action": "COMMITTED"})
+                        elif cur["state"] == "PUBLISHING" and cur["expires_at"] <= now_dt:
+                            amsg = self._build_reservation_payload(
+                                reservation_id=cur["reservation_id"], owner_token=cur["owner_token"],
+                                canonical_url=cur["canonical_url"], url_hash=cur["url_hash"],
+                                article_id=cur["article_id"], batch_id=cur["batch_id"],
+                                state="AMBIGUOUS", lease_seconds=cur["lease_seconds"], expires_at=now_dt + timedelta(hours=24),
+                                reason="stale_publishing_lease_fail_closed",
+                            )
+                            await self.conn.execute(
+                                "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'AMBIGUOUS', 'GLOBAL_RESERVATION', ?)",
+                                (now_dt.isoformat(), amsg),
+                            )
+                            reconciled.append({"reservation_id": cur["reservation_id"], "action": "AMBIGUOUS"})
+                            ambig_count += 1
+                        elif cur["state"] == "AMBIGUOUS":
+                            ambig_count += 1
+
+                    return {"ok": True, "reconciled": reconciled, "ambiguous_count": ambig_count, "reason": "auto_reconciled"}
+
+                if res_id is None:
+                    return {"ok": False, "reason": "reservation_id_required"}
+                cur = ledger.get(res_id)
+                if cur is None:
+                    return {"ok": False, "reason": "reservation_not_found"}
+                if cur["owner_token"] is not None and owner != cur["owner_token"]:
+                    return {"ok": False, "state": cur["state"], "reason": "owner_mismatch"}
+
+                if eff_outcome == "confirmed_published":
+                    if telegram_message_id is None:
+                        return {"ok": False, "reason": "telegram_message_id_required"}
+                    target_art_id = cur["article_id"]
+                    if target_art_id is not None:
+                        await self.conn.execute(
+                            "UPDATE articles SET status = ?, published_at = ?, telegram_message_id = ?, error_message = '' WHERE id = ?",
+                            (ArticleStatus.PUBLISHED, now_dt.isoformat(), int(telegram_message_id), int(target_art_id)),
+                        )
+                    cmsg = self._build_reservation_payload(
+                        reservation_id=res_id, owner_token=cur["owner_token"], canonical_url=cur["canonical_url"],
+                        url_hash=cur["url_hash"], article_id=target_art_id, batch_id=cur["batch_id"],
+                        state="COMMITTED", lease_seconds=cur["lease_seconds"], expires_at=now_dt,
+                        telegram_message_id=int(telegram_message_id), reason=reason,
+                    )
+                    await self.conn.execute(
+                        "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'COMMITTED', 'GLOBAL_RESERVATION', ?)",
+                        (now_dt.isoformat(), cmsg),
+                    )
+                    return {"ok": True, "state": "COMMITTED", "reservation_id": res_id, "reason": "confirmed_published"}
+                elif eff_outcome == "confirmed_not_published":
+                    rmsg = self._build_reservation_payload(
+                        reservation_id=res_id, owner_token=cur["owner_token"], canonical_url=cur["canonical_url"],
+                        url_hash=cur["url_hash"], article_id=cur["article_id"], batch_id=cur["batch_id"],
+                        state="RELEASED", lease_seconds=cur["lease_seconds"], expires_at=now_dt,
+                        reason=reason,
+                    )
+                    await self.conn.execute(
+                        "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'RELEASED', 'GLOBAL_RESERVATION', ?)",
+                        (now_dt.isoformat(), rmsg),
+                    )
+                    return {"ok": True, "state": "RELEASED", "reservation_id": res_id, "reason": "confirmed_not_published"}
+                return {"ok": False, "reason": "invalid_outcome"}
+        except Exception as e:
+            logger.error("SQLite reconcile_ambiguous_publication error: %s", e)
+            return {"ok": False, "reconciled": [], "ambiguous_count": 0, "reason": "sqlite_error"}
+
+    async def get_active_global_reservations(self, ttl_minutes: int = 15) -> list[str]:
+        """Return canonical URLs currently holding active Global admission reservations."""
+        try:
+            now_dt = datetime.now(timezone.utc)
+            ledger = await self._reconstruct_global_reservations_unlocked(now_dt, default_ttl_minutes=ttl_minutes)
+            return [r["canonical_url"] for r in ledger.values() if r["counts_for_quota"] and r["canonical_url"]]
         except Exception as e:
             logger.error("Failed to query active global reservations: %s", e)
             return []
@@ -864,89 +1718,82 @@ class Database:
         total_published_24h: Optional[int] = None,
     ) -> bool:
         """
-        Atomically reserve a Global post slot in existing `system_logs` if quota allows.
-        Returns True if reservation succeeded, False if daily cap or 90/10 ratio prevents admission.
+        Atomically reserve a Global post slot under SQLite `BEGIN IMMEDIATE`.
+        If `total_published_24h` is explicitly provided, also checks the 90/10 ratio.
         """
         clean_url = str(canonical_url or "").strip()
         if not clean_url:
             return False
 
-        max_daily_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
-        now_dt = datetime.now(timezone.utc)
-
-        async with self._lock:
+        # When total_published_24h is explicitly supplied, validate ratio under the same BEGIN IMMEDIATE lock.
+        if total_published_24h is not None:
+            now_dt = datetime.now(timezone.utc)
+            max_daily_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
             try:
-                g_pub, t_pub = await self.get_published_counts_last_24h()
-                active = await self.get_active_global_reservations(ttl_minutes=ttl_minutes)
-                if clean_url in active:
-                    return True  # Already reserved
-
-                # Check if total daily cap would be exceeded
-                if len(active) + g_pub >= max_daily_g:
-                    logger.info(
-                        "[GLOBAL RESERVATION] Rejected for %s: daily cap reached (pub=%d, res=%d, max=%d)",
-                        clean_url, g_pub, len(active), max_daily_g,
-                    )
-                    return False
-
-                # Check 90/10 ratio if total published is provided
-                if total_published_24h is not None:
-                    proj_g = g_pub + len(active) + 1
-                    proj_t = int(total_published_24h) + len(active) + 1
-                    if 10 * proj_g > proj_t:
-                        logger.info(
-                            "[GLOBAL RESERVATION] Rejected for %s: 90/10 ratio prevents admission (proj_g=%d, proj_t=%d)",
-                            clean_url, proj_g, proj_t,
-                        )
+                async with self._immediate_tx():
+                    g_pub, _ = await self._query_published_counts_last_24h_unlocked(now_dt)
+                    ledger = await self._reconstruct_global_reservations_unlocked(now_dt, default_ttl_minutes=ttl_minutes)
+                    active_urls = [r["canonical_url"] for r in ledger.values() if r["counts_for_quota"]]
+                    if clean_url in active_urls:
+                        return True
+                    if len(active_urls) + g_pub >= max_daily_g:
                         return False
-
-                await self.conn.execute(
-                    """INSERT INTO system_logs (timestamp, level, component, message)
-                       VALUES (?, 'RESERVED', 'GLOBAL_RESERVATION', ?)""",
-                    (now_dt.isoformat(), clean_url[:2000]),
-                )
-                await self.conn.commit()
-                logger.info("[GLOBAL RESERVATION] Reserved slot for %s (active=%d)", clean_url, len(active) + 1)
-                return True
+                    proj_g = g_pub + len(active_urls) + 1
+                    proj_t = int(total_published_24h) + len(active_urls) + 1
+                    if 10 * proj_g > proj_t:
+                        return False
+                    msg = self._build_reservation_payload(
+                        reservation_id=f"legacy_url:{clean_url}",
+                        owner_token=f"legacy_caller:{clean_url}",
+                        canonical_url=clean_url,
+                        url_hash=_compute_url_hash(clean_url),
+                        article_id=None,
+                        batch_id="",
+                        state="RESERVED",
+                        lease_seconds=max(60, int(ttl_minutes) * 60),
+                        expires_at=now_dt + timedelta(minutes=max(1, int(ttl_minutes))),
+                        reason="admitted_legacy",
+                    )
+                    await self.conn.execute(
+                        "INSERT INTO system_logs (timestamp, level, component, message) VALUES (?, 'RESERVED', 'GLOBAL_RESERVATION', ?)",
+                        (now_dt.isoformat(), msg),
+                    )
+                    return True
             except Exception as e:
-                logger.error("Failed to reserve global admission for %s: %s", clean_url, e)
+                logger.error("Failed legacy ratio reservation for %s: %s", clean_url, e)
                 return False
 
+        res = await self.reserve_global_slot(
+            canonical_url=clean_url,
+            owner_token=f"legacy_caller:{clean_url}",
+            reservation_id=f"legacy_url:{clean_url}",
+            lease_seconds=max(60, int(ttl_minutes) * 60),
+            enforce_ratio=False,
+        )
+        return bool(res.get("admitted"))
+
     async def release_global_admission(self, canonical_url: str) -> None:
-        """Release an active global admission reservation when post is dropped or fails."""
+        """Release an active global admission reservation under BEGIN IMMEDIATE."""
         clean_url = str(canonical_url or "").strip()
         if not clean_url:
             return
-        try:
-            now_dt = datetime.now(timezone.utc)
-            async with self._lock:
-                await self.conn.execute(
-                    """INSERT INTO system_logs (timestamp, level, component, message)
-                       VALUES (?, 'RELEASED', 'GLOBAL_RESERVATION', ?)""",
-                    (now_dt.isoformat(), clean_url[:2000]),
-                )
-                await self.conn.commit()
-            logger.info("[GLOBAL RESERVATION] Released slot for %s", clean_url)
-        except Exception as e:
-            logger.error("Failed to release global reservation for %s: %s", clean_url, e)
+        await self.release_global_reservation(
+            reservation_id=f"legacy_url:{clean_url}",
+            owner_token=f"legacy_caller:{clean_url}",
+            reason="legacy_release",
+        )
 
     async def commit_global_admission(self, canonical_url: str) -> None:
-        """Mark a global reservation as committed upon successful publication."""
+        """Mark a global reservation as committed under BEGIN IMMEDIATE."""
         clean_url = str(canonical_url or "").strip()
         if not clean_url:
             return
-        try:
-            now_dt = datetime.now(timezone.utc)
-            async with self._lock:
-                await self.conn.execute(
-                    """INSERT INTO system_logs (timestamp, level, component, message)
-                       VALUES (?, 'COMMITTED', 'GLOBAL_RESERVATION', ?)""",
-                    (now_dt.isoformat(), clean_url[:2000]),
-                )
-                await self.conn.commit()
-            logger.info("[GLOBAL RESERVATION] Committed slot for %s", clean_url)
-        except Exception as e:
-            logger.error("Failed to commit global reservation for %s: %s", clean_url, e)
+        await self.finalize_global_publication(
+            reservation_id=f"legacy_url:{clean_url}",
+            owner_token=f"legacy_caller:{clean_url}",
+            article_id=None,
+            telegram_message_id=0,
+        )
 
     async def get_sources_status(self) -> list[dict]:
         """Return enabled sources and their failure counters for watchdog health monitoring."""

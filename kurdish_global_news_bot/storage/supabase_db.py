@@ -650,7 +650,7 @@ class SupabaseDatabase:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
             offset = 0
             batch_size = 1000
-            seen_canonical: set[str] = set()
+            seen_keys: set[str] = set()
             global_count = 0
             total_count = 0
 
@@ -676,11 +676,14 @@ class SupabaseDatabase:
                         continue
                     dt = parse_utc_timestamp(pub_ts)
                     if dt is not None and dt >= cutoff:
-                        canon = str(row.get("canonical_url") or "").strip()
-                        if canon:
-                            if canon in seen_canonical:
+                        raw_canon = str(row.get("canonical_url") or "").strip()
+                        canon = Article.canonicalize_url(raw_canon) if raw_canon else ""
+                        row_id = row.get("id")
+                        dedup_key = canon or (f"id:{row_id}" if row_id is not None else "")
+                        if dedup_key:
+                            if dedup_key in seen_keys:
                                 continue
-                            seen_canonical.add(canon)
+                            seen_keys.add(dedup_key)
                         total_count += 1
                         reg = str(row.get("region") or "").strip().lower()
                         if reg == "global":
@@ -1080,51 +1083,339 @@ class SupabaseDatabase:
         return dt
 
     # ───────────────────────────────────────────────
-    # Global Admission Reservations (Concurrency & 90/10 Ratio)
+    # Authoritative PostgreSQL RPC Global Admission & Lifecycle
     # ───────────────────────────────────────────────
 
-    async def get_active_global_reservations(self, ttl_minutes: int = 15) -> list[str]:
-        """
-        Return the list of canonical URLs holding active global reservations from Supabase system_logs.
-        A reservation is active if its latest record within ttl_minutes is 'RESERVED'.
-        """
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(ttl_minutes)))
-            resp = await self._request(
-                "GET",
-                "system_logs",
-                params={
-                    "component": "eq.GLOBAL_RESERVATION",
-                    "select": "id,timestamp,level,message",
-                    "order": "timestamp.asc,id.asc",
-                    "timestamp": f"gte.{cutoff.isoformat()}",
-                },
-            )
-            rows = resp.json() if resp.content else []
-            active: dict[str, datetime] = {}
-            for row in rows:
-                dt = parse_utc_timestamp(row.get("timestamp"))
-                url = str(row.get("message") or "").strip()
-                lvl = str(row.get("level") or "").strip().upper()
-                if not url or dt is None:
-                    continue
-                if lvl == "RESERVED":
-                    if dt >= cutoff:
-                        active[url] = dt
-                    else:
-                        active.pop(url, None)
-                elif lvl in ("RELEASED", "COMMITTED"):
-                    active.pop(url, None)
+    async def _rpc(self, fn_name: str, params: Optional[dict[str, Any]] = None) -> Any:
+        """Invoke a Supabase PostgreSQL stored procedure via PostgREST `/rpc/<fn_name>`."""
+        resp = await self._request(
+            "POST",
+            f"rpc/{fn_name}",
+            json_body=params or {},
+        )
+        return resp.json() if resp.content else {}
 
-            return [url for url, dt in active.items() if dt >= cutoff]
+    async def get_global_quota_status(self, max_daily_global: Optional[int] = None) -> dict[str, Any]:
+        """
+        Query PostgreSQL RPC `get_global_quota_status` under advisory lock.
+        Fails closed (published_global_24h=MAX_GLOBAL_POSTS_PER_DAY, active_reservations=MAX_GLOBAL_POSTS_PER_DAY)
+        if RPC is not deployed or unreachable, ensuring Global admission is denied while regional news proceeds.
+        """
+        max_daily = int(
+            getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)
+            if max_daily_global is None
+            else max_daily_global
+        )
+        try:
+            data = await self._rpc("get_global_quota_status", {"p_max_daily_global": max_daily})
+            if isinstance(data, dict) and data.get("ok"):
+                return data
+            logger.error("Supabase RPC get_global_quota_status returned invalid payload; failing closed.")
         except Exception as exc:
-            logger.error("Failed to query active global reservations in Supabase: %s", exc)
-            return []
+            logger.error(
+                "Supabase RPC get_global_quota_status failed (%s); failing closed for Global quota. "
+                "Ensure storage/sql/global_admission_rpc.sql is deployed.",
+                str(exc)[:180],
+            )
+        return {
+            "ok": False,
+            "published_global_24h": max_daily,
+            "published_total_24h": 0,
+            "active_reservations": max_daily,
+            "ambiguous_reservations": 0,
+            "active_urls": [],
+            "max_daily_global": max_daily,
+            "reason": "rpc_unavailable_fail_closed",
+        }
+
+    async def get_active_global_reservations(self, ttl_minutes: int = 15) -> list[str]:
+        """Return active reserved Global canonical URLs from authoritative PostgreSQL RPC."""
+        status = await self.get_global_quota_status()
+        urls = status.get("active_urls")
+        return [str(u) for u in urls if u] if isinstance(urls, list) else []
 
     async def get_active_global_reservations_count(self, ttl_minutes: int = 15) -> int:
-        """Return the count of active global admission reservations from Supabase."""
-        active = await self.get_active_global_reservations(ttl_minutes=ttl_minutes)
-        return len(active)
+        """
+        Return count of active Global reservations via authoritative PostgreSQL RPC.
+        Fails closed to MAX_GLOBAL_POSTS_PER_DAY (4) when RPC is unavailable.
+        """
+        status = await self.get_global_quota_status()
+        max_daily = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
+        if not status.get("ok"):
+            return max_daily
+        return int(status.get("active_reservations", max_daily))
+
+    async def reserve_global_slot(
+        self,
+        canonical_url: str,
+        owner_token: str,
+        reservation_id: Optional[str] = None,
+        article_id: Optional[int] = None,
+        batch_id: str = "",
+        lease_seconds: Optional[int] = None,
+        url_hash: str = "",
+        max_daily_global: Optional[int] = None,
+        max_batch_global: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """
+        Atomically check quota, rolling 24h 90/10 ratio, duplicates, and reserve a Global slot
+        via PostgreSQL RPC `reserve_global_slot` (`pg_advisory_xact_lock`).
+        Never falls back to non-atomic REST GET+POST; fails closed on error/missing RPC.
+        """
+        raw_url = str(canonical_url or "").strip()
+        clean_url = Article.canonicalize_url(raw_url) if raw_url else ""
+        if not clean_url and article_id is None:
+            return {"admitted": False, "state": "REJECTED", "reason": "missing_article_identity"}
+        if not str(owner_token or "").strip():
+            return {"admitted": False, "state": "REJECTED", "reason": "missing_owner_token"}
+
+        eff_hash = url_hash or (self.compute_url_hash(clean_url) if clean_url else "")
+        eff_lease = int(
+            getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180)
+            if lease_seconds is None
+            else lease_seconds
+        )
+        eff_max_daily = int(
+            getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)
+            if max_daily_global is None
+            else max_daily_global
+        )
+        eff_max_batch = int(
+            getattr(config, "MAX_GLOBAL_POSTS_PER_BATCH", 1)
+            if max_batch_global is None
+            else max_batch_global
+        )
+
+        try:
+            res = await self._rpc(
+                "reserve_global_slot",
+                {
+                    "p_canonical_url": clean_url,
+                    "p_owner_token": str(owner_token).strip(),
+                    "p_reservation_id": reservation_id,
+                    "p_article_id": article_id,
+                    "p_batch_id": str(batch_id or ""),
+                    "p_lease_seconds": eff_lease,
+                    "p_url_hash": eff_hash,
+                    "p_max_daily_global": eff_max_daily,
+                    "p_max_batch_global": eff_max_batch,
+                },
+            )
+            if isinstance(res, dict) and "admitted" in res:
+                return res
+            logger.error("Supabase RPC reserve_global_slot returned malformed payload; failing closed.")
+            return {"admitted": False, "state": "REJECTED", "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error(
+                "Supabase RPC reserve_global_slot failed (%s); denying Global admission (fail-closed).",
+                str(exc)[:180],
+            )
+            return {"admitted": False, "state": "REJECTED", "reason": "rpc_unavailable_or_error"}
+
+    async def renew_global_reservation(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        lease_seconds: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Extend an active reservation lease via PostgreSQL RPC `renew_global_reservation`."""
+        eff_lease = int(
+            getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180)
+            if lease_seconds is None
+            else lease_seconds
+        )
+        try:
+            res = await self._rpc(
+                "renew_global_reservation",
+                {
+                    "p_reservation_id": str(reservation_id or "").strip(),
+                    "p_owner_token": str(owner_token or "").strip(),
+                    "p_lease_seconds": eff_lease,
+                },
+            )
+            if isinstance(res, dict) and "ok" in res:
+                return res
+            return {"ok": False, "state": "UNKNOWN", "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error("Supabase RPC renew_global_reservation failed: %s", str(exc)[:180])
+            return {"ok": False, "state": "ERROR", "reason": "rpc_unavailable_or_error"}
+
+    async def validate_global_reservation(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        check_ratio: bool = True,
+        max_daily_global: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Validate ownership, lease, and live 90/10 ratio via PostgreSQL RPC."""
+        eff_max_daily = int(
+            getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)
+            if max_daily_global is None
+            else max_daily_global
+        )
+        try:
+            res = await self._rpc(
+                "validate_global_reservation",
+                {
+                    "p_reservation_id": str(reservation_id or "").strip(),
+                    "p_owner_token": str(owner_token or "").strip(),
+                    "p_check_ratio": bool(check_ratio),
+                    "p_max_daily_global": eff_max_daily,
+                },
+            )
+            if isinstance(res, dict) and "valid" in res:
+                return res
+            return {"valid": False, "state": "UNKNOWN", "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error("Supabase RPC validate_global_reservation failed: %s", str(exc)[:180])
+            return {"valid": False, "state": "ERROR", "reason": "rpc_unavailable_or_error"}
+
+    async def mark_global_publishing(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        lease_seconds: Optional[int] = None,
+        max_daily_global: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """
+        Transition RESERVED/RENEWED -> PUBLISHING after revalidating live 24h counts and 90/10 ratio
+        via PostgreSQL RPC `mark_global_publishing`. Fails closed on any error.
+        """
+        eff_lease = int(
+            getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180)
+            if lease_seconds is None
+            else lease_seconds
+        )
+        eff_max_daily = int(
+            getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4)
+            if max_daily_global is None
+            else max_daily_global
+        )
+        try:
+            res = await self._rpc(
+                "mark_global_publishing",
+                {
+                    "p_reservation_id": str(reservation_id or "").strip(),
+                    "p_owner_token": str(owner_token or "").strip(),
+                    "p_lease_seconds": eff_lease,
+                    "p_max_daily_global": eff_max_daily,
+                },
+            )
+            if isinstance(res, dict) and "ok" in res:
+                return res
+            return {"ok": False, "admitted": False, "state": "UNKNOWN", "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error("Supabase RPC mark_global_publishing failed: %s", str(exc)[:180])
+            return {"ok": False, "admitted": False, "state": "ERROR", "reason": "rpc_unavailable_or_error"}
+
+    async def finalize_global_publication(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        article_id: Optional[int],
+        telegram_message_id: int,
+        thread_root_message_id: Optional[int] = None,
+        is_breaking: bool = False,
+        published_at: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Atomically mark article PUBLISHED in `articles` and commit reservation in `system_logs`
+        inside one PostgreSQL transaction via RPC `finalize_global_publication`.
+        """
+        try:
+            res = await self._rpc(
+                "finalize_global_publication",
+                {
+                    "p_reservation_id": str(reservation_id or "").strip(),
+                    "p_owner_token": str(owner_token or "").strip(),
+                    "p_article_id": int(article_id) if article_id is not None else None,
+                    "p_telegram_message_id": int(telegram_message_id),
+                    "p_thread_root_message_id": int(thread_root_message_id) if thread_root_message_id is not None else None,
+                    "p_is_breaking": bool(is_breaking),
+                    "p_published_at": published_at or datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            if isinstance(res, dict) and "ok" in res:
+                return res
+            return {"ok": False, "state": "UNKNOWN", "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error("Supabase RPC finalize_global_publication failed: %s", str(exc)[:180])
+            return {"ok": False, "state": "ERROR", "reason": "rpc_unavailable_or_error"}
+
+    async def release_global_reservation(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        reason: str = "definitive_failure",
+    ) -> dict[str, Any]:
+        """Release an unused/definitively-rejected reservation via PostgreSQL RPC."""
+        try:
+            res = await self._rpc(
+                "release_global_reservation",
+                {
+                    "p_reservation_id": str(reservation_id or "").strip(),
+                    "p_owner_token": str(owner_token or "").strip(),
+                    "p_reason": str(reason or "released")[:250],
+                },
+            )
+            if isinstance(res, dict) and "ok" in res:
+                return res
+            return {"ok": False, "state": "UNKNOWN", "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error("Supabase RPC release_global_reservation failed: %s", str(exc)[:180])
+            return {"ok": False, "state": "ERROR", "reason": "rpc_unavailable_or_error"}
+
+    async def mark_global_ambiguous(
+        self,
+        reservation_id: str,
+        owner_token: str,
+        reason: str = "uncertain_telegram_outcome",
+        article_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Transition reservation to AMBIGUOUS so quota stays protected until reconciled."""
+        try:
+            res = await self._rpc(
+                "mark_global_ambiguous",
+                {
+                    "p_reservation_id": str(reservation_id or "").strip(),
+                    "p_owner_token": str(owner_token or "").strip(),
+                    "p_reason": str(reason or "ambiguous")[:250],
+                    "p_article_id": int(article_id) if article_id is not None else None,
+                },
+            )
+            if isinstance(res, dict) and "ok" in res:
+                return res
+            return {"ok": False, "state": "UNKNOWN", "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error("Supabase RPC mark_global_ambiguous failed: %s", str(exc)[:180])
+            return {"ok": False, "state": "ERROR", "reason": "rpc_unavailable_or_error"}
+
+    async def reconcile_ambiguous_publication(
+        self,
+        reservation_id: Optional[str] = None,
+        owner_token: Optional[str] = None,
+        outcome: str = "auto",
+        telegram_message_id: Optional[int] = None,
+        reason: str = "reconciled",
+    ) -> dict[str, Any]:
+        """Sweep stale PUBLISHING leases into fail-closed AMBIGUOUS or reconcile explicit outcomes."""
+        try:
+            res = await self._rpc(
+                "reconcile_ambiguous_publication",
+                {
+                    "p_reservation_id": str(reservation_id).strip() if reservation_id else None,
+                    "p_owner_token": str(owner_token).strip() if owner_token else None,
+                    "p_outcome": str(outcome or "auto").strip().lower(),
+                    "p_telegram_message_id": int(telegram_message_id) if telegram_message_id is not None else None,
+                    "p_reason": str(reason or "reconciled")[:250],
+                },
+            )
+            if isinstance(res, dict) and "ok" in res:
+                return res
+            return {"ok": False, "reconciled": [], "ambiguous_count": 0, "reason": "malformed_rpc_response"}
+        except Exception as exc:
+            logger.error("Supabase RPC reconcile_ambiguous_publication failed: %s", str(exc)[:180])
+            return {"ok": False, "reconciled": [], "ambiguous_count": 0, "reason": "rpc_unavailable_or_error"}
 
     async def reserve_global_admission(
         self,
@@ -1133,81 +1424,33 @@ class SupabaseDatabase:
         total_published_24h: Optional[int] = None,
     ) -> bool:
         """
-        Reserve a Global post slot in Supabase system_logs if quota allows.
-        Returns True if reservation succeeded, False if daily cap or 90/10 ratio prevents admission.
+        Strict RPC-backed convenience wrapper (never uses REST read-then-write).
         """
-        clean_url = str(canonical_url or "").strip()
-        if not clean_url:
-            return False
-
-        max_daily_g = int(getattr(config, "MAX_GLOBAL_POSTS_PER_DAY", 4))
-        now_dt = datetime.now(timezone.utc)
-
-        try:
-            g_pub, t_pub = await self.get_published_counts_last_24h()
-            active = await self.get_active_global_reservations(ttl_minutes=ttl_minutes)
-            if clean_url in active:
-                return True
-
-            if len(active) + g_pub >= max_daily_g:
-                logger.info(
-                    "[GLOBAL RESERVATION] Rejected for %s in Supabase: daily cap reached (pub=%d, res=%d, max=%d)",
-                    clean_url, g_pub, len(active), max_daily_g,
-                )
-                return False
-
-            # Check 90/10 ratio if total published is provided
-            if total_published_24h is not None:
-                proj_g = g_pub + len(active) + 1
-                proj_t = int(total_published_24h) + len(active) + 1
-                if 10 * proj_g > proj_t:
-                    logger.info(
-                        "[GLOBAL RESERVATION] Rejected for %s in Supabase: 90/10 ratio prevents admission (proj_g=%d, proj_t=%d)",
-                        clean_url, proj_g, proj_t,
-                    )
-                    return False
-
-            await self.log_system_event(
-                level="RESERVED",
-                component="GLOBAL_RESERVATION",
-                message=clean_url,
-                timestamp=now_dt.isoformat(),
-            )
-            logger.info("[GLOBAL RESERVATION] Reserved slot for %s in Supabase (active=%d)", clean_url, len(active) + 1)
-            return True
-        except Exception as exc:
-            logger.error("Failed to reserve global admission in Supabase for %s: %s", clean_url, exc)
-            return False
+        owner = f"legacy_caller:{canonical_url}"
+        res = await self.reserve_global_slot(
+            canonical_url=canonical_url,
+            owner_token=owner,
+            reservation_id=f"legacy_url:{Article.canonicalize_url(canonical_url) or canonical_url}",
+            lease_seconds=max(30, min(900, int(ttl_minutes) * 60)),
+        )
+        return bool(res.get("admitted"))
 
     async def release_global_admission(self, canonical_url: str) -> None:
-        """Release an active global reservation in Supabase system_logs."""
-        clean_url = str(canonical_url or "").strip()
-        if not clean_url:
-            return
-        try:
-            await self.log_system_event(
-                level="RELEASED",
-                component="GLOBAL_RESERVATION",
-                message=clean_url,
-            )
-            logger.info("[GLOBAL RESERVATION] Released slot for %s in Supabase", clean_url)
-        except Exception as exc:
-            logger.error("Failed to release global reservation in Supabase for %s: %s", clean_url, exc)
+        """RPC-backed convenience release for legacy callers."""
+        res_id = f"legacy_url:{Article.canonicalize_url(canonical_url) or canonical_url}"
+        owner = f"legacy_caller:{canonical_url}"
+        await self.release_global_reservation(reservation_id=res_id, owner_token=owner, reason="legacy_release")
 
     async def commit_global_admission(self, canonical_url: str) -> None:
-        """Mark a global reservation as committed in Supabase system_logs."""
-        clean_url = str(canonical_url or "").strip()
-        if not clean_url:
-            return
-        try:
-            await self.log_system_event(
-                level="COMMITTED",
-                component="GLOBAL_RESERVATION",
-                message=clean_url,
-            )
-            logger.info("[GLOBAL RESERVATION] Committed slot for %s in Supabase", clean_url)
-        except Exception as exc:
-            logger.error("Failed to commit global reservation in Supabase for %s: %s", clean_url, exc)
+        """RPC-backed convenience commit for legacy callers."""
+        res_id = f"legacy_url:{Article.canonicalize_url(canonical_url) or canonical_url}"
+        owner = f"legacy_caller:{canonical_url}"
+        await self.finalize_global_publication(
+            reservation_id=res_id,
+            owner_token=owner,
+            article_id=None,
+            telegram_message_id=0,
+        )
 
     async def get_sources_status(self) -> list[dict]:
         """Fetch enabled sources and failure counts from Supabase `sources`."""

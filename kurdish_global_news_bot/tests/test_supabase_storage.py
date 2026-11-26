@@ -323,3 +323,296 @@ class TestSupabasePostgRESTOperations:
         engine._db.connect.assert_awaited_once()
         engine._db.is_digest_published_for_date.assert_awaited_once()
         engine._db.close.assert_awaited_once()
+
+
+class TestSupabaseAuthoritativeGlobalRPC:
+    """Verify PostgREST RPC client behavior, fail-closed handling, and SQL artifact hygiene.
+
+    Note: Uses httpx.MockTransport to test client RPC wiring and fail-closed logic;
+    does NOT substitute for live Supabase PostgreSQL concurrency staging verification.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rpc_wrapper_endpoints_and_payloads(self):
+        import json
+        recorded_rpcs: list[tuple[str, dict]] = []
+        unexpected_rest_calls: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if "/rest/v1/rpc/" in path:
+                rpc_name = path.rsplit("/rest/v1/rpc/", 1)[-1]
+                payload = json.loads(request.content.decode("utf-8") or "{}")
+                recorded_rpcs.append((rpc_name, payload))
+                responses = {
+                    "get_global_quota_status": {
+                        "ok": True,
+                        "published_global_24h": 0,
+                        "published_total_24h": 9,
+                        "active_reservations": 0,
+                        "ambiguous_reservations": 0,
+                        "active_urls": [],
+                    },
+                    "reserve_global_slot": {
+                        "admitted": True,
+                        "state": "RESERVED",
+                        "reservation_id": payload.get("p_reservation_id") or "res-rpc-1",
+                        "owner_token": payload.get("p_owner_token"),
+                        "expires_at": "2026-11-26T12:03:00+00:00",
+                        "published_global_24h": 0,
+                        "published_total_24h": 9,
+                        "active_reservations": 0,
+                        "reason": "admitted",
+                    },
+                    "renew_global_reservation": {
+                        "ok": True,
+                        "state": "RENEWED",
+                        "reservation_id": payload.get("p_reservation_id"),
+                        "expires_at": "2026-11-26T12:06:00+00:00",
+                        "reason": "renewed",
+                    },
+                    "validate_global_reservation": {
+                        "valid": True,
+                        "state": "RENEWED",
+                        "published_global_24h": 0,
+                        "published_total_24h": 9,
+                        "active_reservations_other": 0,
+                        "reason": "valid",
+                    },
+                    "mark_global_publishing": {
+                        "ok": True,
+                        "admitted": True,
+                        "state": "PUBLISHING",
+                        "reservation_id": payload.get("p_reservation_id"),
+                        "expires_at": "2026-11-26T12:09:00+00:00",
+                        "reason": "publishing",
+                    },
+                    "finalize_global_publication": {
+                        "ok": True,
+                        "state": "COMMITTED",
+                        "reservation_id": payload.get("p_reservation_id"),
+                        "article_id": payload.get("p_article_id"),
+                        "telegram_message_id": payload.get("p_telegram_message_id"),
+                        "published_at": "2026-11-26T12:01:00+00:00",
+                        "reason": "committed",
+                    },
+                    "release_global_reservation": {
+                        "ok": True,
+                        "state": "RELEASED",
+                        "reservation_id": payload.get("p_reservation_id"),
+                        "reason": "released",
+                    },
+                    "mark_global_ambiguous": {
+                        "ok": True,
+                        "state": "AMBIGUOUS",
+                        "reservation_id": payload.get("p_reservation_id"),
+                        "reason": "marked_ambiguous",
+                    },
+                    "reconcile_ambiguous_publication": {
+                        "ok": True,
+                        "reconciled": [{"reservation_id": "stale-1", "state": "AMBIGUOUS"}],
+                        "ambiguous_count": 1,
+                        "reason": "reconciled_auto",
+                    },
+                }
+                return httpx.Response(200, json=responses[rpc_name])
+            unexpected_rest_calls.append((request.method, path))
+            return httpx.Response(500, json={"error": "unexpected_rest_fallback"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            db = SupabaseDatabase(
+                url="https://proj.supabase.co",
+                key="sb_service_key",
+                client=client,
+                base_backoff=0.0,
+            )
+            quota = await db.get_global_quota_status()
+            assert quota["ok"] is True
+            assert quota["published_total_24h"] == 9
+
+            res = await db.reserve_global_slot(
+                canonical_url="https://reuters.com/world/item-1",
+                owner_token="worker:abc",
+                article_id=101,
+                batch_id="batch:1",
+                lease_seconds=180,
+            )
+            assert res["admitted"] is True
+            rid = res["reservation_id"]
+
+            ren = await db.renew_global_reservation(rid, "worker:abc", lease_seconds=180)
+            assert ren["state"] == "RENEWED"
+
+            val = await db.validate_global_reservation(rid, "worker:abc")
+            assert val["valid"] is True
+
+            pub = await db.mark_global_publishing(rid, "worker:abc", lease_seconds=180)
+            assert pub["admitted"] is True
+            assert pub["state"] == "PUBLISHING"
+
+            fin = await db.finalize_global_publication(
+                reservation_id=rid,
+                owner_token="worker:abc",
+                article_id=101,
+                telegram_message_id=5555,
+            )
+            assert fin["ok"] is True
+            assert fin["state"] == "COMMITTED"
+
+            rel = await db.release_global_reservation(rid, "worker:abc", reason="test")
+            assert rel["state"] == "RELEASED"
+
+            amb = await db.mark_global_ambiguous(rid, "worker:abc", reason="timeout", article_id=101)
+            assert amb["state"] == "AMBIGUOUS"
+
+            rec = await db.reconcile_ambiguous_publication(outcome="auto")
+            assert rec["ok"] is True
+            assert rec["ambiguous_count"] == 1
+
+        assert len(recorded_rpcs) == 9
+        assert [name for name, _ in recorded_rpcs] == [
+            "get_global_quota_status",
+            "reserve_global_slot",
+            "renew_global_reservation",
+            "validate_global_reservation",
+            "mark_global_publishing",
+            "finalize_global_publication",
+            "release_global_reservation",
+            "mark_global_ambiguous",
+            "reconcile_ambiguous_publication",
+        ]
+        assert unexpected_rest_calls == []
+
+    @pytest.mark.asyncio
+    async def test_missing_rpc_fails_closed_for_global_while_regional_publishes(self):
+        import config
+        from core.pipeline import ArticlePipeline
+        from monitoring.health import HealthMonitor
+        from monitoring.metrics import Metrics
+        from storage.models import Article
+
+        rest_system_logs_calls: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if "/rest/v1/rpc/" in path:
+                return httpx.Response(
+                    404,
+                    json={"code": "PGRST202", "message": "Could not find function in schema cache"},
+                )
+            if "/rest/v1/system_logs" in path:
+                rest_system_logs_calls.append((request.method, path))
+                return httpx.Response(500)
+            if "/rest/v1/articles" in path and request.method in ("PATCH", "POST"):
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json=[])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            db = SupabaseDatabase(
+                url="https://proj.supabase.co",
+                key="sb_service_key",
+                client=client,
+                max_retries=1,
+                base_backoff=0.0,
+            )
+            # Fail-closed reservation helpers never touch /rest/v1/system_logs
+            r_slot = await db.reserve_global_slot("https://bbc.com/news/global-1", "worker:failclosed")
+            assert r_slot["admitted"] is False
+            assert await db.get_active_global_reservations_count() == config.MAX_GLOBAL_POSTS_PER_DAY
+            assert rest_system_logs_calls == []
+
+            publisher = AsyncMock()
+            publisher.publish_article = AsyncMock(return_value=777)
+            pipeline = ArticlePipeline(db=db, publisher=publisher, health=HealthMonitor(), metrics=Metrics())
+
+            # Global article MUST be blocked without calling Telegram
+            global_art = Article(
+                id=201,
+                canonical_url="https://bbc.com/news/global-crisis",
+                original_url="https://bbc.com/news/global-crisis",
+                original_title="US Congress votes on emergency NATO defense treaty",
+                translated_title="کۆنگرێسی ئەمریکا دەنگ لەسەر پەیماننامەی بەرگری ناتۆ دەدات",
+                translated_summary="کۆنگرێسی ئەمریکا لە واشنتن کۆبووەوە بۆ دەنگدان لەسەر پرسی بەرگری.",
+                source_name="BBC",
+                category="جیهان",
+                region="global",
+                importance_score=9.2,
+                priority="HIGH",
+            )
+            ok_global = await pipeline._publish_immediately(global_art)
+            assert ok_global is False
+            publisher.publish_article.assert_not_awaited()
+
+            # Middle East / Kurdistan regional article MUST still publish cleanly
+            me_art = Article(
+                id=202,
+                canonical_url="https://rudaw.net/sorani/kurdistan/erbil-security-1",
+                original_url="https://rudaw.net/sorani/kurdistan/erbil-security-1",
+                original_title="Peshmerga defense ministry announces Erbil border deployment",
+                translated_title="وەزارەتی پێشمەرگە بڵاوکردنەوەی هێزی لە سنووری هەولێر ڕاگەیاند",
+                translated_summary="وەزارەتی پێشمەرگە ئامادەکارییە ئەمنییەکانی سنووری هەولێری ڕاگەیاند.",
+                source_name="Rudaw",
+                category="کوردستان",
+                region="kurdistan_bashur",
+                importance_score=9.4,
+                priority="HIGH",
+            )
+            ok_me = await pipeline._publish_immediately(me_art)
+            assert ok_me is True
+            publisher.publish_article.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_paginated_published_counts_deduplicates_canonical_urls(self):
+        from datetime import datetime, timezone
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = [
+            {"id": 1, "region": "global", "canonical_url": "https://reuters.com/world/ukraine?utm_source=x", "published_at": now_iso},
+            {"id": 2, "region": "global", "canonical_url": "https://reuters.com/world/ukraine/", "published_at": now_iso},
+            {"id": 3, "region": "middle_east", "canonical_url": "", "published_at": now_iso},
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/rest/v1/articles" in request.url.path:
+                offset = int(request.url.params.get("offset", "0"))
+                return httpx.Response(200, json=rows if offset == 0 else [])
+            return httpx.Response(200, json=[])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            db = SupabaseDatabase(url="https://proj.supabase.co", key="sb_key", client=client, base_backoff=0.0)
+            g_cnt, t_cnt = await db.get_published_counts_last_24h()
+            assert (g_cnt, t_cnt) == (1, 2)
+
+    def test_sql_rpc_artifact_security_and_structure(self):
+        from pathlib import Path
+
+        sql_path = Path(__file__).resolve().parent.parent / "storage" / "sql" / "global_admission_rpc.sql"
+        assert sql_path.exists()
+        sql_text = sql_path.read_text(encoding="utf-8")
+
+        for required_rpc in (
+            "public.get_global_quota_status",
+            "public.reserve_global_slot",
+            "public.renew_global_reservation",
+            "public.validate_global_reservation",
+            "public.mark_global_publishing",
+            "public.finalize_global_publication",
+            "public.release_global_reservation",
+            "public.mark_global_ambiguous",
+            "public.reconcile_ambiguous_publication",
+        ):
+            assert required_rpc in sql_text
+            assert f"GRANT EXECUTE ON FUNCTION {required_rpc}" in sql_text
+
+        assert "pg_advisory_xact_lock(8472910348291042)" in sql_text
+        assert "SECURITY DEFINER" in sql_text
+        assert "SET search_path = public, pg_temp" in sql_text
+        assert "FROM PUBLIC;" in sql_text
+        assert "FROM anon;" in sql_text
+        assert "FROM authenticated;" in sql_text
+        assert "TO service_role;" in sql_text
+        assert "10 * (v_global_24h + v_active_other + 1) > (v_total_24h + v_active_other + 1)" in sql_text
+        for state in ("RESERVED", "RENEWED", "PUBLISHING", "COMMITTED", "RELEASED", "EXPIRED", "AMBIGUOUS"):
+            assert state in sql_text
+        assert "DROP TABLE" not in sql_text.upper()
+        assert "TRUNCATE" not in sql_text.upper()

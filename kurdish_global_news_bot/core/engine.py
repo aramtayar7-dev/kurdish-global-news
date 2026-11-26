@@ -11,6 +11,7 @@ import asyncio
 import logging
 import signal
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -182,6 +183,7 @@ class NewsEngine:
             publisher=self._publisher,
             health=self._health,
             metrics=self._metrics,
+            worker_owner_token=self._get_worker_owner_token(),
         )
         self._watchdog = AdminWatchdog(db=self._db, publisher=self._publisher)
 
@@ -255,6 +257,7 @@ class NewsEngine:
             publisher=self._publisher,
             health=self._health,
             metrics=self._metrics,
+            worker_owner_token=self._get_worker_owner_token(),
         )
         self._watchdog = AdminWatchdog(db=self._db, publisher=self._publisher)
 
@@ -982,7 +985,15 @@ class NewsEngine:
         if not candidate_pool:
             return counts
 
-        # 3. 2:2:1 Paced Batch Selection + Interleaving (5 posts max, 90/10 ME ratio, zero duplicate padding)
+        # 3. Reconcile any stale/ambiguous Global leases before reading 24h counts
+        reconcile_fn = getattr(self._db, "reconcile_ambiguous_publication", None)
+        if callable(reconcile_fn):
+            try:
+                await reconcile_fn(outcome="auto")
+            except Exception as exc:
+                logger.warning("[GLOBAL GUARD] Reconcile sweep warning: %s", str(exc)[:160])
+
+        # 3b. 2:2:1 Paced Batch Selection + Interleaving (5 posts max, 90/10 ME ratio, zero duplicate padding)
         recent_published = await self._db.get_recent_published_articles(limit=8)
         total_posts_last_24h: Optional[int] = None
         if hasattr(self._db, "get_published_counts_last_24h"):
@@ -1005,6 +1016,8 @@ class NewsEngine:
         )
         logger.info("[BATCH PACING] %s", plan.reason)
 
+        owner_token = self._get_worker_owner_token()
+        batch_id = f"batch:{uuid.uuid4()}"
         prepared_batch: list[Article] = []
         substitute_pool = list(plan.deferred)
 
@@ -1013,13 +1026,15 @@ class NewsEngine:
             for art in plan.selected:
                 art_reg = getattr(art, "region", None) or classify_geographic_region(art)
                 art.region = art_reg
-                if art_reg == "global" and hasattr(self._db, "reserve_global_admission"):
-                    reserved = await self._db.reserve_global_admission(
-                        art.canonical_url or art.original_url or str(art.id),
+                if art_reg == "global":
+                    reserved = await self._reserve_global_article_slot(
+                        art,
+                        owner_token=owner_token,
+                        batch_id=batch_id,
                         total_published_24h=total_posts_last_24h,
                     )
                     if not reserved:
-                        logger.info("[BATCH PACING] Dropping global article %s: cross-process reservation denied", art.id)
+                        logger.info("[BATCH PACING] Dropping global article %s: authoritative reservation denied", art.id)
                         counts["rejected"] += 1
                         continue
                 if art.status == ArticleStatus.QUEUED and is_valid_kurdish_sorani(art.translated_title or ""):
@@ -1031,12 +1046,12 @@ class NewsEngine:
                         prepared_batch.append(art)
                     else:
                         counts["rejected"] += 1
-                        if art_reg == "global" and hasattr(self._db, "release_global_admission"):
-                            await self._db.release_global_admission(art.canonical_url or art.original_url or str(art.id))
+                        if art_reg == "global":
+                            await self._release_global_article_slot(art, reason="batch_prepare_rejected")
                 except Exception as exc:
                     logger.error("Batch prepare error for article %s: %s", art.id, str(exc)[:200])
-                    if art_reg == "global" and hasattr(self._db, "release_global_admission"):
-                        await self._db.release_global_admission(art.canonical_url or art.original_url or str(art.id))
+                    if art_reg == "global":
+                        await self._release_global_article_slot(art, reason="batch_prepare_exception")
 
             # Substitute any translation failures from clean overflow up to target_posts (enforcing global cap & 90/10 ratio!)
             used_sub_ids: set[int] = set()
@@ -1058,13 +1073,14 @@ class NewsEngine:
                         batch_global_selected=curr_g,
                     ):
                         continue
-                    if hasattr(self._db, "reserve_global_admission"):
-                        reserved = await self._db.reserve_global_admission(
-                            sub.canonical_url or sub.original_url or str(sub.id),
-                            total_published_24h=total_posts_last_24h,
-                        )
-                        if not reserved:
-                            continue
+                    reserved = await self._reserve_global_article_slot(
+                        sub,
+                        owner_token=owner_token,
+                        batch_id=batch_id,
+                        total_published_24h=total_posts_last_24h,
+                    )
+                    if not reserved:
+                        continue
                 if sub.status == ArticleStatus.QUEUED and is_valid_kurdish_sorani(sub.translated_title or ""):
                     prepared_batch.append(sub)
                     if sub.id is not None:
@@ -1078,12 +1094,12 @@ class NewsEngine:
                             used_sub_ids.add(sub.id)
                     else:
                         counts["rejected"] += 1
-                        if sub_reg == "global" and hasattr(self._db, "release_global_admission"):
-                            await self._db.release_global_admission(sub.canonical_url or sub.original_url or str(sub.id))
+                        if sub_reg == "global":
+                            await self._release_global_article_slot(sub, reason="substitute_prepare_rejected")
                 except Exception as exc:
                     logger.error("Substitute prepare error for article %s: %s", sub.id, str(exc)[:200])
-                    if sub_reg == "global" and hasattr(self._db, "release_global_admission"):
-                        await self._db.release_global_admission(sub.canonical_url or sub.original_url or str(sub.id))
+                    if sub_reg == "global":
+                        await self._release_global_article_slot(sub, reason="substitute_prepare_exception")
 
             if not prepared_batch:
                 return counts
@@ -1091,8 +1107,7 @@ class NewsEngine:
             if not config.AUTO_PUBLISH:
                 for q_art in prepared_batch + substitute_pool:
                     if (getattr(q_art, "region", "") or classify_geographic_region(q_art)) == "global":
-                        if hasattr(self._db, "release_global_admission"):
-                            await self._db.release_global_admission(q_art.canonical_url or q_art.original_url or str(q_art.id))
+                        await self._release_global_article_slot(q_art, reason="auto_publish_disabled")
                     await self._enqueue_article(q_art)
                     if q_art.status == ArticleStatus.QUEUED:
                         counts["queued"] += 1
@@ -1121,7 +1136,7 @@ class NewsEngine:
                             (art.source_name or "")[:30],
                             get_source_bucket(art),
                         )
-                        await asyncio.sleep(wait_sec)
+                        await self._sleep_with_global_lease_renewal(wait_sec, prepared_batch[idx:])
 
                 post_start_dt = self._utc_now()
                 try:
@@ -1140,12 +1155,13 @@ class NewsEngine:
                 if published:
                     counts["published"] += 1
                     if (getattr(art, "region", "") or classify_geographic_region(art)) == "global":
-                        if hasattr(self._db, "commit_global_admission"):
-                            await self._db.commit_global_admission(art.canonical_url or art.original_url or str(art.id))
+                        if not getattr(art, "_global_lifecycle_handled", False) and not getattr(art, "_global_reservation_id", None):
+                            if hasattr(self._db, "commit_global_admission"):
+                                await self._db.commit_global_admission(art.canonical_url or art.original_url or str(art.id))
                 else:
                     if (getattr(art, "region", "") or classify_geographic_region(art)) == "global":
-                        if hasattr(self._db, "release_global_admission"):
-                            await self._db.release_global_admission(art.canonical_url or art.original_url or str(art.id))
+                        if not getattr(art, "_global_lifecycle_handled", False):
+                            await self._release_global_article_slot(art, reason="batch_publish_failed")
                     if art.status in (ArticleStatus.READY_TO_PUBLISH, ArticleStatus.QUEUED):
                         substitute_pool.append(art)
 
@@ -1191,12 +1207,166 @@ class NewsEngine:
 
             return counts
         finally:
-            # Clean up any leftover pre-branded temp video files if skipped/interrupted
+            # Clean up any leftover pre-branded temp video files or unclosed Global reservations
             for art in prepared_batch + substitute_pool:
+                if (
+                    (getattr(art, "region", "") or classify_geographic_region(art)) == "global"
+                    and getattr(art, "_global_reservation_id", None)
+                    and not getattr(art, "_global_lifecycle_handled", False)
+                ):
+                    try:
+                        await asyncio.shield(
+                            self._release_global_article_slot(art, reason="batch_finally_cleanup")
+                        )
+                    except Exception:
+                        pass
                 leftover = getattr(art, "_prepared_branded_video_path", None)
                 if leftover:
                     cleanup_video_file(leftover)
                     art._prepared_branded_video_path = None  # type: ignore[attr-defined]
+
+    def _get_worker_owner_token(self) -> str:
+        """Return a stable per-worker owner token shared with the active pipeline."""
+        pipeline = getattr(self, "_pipeline", None)
+        if pipeline is not None and getattr(pipeline, "_worker_owner_token", None):
+            return pipeline._worker_owner_token
+        token = getattr(self, "_worker_owner_token", None)
+        if not token:
+            token = f"worker:{uuid.uuid4()}"
+            self._worker_owner_token = token
+        return token
+
+    def _prepare_global_publish_guard(self, article: Article) -> None:
+        """Mark Global articles for authoritative DB reservation guard before publishing."""
+        reg = getattr(article, "region", None) or classify_geographic_region(article)
+        article.region = reg
+        if reg == "global":
+            from storage.supabase_db import SupabaseDatabase
+            article._require_global_reservation = (
+                isinstance(self._db, SupabaseDatabase)
+                or bool(getattr(config, "ENABLE_BATCH_PACING_ENGINE", True))
+            )
+
+    async def _reserve_global_article_slot(
+        self,
+        art: Article,
+        owner_token: str,
+        batch_id: str,
+        total_published_24h: Optional[int] = None,
+    ) -> bool:
+        """Reserve an authoritative Global admission lease in the database."""
+        from storage.supabase_db import SupabaseDatabase
+
+        art._require_global_reservation = (
+            isinstance(self._db, SupabaseDatabase)
+            or bool(getattr(config, "ENABLE_BATCH_PACING_ENGINE", True))
+        )
+        art._global_batch_id = batch_id
+        art._global_lifecycle_handled = False
+        canonical_url = art.canonical_url or art.original_url or str(art.id or art.original_title[:64])
+
+        if callable(getattr(self._db, "reserve_global_slot", None)):
+            lease_seconds = int(getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180) or 180)
+            res = await self._db.reserve_global_slot(
+                canonical_url=canonical_url,
+                owner_token=owner_token,
+                article_id=art.id,
+                batch_id=batch_id,
+                lease_seconds=lease_seconds,
+                url_hash=getattr(art, "url_hash", "") or "",
+            )
+            if isinstance(res, dict):
+                if res.get("admitted"):
+                    art._global_reservation_id = res.get("reservation_id")
+                    art._global_owner_token = res.get("owner_token") or owner_token
+                    return True
+                return False
+            if isinstance(self._db, SupabaseDatabase):
+                return False
+
+        if not isinstance(self._db, SupabaseDatabase) and hasattr(self._db, "reserve_global_admission"):
+            return bool(
+                await self._db.reserve_global_admission(
+                    canonical_url,
+                    total_published_24h=total_published_24h,
+                )
+            )
+        return not isinstance(self._db, SupabaseDatabase)
+
+    async def _release_global_article_slot(self, art: Article, reason: str = "released") -> None:
+        """Release an unused or failed Global reservation owned by this worker."""
+        if getattr(art, "_global_lifecycle_handled", False):
+            return
+        from storage.supabase_db import SupabaseDatabase
+
+        res_id = getattr(art, "_global_reservation_id", None)
+        owner_tok = getattr(art, "_global_owner_token", None) or self._get_worker_owner_token()
+        if res_id and callable(getattr(self._db, "release_global_reservation", None)):
+            try:
+                await self._db.release_global_reservation(
+                    reservation_id=res_id,
+                    owner_token=owner_tok,
+                    reason=reason,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[GLOBAL GUARD] Failed releasing batch reservation %s: %s",
+                    res_id, str(exc)[:160],
+                )
+            art._global_lifecycle_handled = True
+            art._global_reservation_id = None
+            return
+
+        if not isinstance(self._db, SupabaseDatabase) and hasattr(self._db, "release_global_admission"):
+            await self._db.release_global_admission(art.canonical_url or art.original_url or str(art.id))
+            art._global_lifecycle_handled = True
+
+    async def _renew_pending_global_leases(self, articles: list[Article]) -> None:
+        """Extend leases for reserved Global items still waiting in the paced batch."""
+        renew_fn = getattr(self._db, "renew_global_reservation", None)
+        if not callable(renew_fn):
+            return
+        lease_seconds = int(getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180) or 180)
+        for art in articles:
+            res_id = getattr(art, "_global_reservation_id", None)
+            if res_id and not getattr(art, "_global_lifecycle_handled", False):
+                owner_tok = getattr(art, "_global_owner_token", None) or self._get_worker_owner_token()
+                try:
+                    await renew_fn(
+                        reservation_id=res_id,
+                        owner_token=owner_tok,
+                        lease_seconds=lease_seconds,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[GLOBAL GUARD] Pending lease renewal warning for %s: %s",
+                        res_id, str(exc)[:160],
+                    )
+
+    async def _sleep_with_global_lease_renewal(
+        self, wait_sec: float, pending_articles: list[Article]
+    ) -> None:
+        """Sleep between paced batch posts while keeping pending Global leases alive."""
+        if wait_sec <= 0:
+            return
+        has_pending_global = any(
+            getattr(a, "_global_reservation_id", None)
+            and not getattr(a, "_global_lifecycle_handled", False)
+            for a in pending_articles
+        )
+        if not has_pending_global:
+            await asyncio.sleep(wait_sec)
+            return
+        lease_seconds = int(getattr(config, "GLOBAL_RESERVATION_LEASE_SECONDS", 180) or 180)
+        chunk_sec = max(15.0, min(45.0, float(lease_seconds) / 3.0))
+        remaining = float(wait_sec)
+        while remaining > 0:
+            step = min(remaining, chunk_sec)
+            await asyncio.sleep(step)
+            remaining -= step
+            if remaining > 0:
+                await self._renew_pending_global_leases(pending_articles)
+        await self._renew_pending_global_leases(pending_articles)
 
     async def _run_smart_pacing_cycle(
         self,
@@ -1304,6 +1474,7 @@ class NewsEngine:
                 await self._enqueue_article(brk_art)
                 counts["queued"] += 1
                 continue
+            self._prepare_global_publish_guard(brk_art)
             if await self._pipeline._publish_immediately(brk_art):
                 counts["published"] += 1
 
@@ -1353,6 +1524,7 @@ class NewsEngine:
                         len(selected_normals),
                     )
                     await asyncio.sleep(config.INTRA_CYCLE_POST_DELAY_SECONDS)
+                self._prepare_global_publish_guard(norm_art)
                 published = await self._pipeline._publish_immediately(norm_art)
                 if published:
                     counts["published"] += 1
@@ -1392,6 +1564,7 @@ class NewsEngine:
                 "[BALANCER] Held article %s ('%s') eligible under 5-of-8 plan: %s",
                 held.id, held.original_title[:60], plan.reason,
             )
+            self._prepare_global_publish_guard(held)
             await self._pipeline._publish_immediately(held)
 
     async def _fetch_from_source(self, source: BaseSource) -> list[RawArticle]:
