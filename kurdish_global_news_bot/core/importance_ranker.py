@@ -771,11 +771,16 @@ def is_strictly_military_or_political(article: Article) -> tuple[bool, str]:
         return False, f"banned_{banned_domain}"
 
     # 6. Verify genuine Southern Kurdistan political/military/security event
+    art_url = str(getattr(article, "canonical_url", "") or getattr(article, "original_url", "") or "").lower()
+    is_short_tg_or_x = any(dom in art_url for dom in ("t.me/", "telegram.me/", "x.com/", "twitter.com/")) and len(clean_text) <= 260
+
     if is_bashur_article(article):
         if is_mil:
             return True, f"verified_southern_kurdistan_military: {mil_reason}"
         if is_pol or is_politics_or_war(article):
             return True, "verified_southern_kurdistan_politics: KRG/Bashur political development"
+        if is_short_tg_or_x:
+            return True, "short_telegram_x_bashur_breaking_pass_to_llm"
         return False, "insufficient_political_or_military_importance: local Kurdistan news lacks state-level impact"
 
     # 7. For non-Bashur stories: MUST be substantive military or high-level politics
@@ -785,6 +790,11 @@ def is_strictly_military_or_political(article: Article) -> tuple[bool, str]:
         return True, f"high_level_politics: {pol_reason}"
     if POLITICS_WAR_PATTERN.search(clean_text):
         return True, "politics_or_war: qualified geopolitical event"
+
+    # Allow concise Telegram/X breaking dispatches that cleared all blocked/protocol/banned checks
+    # to reach LLM/context enrichment instead of dropping short Arabic/Kurdish/OSINT captions early.
+    if is_short_tg_or_x:
+        return True, "short_telegram_x_breaking_pass_to_llm"
 
     return False, "insufficient_political_or_military_importance"
 

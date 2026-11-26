@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -153,7 +154,15 @@ class XVideoSource(BaseSource):
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self._request_timeout),
-                headers={"User-Agent": "Mozilla/5.0 (compatible; KGNBot/1.0)"},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
             )
 
     async def cleanup(self) -> None:
@@ -244,6 +253,75 @@ class XVideoSource(BaseSource):
             return results, True
 
         return [], False
+
+    @staticmethod
+    def _parse_syndication_html(html_content: str, account_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+        """Parse Twitter syndication `__NEXT_DATA__` timeline JSON into candidate dicts."""
+        handle = str(account_cfg.get("handle") or "").strip()
+        if not handle or not html_content:
+            return []
+        soup = BeautifulSoup(html_content, "html.parser")
+        nd = soup.find("script", id="__NEXT_DATA__")
+        if not nd or not nd.string:
+            return []
+        try:
+            data = json.loads(nd.string)
+        except Exception:
+            return []
+
+        entries = (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("timeline", {})
+            .get("entries", [])
+        )
+        if not isinstance(entries, list):
+            return []
+
+        results: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            tweet = (entry.get("content") or {}).get("tweet")
+            if not isinstance(tweet, dict):
+                continue
+            if tweet.get("retweeted_status") or tweet.get("retweeted_status_result"):
+                continue
+            status_id = str(tweet.get("id_str") or tweet.get("id") or "").strip()
+            if not status_id.isdigit():
+                continue
+            user_screen = str((tweet.get("user") or {}).get("screen_name") or "").strip()
+            if user_screen and user_screen.lower() != handle.lower():
+                continue
+            raw_text = str(tweet.get("full_text") or tweet.get("text") or "").strip()
+            if _RETWEET_PREFIX_RE.search(raw_text):
+                continue
+            caption = _strip_html_and_urls(raw_text)
+            pub_dt = _parse_datetime(tweet.get("created_at"))
+            results.append(
+                {
+                    "handle": handle,
+                    "status_id": status_id,
+                    "canonical_url": f"https://x.com/{handle}/status/{status_id}",
+                    "caption": caption,
+                    "published_at": pub_dt,
+                    "account": account_cfg,
+                }
+            )
+        return results
+
+    async def fetch_channel_syndication(self, account_cfg: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+        """Fetch recent tweets via Twitter's public keyless syndication endpoint."""
+        handle = str(account_cfg.get("handle") or "").strip()
+        if not handle:
+            return [], False
+        url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{handle}"
+        async with self._semaphore:
+            body = await self._http_get_text(url)
+        if not body:
+            return [], False
+        items = self._parse_syndication_html(body, account_cfg)
+        return items, bool(items)
 
     async def _ddg_fallback_discover(self) -> list[dict[str, Any]]:
         """Discover recent X status URLs via DuckDuckGo when all RSS mirrors fail."""
@@ -373,22 +451,101 @@ class XVideoSource(BaseSource):
             }
         return None
 
+    @staticmethod
+    def _extract_fxtwitter_media(data: dict[str, Any], allow_photo: bool = False) -> Optional[dict[str, Any]]:
+        vid = XVideoSource._extract_fxtwitter_video(data)
+        if vid is not None:
+            vid["media_type"] = "video"
+            vid.setdefault("image_url", vid.get("thumbnail_url") or "")
+            return vid
+        if not allow_photo or not isinstance(data, dict):
+            return None
+        tweet = data.get("tweet")
+        if not isinstance(tweet, dict):
+            return None
+        media = tweet.get("media") or {}
+        if not isinstance(media, dict):
+            return None
+        photos = list(media.get("photos") or [])
+        if not photos:
+            for item in media.get("all") or []:
+                if isinstance(item, dict) and str(item.get("type") or "").lower() == "photo":
+                    photos.append(item)
+        if not photos or not isinstance(photos[0], dict):
+            return None
+        photo_url = str(photos[0].get("url") or "").strip()
+        if not photo_url.startswith(("http://", "https://")):
+            return None
+        return {
+            "media_type": "photo",
+            "video_url": "",
+            "image_url": photo_url,
+            "thumbnail_url": photo_url,
+            "duration": None,
+            "width": photos[0].get("width"),
+            "text": str(tweet.get("text") or "").strip(),
+            "created_at": tweet.get("created_timestamp") or tweet.get("created_at"),
+        }
+
+    @staticmethod
+    def _extract_vxtwitter_media(data: dict[str, Any], allow_photo: bool = False) -> Optional[dict[str, Any]]:
+        vid = XVideoSource._extract_vxtwitter_video(data)
+        if vid is not None:
+            vid["media_type"] = "video"
+            vid.setdefault("image_url", vid.get("thumbnail_url") or "")
+            return vid
+        if not allow_photo or not isinstance(data, dict):
+            return None
+        media_ext = data.get("media_extended") or []
+        if not isinstance(media_ext, list):
+            return None
+        for item in media_ext:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").lower() != "image":
+                continue
+            photo_url = str(item.get("url") or "").strip()
+            if not photo_url.startswith(("http://", "https://")):
+                continue
+            size = item.get("size") or {}
+            width = item.get("width") or (size.get("width") if isinstance(size, dict) else None)
+            return {
+                "media_type": "photo",
+                "video_url": "",
+                "image_url": photo_url,
+                "thumbnail_url": photo_url,
+                "duration": None,
+                "width": width,
+                "text": str(data.get("text") or "").strip(),
+                "created_at": data.get("date_epoch") or data.get("date"),
+            }
+        return None
+
     async def _resolve_video_metadata(self, handle: str, status_id: str) -> Optional[dict[str, Any]]:
         """
         Resolve direct `.mp4` metadata for a tweet via `fxtwitter` then fallback `vxtwitter`.
         Enforces native video (`type == "video"`, not GIF), duration, and min width gates.
         """
+        return await self._resolve_media_metadata(handle, status_id, allow_photo=False)
+
+    async def _resolve_media_metadata(
+        self, handle: str, status_id: str, allow_photo: bool = False
+    ) -> Optional[dict[str, Any]]:
+        """Resolve native `.mp4` video (or high-priority photo if `allow_photo=True`)."""
         async with self._semaphore:
             fx_data = await self._http_get_json(f"https://api.fxtwitter.com/{handle}/status/{status_id}")
-        meta = self._extract_fxtwitter_video(fx_data) if fx_data else None
+        meta = self._extract_fxtwitter_media(fx_data, allow_photo=allow_photo) if fx_data else None
 
         if meta is None:
             async with self._semaphore:
                 vx_data = await self._http_get_json(f"https://api.vxtwitter.com/{handle}/status/{status_id}")
-            meta = self._extract_vxtwitter_video(vx_data) if vx_data else None
+            meta = self._extract_vxtwitter_media(vx_data, allow_photo=allow_photo) if vx_data else None
 
         if meta is None:
             return None
+
+        if meta.get("media_type") == "photo":
+            return meta
 
         min_dur = int(getattr(config, "X_MIN_VIDEO_DURATION_SEC", 4))
         max_dur = int(getattr(config, "X_MAX_VIDEO_DURATION_SEC", 120))
@@ -442,7 +599,16 @@ class XVideoSource(BaseSource):
                 candidates.extend(entries)
 
         if not any_mirror_ok and not candidates:
-            logger.info("All X RSS mirrors unavailable; trying free DuckDuckGo X discovery fallback.")
+            logger.info("All X RSS mirrors unavailable; trying keyless syndication.twitter.com fallback.")
+            syn_tasks = [self.fetch_channel_syndication(acc) for acc in self._accounts]
+            syn_results = await asyncio.gather(*syn_tasks, return_exceptions=True)
+            for res in syn_results:
+                if isinstance(res, tuple):
+                    entries, _ = res
+                    candidates.extend(entries)
+
+        if not candidates:
+            logger.info("All X RSS/syndication endpoints unavailable; trying free DuckDuckGo X discovery fallback.")
             candidates = await self._ddg_fallback_discover()
 
         seen_status_ids: set[str] = set()
@@ -478,8 +644,25 @@ class XVideoSource(BaseSource):
         # Limit metadata lookups while allowing enough headroom to hit candidate cap
         probe_limit = max(self._max_videos_per_cycle * 2, 16)
         probe_pool = fresh_candidates[:probe_limit]
+        def _allow_photo_for_candidate(cand: dict[str, Any]) -> bool:
+            acct = cand.get("account") or {}
+            return bool(
+                acct.get("is_official_media", False)
+                or acct.get("region") in ("kurdistan_bashur", "middle_east")
+                or int(acct.get("credibility_tier", 3) or 3) <= 2
+            )
+
+        async def _resolve_candidate(cand: dict[str, Any]) -> Optional[dict[str, Any]]:
+            # Always invoke 2-arg `_resolve_video_metadata` first so tests mocking it stay compatible.
+            vid_meta = await self._resolve_video_metadata(cand["handle"], cand["status_id"])
+            if isinstance(vid_meta, dict):
+                return vid_meta
+            if _allow_photo_for_candidate(cand):
+                return await self._resolve_media_metadata(cand["handle"], cand["status_id"], allow_photo=True)
+            return None
+
         meta_results = await asyncio.gather(
-            *[self._resolve_video_metadata(c["handle"], c["status_id"]) for c in probe_pool],
+            *[_resolve_candidate(c) for c in probe_pool],
             return_exceptions=True,
         )
 
@@ -508,7 +691,7 @@ class XVideoSource(BaseSource):
                     summary=full_text,
                     source_name=str(acct.get("display_name") or cand["handle"]),
                     category="breaking" if bool(acct.get("is_official_media", False)) else "world",
-                    publication_date=pub_dt,
+                    publication_date=pub_dt.isoformat(),
                     image_url=str(meta.get("thumbnail_url") or ""),
                     video_url=str(meta.get("video_url") or ""),
                     country="",

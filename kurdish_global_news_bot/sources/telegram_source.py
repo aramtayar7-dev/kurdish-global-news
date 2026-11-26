@@ -287,7 +287,9 @@ class TelegramSource(BaseSource):
         self._headers = {
             "User-Agent": user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+            "Accept-Language": "ar,ckb,en-US;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Upgrade-Insecure-Requests": "1",
         }
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -364,10 +366,10 @@ class TelegramSource(BaseSource):
                 if not headline or not summary:
                     continue
 
-                # Ignore static watermarked/screenshot photo & video-thumb URLs for Telegram channels
-                # so card_generator uses clean news backgrounds instead of overlapping text on screenshots;
-                # retain direct video_url so videos get branded with our KGN logo via FFmpeg.
+                photo_url = extract_telegram_photo_url(msg_node)
                 video_url = extract_telegram_video_url(msg_node)
+                thumb_url = extract_telegram_video_thumb_url(msg_node) if (not photo_url and video_url) else ""
+                resolved_image_url = (photo_url or thumb_url) or None
                 canonical_url = f"https://t.me/{username}/{post_id}"
 
                 articles.append(
@@ -378,7 +380,7 @@ class TelegramSource(BaseSource):
                         source_name=display_name,
                         category="",
                         publication_date=pub_iso,
-                        image_url=None,
+                        image_url=resolved_image_url,
                         video_url=video_url,
                         country=region_hint,
                         region=region_hint,

@@ -303,8 +303,8 @@ class TestTelegramHtmlParsing:
         assert first.source_name == "Sabereen News"
         assert first.region == "iraq_region"
         assert first.country == "iraq_region"
-        # Static watermarked Telegram photos are intentionally ignored (card_generator uses clean theme background)
-        assert first.image_url is None
+        # Telegram photo URLs are extracted from .tgme_widget_message_photo_wrap
+        assert first.image_url is not None and first.image_url.startswith("https://")
         assert '"تنفيذ ضربات جوية"' in first.summary
         assert "الحدود & تعزيز" in first.summary
         assert "٤٥" in first.summary
@@ -317,7 +317,7 @@ class TestTelegramHtmlParsing:
 
         second = articles[1]
         assert second.url == "https://t.me/SabrenNewss/12346"
-        assert second.image_url is None
+        assert second.image_url == "https://cdn4.telegram-cdn.org/file/photo_unquoted.jpg"
         assert second.publication_date.endswith("+00:00")
 
         third = articles[2]
@@ -1170,26 +1170,23 @@ class TestTelegramVideoAndMediaExtraction:
 
         assert len(articles) == 4
 
-        # 1. Direct <video src> -> video_url extracted, thumb image_url ignored
+        # 1. Direct <video src> -> video_url extracted (plus thumbnail image_url fallback if present)
         assert articles[0].url == "https://t.me/SabrenNewss/7001"
         assert articles[0].source_name == "Sabereen News"
         assert articles[0].video_url == "https://cdn4.telegram-cdn.org/file/clip_7001.mp4"
-        assert articles[0].image_url is None
 
-        # 2. Nested <video><source src> -> video_url extracted, thumb image_url ignored
+        # 2. Nested <video><source src> -> video_url extracted
         assert articles[1].url == "https://t.me/SabrenNewss/7002"
         assert articles[1].video_url == "https://cdn4.telegram-cdn.org/file/clip_7002.mp4"
-        assert articles[1].image_url is None
 
-        # 3. "Media is too big" -> video_url is None, static thumbnail ignored
+        # 3. "Media is too big" -> video_url is None
         assert articles[2].url == "https://t.me/SabrenNewss/7003"
         assert articles[2].video_url is None
-        assert articles[2].image_url is None
 
-        # 4. Multi-media (photo + video) -> retains video_url, static photo image_url ignored
+        # 4. Multi-media (photo + video) -> retains BOTH video_url and photo image_url
         assert articles[3].url == "https://t.me/SabrenNewss/7004"
         assert articles[3].video_url == "https://cdn4.telegram-cdn.org/file/album_vid.mp4"
-        assert articles[3].image_url is None
+        assert articles[3].image_url is not None and articles[3].image_url.startswith("https://")
 
         # Verify helper functions directly ignore malformed/non-http video attrs
         bad_soup = BeautifulSoup(
@@ -1295,4 +1292,60 @@ class TestTelegramVideoAndMediaExtraction:
         assert "باکووری عێراق" not in sent_caption
         assert "ئەمریکای دوژمن" not in sent_caption
         assert not branded_tmp.exists()
+
+
+class TestTelegramPhotoAndShortBreakingIngestion:
+    """Verify Telegram photo+video extraction and short Kurdish/Arabic breaking pre-filter pass."""
+
+    def test_telegram_html_extracts_both_photo_and_video_urls(self):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        html = f"""
+        <div class="tgme_widget_message" data-post="rudawdigital/9901">
+          <a class="tgme_widget_message_date" href="https://t.me/rudawdigital/9901"><time datetime="{now_iso}"></time></a>
+          <a class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn4.telegram-cdn.org/file/erbil_photo.jpg')"></a>
+          <div class="tgme_widget_message_text">بەپەلە: جموجۆڵی هێزەکان لە سنووری هەولێر و پاراستنی ناوچەکە بەردەوامە</div>
+        </div>
+        <div class="tgme_widget_message" data-post="rudawdigital/9902">
+          <a class="tgme_widget_message_date" href="https://t.me/rudawdigital/9902"><time datetime="{now_iso}"></time></a>
+          <div class="tgme_widget_message_video_player">
+            <video src="https://cdn4.telegram-cdn.org/file/erbil_clip.mp4"></video>
+          </div>
+          <div class="tgme_widget_message_text">دیمەنی نوێ لە سنووری کوردستانەوە بڵاوکرایەوە و هێزەکان لە ئامادەباشیدان</div>
+        </div>
+        """
+        src = TelegramSource()
+        cfg = {"username": "rudawdigital", "name": "Rudaw", "region_hint": "kurdistan_bashur", "lang": "ckb"}
+        articles = src.parse_channel_html(html, cfg)
+        assert len(articles) == 2
+        assert articles[0].image_url == "https://cdn4.telegram-cdn.org/file/erbil_photo.jpg"
+        assert articles[0].video_url is None
+        assert articles[1].video_url == "https://cdn4.telegram-cdn.org/file/erbil_clip.mp4"
+
+    def test_short_telegram_breaking_passes_strict_filter_while_fluff_rejected(self):
+        from core.importance_ranker import is_strictly_military_or_political
+
+        short_tg = Article(
+            id=1,
+            canonical_url="https://t.me/rudawdigital/9901",
+            original_url="https://t.me/rudawdigital/9901",
+            source_name="Rudaw",
+            original_title="بەپەلە: بڕیارێکی نوێ لە هەولێر دەرچوو",
+            original_summary="بەپەلە: بڕیارێکی نوێ لە هەولێر دەرچوو سەبارەت بە دۆخی ناوچەکە.",
+            region="kurdistan_bashur",
+        )
+        ok, _ = is_strictly_military_or_political(short_tg)
+        assert ok is True
+
+        fluff_tg = Article(
+            id=2,
+            canonical_url="https://t.me/rudawdigital/9903",
+            original_url="https://t.me/rudawdigital/9903",
+            source_name="Rudaw",
+            original_title="New AI smartphone launched at tech expo",
+            original_summary="New AI smartphone launched at tech expo today.",
+            region="kurdistan_bashur",
+        )
+        ok_fluff, reason_fluff = is_strictly_military_or_political(fluff_tg)
+        assert ok_fluff is False
+        assert ("banned_" in reason_fluff) or ("Blocked topic" in reason_fluff)
 

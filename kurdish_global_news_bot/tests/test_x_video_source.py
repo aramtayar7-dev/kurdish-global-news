@@ -767,3 +767,167 @@ async def test_x_pipeline_uses_zero_extra_gemini_calls():
 
     await pipeline.evaluate_batch_candidates([x_centcom, local_bbc])
     assert eval_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_x_syndication_fallback_and_photo_plus_video_flow():
+    import json
+    from core.balancer import get_source_bucket, select_paced_batch
+    from core.importance_ranker import is_strictly_military_or_political
+    from sources.x_video_source import XVideoSource
+
+    now = datetime.now(timezone.utc)
+    fresh_created = (now - timedelta(minutes=15)).strftime("%a %b %d %H:%M:%S +0000 %Y")
+    next_data = {
+        "props": {
+            "pageProps": {
+                "timeline": {
+                    "entries": [
+                        {
+                            "content": {
+                                "tweet": {
+                                    "id_str": "77001",
+                                    "created_at": fresh_created,
+                                    "full_text": "CENTCOM strikes militant missile depot in overnight operation",
+                                    "user": {"screen_name": "CENTCOM"},
+                                }
+                            }
+                        },
+                        {
+                            "content": {
+                                "tweet": {
+                                    "id_str": "77002",
+                                    "created_at": fresh_created,
+                                    "full_text": "RT by @other: Retweet should be skipped",
+                                    "user": {"screen_name": "CENTCOM"},
+                                }
+                            }
+                        },
+                        {
+                            "content": {
+                                "tweet": {
+                                    "id_str": "77003",
+                                    "created_at": fresh_created,
+                                    "full_text": "Urgent deployment reported along border frontlines",
+                                    "user": {"screen_name": "ClashReport"},
+                                }
+                            }
+                        },
+                    ]
+                }
+            }
+        }
+    }
+    syn_html = f'<html><body><script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script></body></html>'
+
+    accounts = [
+        {"handle": "CENTCOM", "display_name": "CENTCOM", "region": "middle_east", "lang": "en", "credibility_tier": 1, "source_group": "centcom", "is_official_media": True},
+        {"handle": "ClashReport", "display_name": "Clash Report", "region": "middle_east", "lang": "en", "credibility_tier": 2, "source_group": "clashreport", "is_official_media": False},
+    ]
+    src = XVideoSource(accounts=accounts, mirrors=["https://dead-mirror.example"])
+
+    async def fake_get_text(url: str):
+        if "syndication.twitter.com/srv/timeline-profile/screen-name/" in url:
+            return syn_html
+        return None  # All Nitter mirrors fail
+
+    async def fake_get_json(url: str):
+        if "api.fxtwitter.com/CENTCOM/status/77001" in url:
+            return {
+                "tweet": {
+                    "text": "CENTCOM strikes militant missile depot in overnight operation",
+                    "media": {
+                        "videos": [
+                            {
+                                "type": "video",
+                                "url": "https://video.twimg.com/centcom_77001.mp4",
+                                "thumbnail_url": "https://pbs.twimg.com/thumb_77001.jpg",
+                                "duration": 22,
+                                "width": 1280,
+                            }
+                        ]
+                    },
+                }
+            }
+        if "api.fxtwitter.com/ClashReport/status/77003" in url:
+            return {
+                "tweet": {
+                    "text": "Urgent deployment reported along border frontlines",
+                    "media": {
+                        "photos": [
+                            {
+                                "type": "photo",
+                                "url": "https://pbs.twimg.com/media/clash_77003.jpg",
+                                "width": 1200,
+                            }
+                        ]
+                    },
+                }
+            }
+        return None
+
+    src._http_get_text = fake_get_text  # type: ignore[method-assign]
+    src._http_get_json = fake_get_json  # type: ignore[method-assign]
+
+    raw_items = await src.fetch_articles()
+    assert len(raw_items) == 2
+    urls = {r.url: r for r in raw_items}
+    assert urls["https://x.com/CENTCOM/status/77001"].video_url == "https://video.twimg.com/centcom_77001.mp4"
+    assert urls["https://x.com/ClashReport/status/77003"].image_url == "https://pbs.twimg.com/media/clash_77003.jpg"
+    assert urls["https://x.com/ClashReport/status/77003"].video_url == ""
+
+    # Short breaking X item passes strict filter, while banned AI/economy topic is still rejected
+    x_short = Article(
+        id=201,
+        canonical_url="https://x.com/ClashReport/status/77003",
+        original_url="https://x.com/ClashReport/status/77003",
+        source_name="Clash Report",
+        original_title="Urgent alert from northern frontline",
+        original_summary="Urgent alert from northern frontline",
+        image_url="https://pbs.twimg.com/media/clash_77003.jpg",
+        region="middle_east",
+        importance_score=8.5,
+    )
+    ok_short, _ = is_strictly_military_or_political(x_short)
+    assert ok_short is True
+
+    # Verify Telegram + X items preserve media and flow into 2:2:1 batch buckets
+    tg_art = Article(
+        id=202,
+        canonical_url="https://t.me/rudawdigital/9901",
+        original_url="https://t.me/rudawdigital/9901",
+        source_name="Rudaw",
+        original_title="Peshmerga security update in Erbil",
+        original_summary="Peshmerga forces deployed along Erbil defense perimeter.",
+        image_url="https://cdn4.telegram-cdn.org/file/erbil_photo.jpg",
+        region="kurdistan_bashur",
+        importance_score=9.0,
+    )
+    web_art = Article(
+        id=203,
+        canonical_url="https://www.reuters.com/world/middle-east/security-203",
+        original_url="https://www.reuters.com/world/middle-east/security-203",
+        source_name="Reuters",
+        original_title="Baghdad defense talks conclude",
+        original_summary="Baghdad defense talks concluded with border security pact.",
+        region="middle_east",
+        importance_score=8.2,
+    )
+    assert get_source_bucket(tg_art) == "telegram"
+    assert get_source_bucket(x_short) == "x"
+    assert get_source_bucket(web_art) == "search"
+
+    plan = select_paced_batch(
+        [tg_art, x_short, web_art],
+        target_posts=5,
+        source_mix={"telegram": 2, "x": 2, "search": 1},
+        global_posts_last_24h=0,
+        total_posts_last_24h=10,
+    )
+    selected_urls = {a.canonical_url for a in plan.selected}
+    assert "https://t.me/rudawdigital/9901" in selected_urls
+    assert "https://x.com/ClashReport/status/77003" in selected_urls
+    tg_sel = next(a for a in plan.selected if a.canonical_url == "https://t.me/rudawdigital/9901")
+    x_sel = next(a for a in plan.selected if a.canonical_url == "https://x.com/ClashReport/status/77003")
+    assert tg_sel.image_url == "https://cdn4.telegram-cdn.org/file/erbil_photo.jpg"
+    assert x_sel.image_url == "https://pbs.twimg.com/media/clash_77003.jpg"

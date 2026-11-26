@@ -204,23 +204,28 @@ class ArticleValidator:
 
     @staticmethod
     def is_recent(
-        pub_date_str: str,
+        pub_date_str: object,
         max_age_hours: float = 3.0,
         max_age_minutes: Optional[float] = None,
     ) -> tuple[bool, str]:
         """Check if article publication date is within max_age_hours or max_age_minutes."""
-        if not pub_date_str or not pub_date_str.strip():
+        if not pub_date_str:
             return True, ""
-
-        try:
-            from dateutil import parser as dt_parser
-            pub_dt = dt_parser.parse(pub_date_str)
-        except Exception:
-            try:
-                from email.utils import parsedate_to_datetime
-                pub_dt = parsedate_to_datetime(pub_date_str)
-            except Exception:
+        if isinstance(pub_date_str, datetime):
+            pub_dt = pub_date_str
+        else:
+            raw_str = str(pub_date_str).strip()
+            if not raw_str:
                 return True, ""
+            try:
+                from dateutil import parser as dt_parser
+                pub_dt = dt_parser.parse(raw_str)
+            except Exception:
+                try:
+                    from email.utils import parsedate_to_datetime
+                    pub_dt = parsedate_to_datetime(raw_str)
+                except Exception:
+                    return True, ""
 
         now = datetime.now(timezone.utc)
         if pub_dt.tzinfo is None:
