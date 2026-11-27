@@ -217,3 +217,38 @@ class TestNewsCardGenerator:
         monkeypatch.setattr(card_gen_mod, "_HAS_RAQM", True)
         assert generator._rtl_kwargs() == {"direction": "rtl"}
         assert orig_prepare("کوردستان") == "کوردستان"
+
+    def test_sorani_kurdish_letters_reshape_joined_without_raqm(self, monkeypatch):
+        """
+        Verify Sorani letters (ە, ێ, ڵ, ک, گ, پ, چ, ژ, ڤ, ۆ, ڕ) reshape into
+        connected Arabic Presentation Forms without unmapped PUA codepoints when
+        libraqm is unavailable (e.g., Vercel Linux).
+        """
+        monkeypatch.setattr(card_gen_mod, "_HAS_RAQM", False)
+
+        # Verify connected contextual joining in reshaped output (before bidi reversal)
+        # 1. لەسەر -> ﻟ + ـە + سـ + ـە + ـر (all joined cleanly across ە)
+        reshaped_lasar = _RTL_RESHAPER.reshape("لەسەر")
+        assert reshaped_lasar == "\uFEDF\uFEEA\uFEB3\uFEEA\uFEAD"
+
+        # 2. بەپەلە -> بـ + ـە + پـ + ـە + لـ + ـە
+        reshaped_bapala = _RTL_RESHAPER.reshape("بەپەلە")
+        assert reshaped_bapala == "\uFE91\uFEEA\uFB58\uFEEA\uFEDF\uFEEA"
+
+        # 3. ئێران -> ئـ + ـێـ + ـر + ا + ن
+        reshaped_iran = _RTL_RESHAPER.reshape("ئێران")
+        assert reshaped_iran == "\uFE8B\uFBFF\u065A\uFEAE\uFE8D\uFEE5"
+
+        # 4. کەشتییەک -> کـ + ـە + شـ + ـتـ + ـیـ + ـیـ + ـە + ک
+        reshaped_kashtiyak = _RTL_RESHAPER.reshape("کەشتییەک")
+        assert reshaped_kashtiyak == "\uFB90\uFEEA\uFEB7\uFE98\uFBFF\uFBFF\uFEEA\uFB8E"
+
+        # 5. ڕۆژھەڵاتی -> ڕ + ۆ + ژ + ھـ + ـە + ڵـ + ـا + تـ + ـی
+        reshaped_rozhalati = _RTL_RESHAPER.reshape("ڕۆژھەڵاتی")
+        assert reshaped_rozhalati == "\u0695\uFBD9\uFB8A\uFBAC\uFEEA\uFEDF\u065A\uFE8E\uFE97\uFBFD"
+
+        # Also verify _prepare_rtl_text produces non-empty visual strings with zero PUA chars (U+E000..U+F8FF)
+        for word in ("لەسەر", "بەپەلە", "ئێران", "کەشتییەک", "ڕۆژھەڵاتی"):
+            visual = NewsCardGenerator._prepare_rtl_text(word)
+            assert visual
+            assert not any(0xE000 <= ord(ch) <= 0xF8FF for ch in visual)

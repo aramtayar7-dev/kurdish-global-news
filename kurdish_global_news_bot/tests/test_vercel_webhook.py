@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
+import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -110,3 +113,72 @@ def test_vercel_webhook_publishes_admin_post_and_blocks_non_admin(tmp_path: Path
     assert res_ok["is_breaking"] is True
     bot.send_photo.assert_awaited_once()
     assert "✅ بڵاوکرایەوە" in bot.send_message.await_args.kwargs["text"]
+
+
+def test_pyproject_covers_full_webhook_import_graph_without_trailing_commas():
+    root = Path(__file__).resolve().parent.parent
+    raw_toml = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert ",\n]" not in raw_toml and ",]" not in raw_toml
+
+    cfg = tomllib.loads(raw_toml)
+    assert cfg["tool"]["vercel"]["entrypoint"] == "api.webhook:handler"
+    declared = {
+        dep.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip().lower()
+        for dep in cfg["project"]["dependencies"]
+    }
+
+    module_to_dist = {
+        "PIL": "pillow",
+        "aiohttp": "aiohttp",
+        "aiosqlite": "aiosqlite",
+        "arabic_reshaper": "arabic-reshaper",
+        "bidi": "python-bidi",
+        "bs4": "beautifulsoup4",
+        "dateutil": "python-dateutil",
+        "dotenv": "python-dotenv",
+        "httpx": "httpx",
+        "rapidfuzz": "rapidfuzz",
+        "telegram": "python-telegram-bot",
+    }
+
+    stdlib = set(sys.stdlib_module_names)
+    visited: set[Path] = set()
+    queue: list[Path] = [root / "api" / "webhook.py"]
+    external: set[str] = set()
+
+    def _resolve(mod: str) -> Path | None:
+        parts = mod.split(".")
+        p_file = root.joinpath(*parts).with_suffix(".py")
+        if p_file.exists():
+            return p_file
+        p_pkg = root.joinpath(*parts) / "__init__.py"
+        return p_pkg if p_pkg.exists() else None
+
+    while queue:
+        current = queue.pop(0).resolve()
+        if current in visited or not current.exists():
+            continue
+        visited.add(current)
+        if current.name != "__init__.py":
+            init_file = current.parent / "__init__.py"
+            if init_file.exists() and init_file != root / "__init__.py":
+                queue.append(init_file)
+        tree = ast.parse(current.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            mods: list[str] = []
+            if isinstance(node, ast.Import):
+                mods = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                mods = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+            for mod in mods:
+                top = mod.split(".")[0]
+                target = _resolve(mod) or _resolve(top)
+                if target:
+                    queue.append(target)
+                elif top not in stdlib:
+                    external.add(top)
+
+    for top_mod in sorted(external):
+        dist = module_to_dist.get(top_mod, top_mod.lower())
+        assert dist in declared, f"Missing dependency for imported module {top_mod} ({dist})"
+

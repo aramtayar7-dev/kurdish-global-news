@@ -21,6 +21,7 @@ import tempfile
 from typing import Optional
 
 import arabic_reshaper
+from arabic_reshaper.letters import LETTERS_ARABIC
 from bidi.algorithm import get_display
 from PIL import Image, ImageDraw, ImageFont, ImageOps, features
 
@@ -32,9 +33,29 @@ from storage.models import Article
 logger = logging.getLogger("processing.card_generator")
 
 _HAS_RAQM: bool = features.check("raqm")
-_RTL_RESHAPER = arabic_reshaper.ArabicReshaper(
-    configuration={"support_ligatures": True}
-)
+
+# Extend default Arabic presentation mappings with Sorani Kurdish letters using
+# standard TTF-supported Unicode glyphs (avoiding Sarchia PUA U+E000..U+E009).
+_KURDISH_LETTER_EXTENSIONS: dict[str, tuple[str, str, str, str]] = {
+    "\u06D5": ("\u06D5", "", "", "\uFEEA"),
+    "\u06CE": ("\u06CE", "\uFBFE\u065A", "\uFBFF\u065A", "\uFBFD\u065A"),
+    "\u06B5": ("\u06B5", "\uFEDF\u065A", "\uFEE0\u065A", "\uFEDE\u065A"),
+    "\u0695": ("\u0695", "", "", "\uFEAE"),
+}
+
+
+def _build_kurdish_rtl_reshaper() -> arabic_reshaper.ArabicReshaper:
+    """Build an ArabicReshaper configured with Sorani Kurdish contextual forms."""
+    reshaper = arabic_reshaper.ArabicReshaper(
+        configuration={"support_ligatures": True}
+    )
+    extended_letters = dict(LETTERS_ARABIC)
+    extended_letters.update(_KURDISH_LETTER_EXTENSIONS)
+    reshaper.letters = extended_letters
+    return reshaper
+
+
+_RTL_RESHAPER = _build_kurdish_rtl_reshaper()
 if not _HAS_RAQM:
     logger.warning(
         "Pillow libraqm is not available in this environment; "
