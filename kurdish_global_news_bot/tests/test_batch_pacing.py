@@ -112,7 +112,7 @@ def _make_art(
 ) -> Article:
     story_t, story_s = _DISTINCT_ENGLISH_TITLES[idx % len(_DISTINCT_ENGLISH_TITLES)]
     if bucket == "telegram":
-        url = f"https://t.me/rudawdigital/{3000 + idx}"
+        url = f"https://t.me/Kurdistan24news/{3000 + idx}"
         src = source_name or f"TGChannel{idx % 3}"
         cat = category or ("kurdistan" if idx % 2 == 0 else "politics_world")
         reg = region or ("South Kurdistan" if cat == "kurdistan" else "middle_east")

@@ -185,6 +185,8 @@ class TestTelegramConfig:
 
         by_user = {ch["username"]: ch for ch in TELEGRAM_SOURCE_CHANNELS}
         assert "AjaNews" in by_user
+        assert "Kurdistan24news" in by_user
+        assert "rudawdigital" not in by_user
         assert "SabrenNewss" not in by_user
         assert "Sabren_News1" not in by_user
         assert all("sabereen" not in (ch.get("name") or "").lower() for ch in TELEGRAM_SOURCE_CHANNELS)
@@ -202,10 +204,14 @@ class TestTelegramConfig:
         from processing.validator import ArticleValidator
         validator = ArticleValidator()
         ok_aja, _ = validator._validate_url("https://t.me/AjaNews/12345")
+        ok_k24, _ = validator._validate_url("https://t.me/Kurdistan24news/12345")
+        bad_rudaw_tg, _ = validator._validate_url("https://t.me/rudawdigital/12345")
         bad_removed, _ = validator._validate_url("https://t.me/SabrenNewss/12345")
         bad_spam, reason_spam = validator._validate_url("https://t.me/unknown_spam_channel/99")
         bad_invite, _ = validator._validate_url("https://t.me/+secretInviteCode")
         assert ok_aja is True
+        assert ok_k24 is True
+        assert bad_rudaw_tg is False
         assert bad_removed is False
         assert bad_spam is False and "Blocked domain" in reason_spam
         assert bad_invite is False
@@ -973,8 +979,8 @@ class TestTelegramPipelineAndEngineIntegration:
             ok = await pipeline.process_article(baghdad_tg_art)
 
         assert ok is True
-        # Telegram channel static photos/og:image are suppressed so branded card avoids channel watermarks
-        publisher._image_handler.download_image.assert_not_awaited()
+        # Real extracted Telegram CDN photos are preserved through pipeline into publisher
+        publisher._image_handler.download_image.assert_awaited_once_with(tg_photo_url)
         send_kwargs = mock_bot.send_photo.call_args.kwargs
         assert send_kwargs["disable_notification"] is True
         assert "🔴 بەپەلە | " not in send_kwargs["caption"]
@@ -991,18 +997,18 @@ class TestTelegramPipelineAndEngineIntegration:
         assert "باکووری عێراق" not in saved_row.translated_title
         assert "ئەمریکای دوژمن" not in saved_row.translated_title
 
-        # Case 2B: Score 9.5 + is_breaking=True from Tier-2 Telegram channel (Rudaw) -> loud delivery + 🔴 بەپەلە |
+        # Case 2B: Score 9.5 + is_breaking=True from Tier-2 Telegram channel (Kurdistan24) -> loud delivery + 🔴 بەپەلە |
         mock_bot.send_photo.reset_mock()
         breaking_tg = Article(
-            original_url="https://t.me/rudawdigital/9003",
-            canonical_url="https://t.me/rudawdigital/9003",
+            original_url="https://t.me/Kurdistan24news/9003",
+            canonical_url="https://t.me/Kurdistan24news/9003",
             original_title="Ballistic missile strikes hit major airbase in central region",
             original_summary=(
                 "Multiple ballistic missiles struck a major airbase overnight triggering explosions and "
                 "air defense sirens across surrounding districts. Military officials confirmed emergency "
                 "deployments and casualty assessment teams at the site."
             ),
-            source_name="Rudaw",
+            source_name="Kurdistan24",
             category="military_conflict",
             image_url="https://cdn4.telegram-cdn.org/file/breaking9003.jpg",
             publication_date=_iso_hours_ago(0.1),

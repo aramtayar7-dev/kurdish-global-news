@@ -147,6 +147,49 @@ class TestOfficialSources:
         assert source.name == "OfficialSources"
         assert source.source_type == "official"
 
+    def test_reuters_only_western_whitelist_across_rss_official_and_search(self):
+        from config import RSS_FEEDS, TELEGRAM_SOURCE_CHANNELS, is_blocked_western_source
+        from sources.official_sources import OFFICIAL_FEEDS
+
+        tg_users = {ch["username"] for ch in TELEGRAM_SOURCE_CHANNELS}
+        assert "rudawdigital" not in tg_users
+        assert {"AjaNews", "Kurdistan24news"}.issubset(tg_users)
+
+        enabled_rss = {f["name"] for f in RSS_FEEDS if f.get("enabled", True)}
+        for blocked in (
+            "BBC World", "BBC Technology", "DW News", "France24 EN",
+            "The Guardian World", "AP News", "CNBC World", "Military Times",
+            "BleepingComputer", "NPR News", "UN News",
+        ):
+            assert blocked not in enabled_rss
+        assert "Reuters World" in enabled_rss
+        assert "Rudaw Sorani" in enabled_rss
+        assert "Kurdistan24 Sorani" in enabled_rss
+        assert "Al Jazeera" in enabled_rss
+
+        assert all(not f.get("enabled", True) for f in OFFICIAL_FEEDS)
+
+        ddg = DuckDuckGoSource()
+        gdelt = GDELTSource()
+        for bad_url, bad_src in [
+            ("https://www.bbc.com/news/world-1", "BBC"),
+            ("https://www.theguardian.com/world/1", "The Guardian"),
+            ("https://www.dw.com/en/1", "DW News"),
+            ("https://www.france24.com/en/1", "France24"),
+            ("https://apnews.com/article/1", "AP News"),
+            ("https://www.cnbc.com/2026/11/27/x.html", "CNBC"),
+            ("https://www.nytimes.com/2026/11/27/world/x.html", "NYT"),
+            ("https://www.cnn.com/2026/11/27/world/x.html", "CNN"),
+            ("https://www.politico.com/news/1", "Politico"),
+            ("https://www.euronews.com/2026/11/27/x", "Euronews"),
+        ]:
+            assert is_blocked_western_source(bad_url, bad_src) is True
+            assert ddg._parse_result({"url": bad_url, "title": "Blocked western news", "source": bad_src}) is None
+            assert gdelt._parse_article({"url": bad_url, "title": "Blocked western news", "domain": bad_src}) is None
+
+        assert ddg._parse_result({"url": "https://www.reuters.com/world/1", "title": "Reuters item", "source": "Reuters"}) is not None
+        assert gdelt._parse_article({"url": "https://www.reuters.com/world/1", "title": "Reuters item", "domain": "reuters.com"}) is not None
+
 
 class TestKurdistanRegionalSource:
     """Verify news feed coverage across all four parts of Kurdistan."""

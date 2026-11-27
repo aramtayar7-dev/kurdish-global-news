@@ -374,6 +374,312 @@ def test_formatter_omits_duplicate_summary_on_short_breaking_dispatch():
     assert "میکانیزمی نوێی هاوکاریی سەربازی" in normal_cap
 
 
+def test_normalize_sorani_orthography_and_preserve_verified_orgs():
+    from processing.content_formatter import normalize_sorani_orthography
+
+    # 1. Broken Arabic-keyboard 'ه ' spacing & lexical MT artifacts fixed cleanly
+    assert normalize_sorani_orthography("وه زیری ده ره وه ی") == "وەزیری دەرەوەی"
+    assert normalize_sorani_orthography("به رگری") == "بەرگری"
+    assert normalize_sorani_orthography("به رده وامی") == "بەردەوامی"
+    assert normalize_sorani_orthography("پشتراست کرده وه") == "پشتڕاست کردەوە"
+
+    # Real word-initial 'ه' (\u0647) in Kurdistan words remains completely untouched
+    authentic = "هێزەکانی پێشمەرگە لە هەولێر و بەغدا کۆبوونەوە."
+    assert normalize_sorani_orthography(authentic) == authentic
+
+    # 2. Stray hashtags stripped cleanly & verified organization names stay intact and natural
+    hashtagged = "#حووسییەکان لە #سەعدە و #حیزبوڵڵا و #حەماس و #ئەنساروڵڵا ڕاگەیەندراویان بڵاوکردەوە."
+    normalized_orgs = sanitize_neutral_sorani_text(hashtagged)
+    assert "#حووسییەکان" not in normalized_orgs
+    assert "#سەعدە" not in normalized_orgs
+    for org in ("حووسییەکان", "سەعدە", "حیزبوڵڵا", "حەماس", "ئەنساروڵڵا"):
+        assert org in normalized_orgs
+
+    # Partisan/propaganda slurs stripped while verified organizations remain natural
+    slurred = "ڕێکخراوی تیرۆریستی حیزبوڵڵا و ئەمریکای دوژمن لەسەر ناوچەکە قسەیان کرد."
+    clean_slurred = sanitize_neutral_sorani_text(slurred)
+    assert "حیزبوڵڵا" in clean_slurred
+    assert "تیرۆریست" not in clean_slurred
+    assert "ئەمریکای دوژمن" not in clean_slurred
+    assert "ئەمریکا" in clean_slurred
+
+
+@pytest.mark.asyncio
+async def test_native_sorani_posts_bypass_all_translation_and_foreign_languages_translate(tmp_path):
+    from core.importance_ranker import RelevanceEvaluation
+    from core.pipeline import ArticlePipeline
+    from monitoring.health import HealthMonitor
+    from monitoring.metrics import Metrics
+    from processing.deduplicator import SemanticDeduplicator
+    from processing.translator import is_native_sorani_article, is_valid_kurdish_sorani
+    from storage.database import Database
+
+    # Verify Persian, Arabic, and English do NOT falsely pass native Sorani gate
+    assert is_native_sorani_article("سەردانی وەزیرانی کوردستان بۆ هەولێر", "لە هەولێر کۆبوونەوەیەکی ئەمنی ئەنجامدرا.") is True
+    assert is_native_sorani_article("فوری | سپاه پاسداران از حمله موشکی خبر داد", "نیروهای مسلح ایران در بیانیه ای اعلام کردند عملیات نظامی ادامه دارد.") is False
+    assert is_valid_kurdish_sorani("گزارش نیروهای مسلح ایران درباره حمله موشکی در منطقه") is False
+    assert is_native_sorani_article("عاجل | وزارة الدفاع العراقية تعلن تعزيز الانتشار الأمني") is False
+    assert is_native_sorani_article("Defense ministers hold urgent talks in Baghdad") is False
+
+    # 1. TranslationEngine bypasses Gemini, OpenRouter, and Google Translate completely on native Sorani (0 calls)
+    engine = TranslationEngine(gemini_api_key="gem-live-key", delay=0.0)
+    with patch.object(engine._gemini_provider, "translate_article", new_callable=AsyncMock) as mock_gem, \
+         patch.object(engine._google_fallback, "translate", new_callable=AsyncMock) as mock_google, \
+         patch.object(OpenRouterClient, "generate_json", new_callable=AsyncMock) as mock_or:
+        for src_title, src_sum in [
+            (
+                "🔥 هێزەکانی پێشمەرگە لە هەولێر ئۆپەراسیۆنیان ئەنجامدا!!",
+                "هێزەکانی پێشمەرگە و سوپای عێراق لە ناوچە سنوورییەکانی کەرکووک هەماهەنگیی سەربازییان زیاد کرد. #هەولێر",
+            ),
+            (
+                "حکوومەتی هەرێمی کوردستان پڕۆژەیاسای بودجەی پەسەند کرد",
+                "لە دانیشتنی ئەمڕۆدا پرسی ناردنی بەشەبودجە و مووچەی فەرمانبەران تاوتوێ کرا.",
+            ),
+        ]:
+            tr_t, tr_s = await engine.translate_article(src_title, src_sum)
+            assert "🔥" not in tr_t and "!!" not in tr_t
+            assert "#هەولێر" not in tr_s
+            assert "پێشمەرگە" in tr_t or "حکوومەتی هەرێمی کوردستان" in tr_t
+
+        mock_gem.assert_not_awaited()
+        mock_google.assert_not_awaited()
+        mock_or.assert_not_awaited()
+
+    # 2. Foreign language posts (Arabic, Persian, English) still translate & normalize broken fallback orthography
+    engine_fallback = TranslationEngine(gemini_api_key="", delay=0.0)
+    with patch.object(
+        engine_fallback._google_fallback,
+        "translate",
+        new_callable=AsyncMock,
+        side_effect=[
+            "وه زیری ده ره وه ی ئێران هێرشه که ی پشتراست کرده وه",
+            "وه زاره تی به رگری رایگه یاند که هێزه کان له به رده وامی دان.",
+            "بەرپرسانی سەربازی لە #سەعدە وەڵامیان دایەوە",
+            "حیزبوڵڵا و ئەمریکای دوژمن لە ناوچەکەدا هەڵوێستیان ڕاگەیاند.",
+        ],
+    ) as mock_google_fb:
+        fb_t1, fb_s1 = await engine_fallback.translate_article(
+            "عاجل | وزير الخارجية الإيراني يؤكد الهجوم",
+            "أعلنت وزارة الدفاع استمرار العمليات العسكرية في المنطقة.",
+        )
+        assert fb_t1 == "وەزیری دەرەوەی ئێران هێرشەکەی پشتڕاست کردەوە"
+        assert "وەزارەتی بەرگری" in fb_s1 and "بەردەوامی" in fb_s1
+
+        fb_t2, fb_s2 = await engine_fallback.translate_article(
+            "گزارش فوری از صعده درباره تحولات نظامی",
+            "نیروهای مسلح بیانیه ای درباره حوادث منطقه صادر کردند.",
+        )
+        assert "#سەعدە" not in fb_t2 and "سەعدە" in fb_t2
+        assert "حیزبوڵڵا" in fb_s2
+        assert "ئەمریکای دوژمن" not in fb_s2 and "ئەمریکا" in fb_s2
+        assert mock_google_fb.await_count == 4
+
+    # 3. ArticlePipeline.prepare_article_for_publishing bypasses _translator completely on Rudaw/K24/NRT native Sorani
+    db = Database(str(tmp_path / "native_sorani_pipe.db"))
+    await db.connect()
+    try:
+        pub = TelegramPublisher()
+        pub._channel_id = "@KurdishGlobalNews"
+        pub._bot = AsyncMock()
+        pipeline = ArticlePipeline(db, pub, HealthMonitor(), Metrics())
+        pipeline._semantic_dedup = SemanticDeduplicator(db, api_key="", base_backoff=0.0)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        k24_art = Article(
+            original_url="https://t.me/Kurdistan24news/4100",
+            canonical_url="https://t.me/Kurdistan24news/4100",
+            original_title="🚀 وەزارەتی پێشمەرگە هێزەکانی سنووری هەولێری بەهێز کرد!!",
+            normalized_title="وەزارەتی پێشمەرگە هێزەکانی سنووری هەولێری بەهێز کرد",
+            original_summary="🔴 بەپەلە | وەزارەتی پێشمەرگە ڕایگەیاند هێزەکانی لە ناوچە سنوورییەکانی هەولێر جێگیر کران. #کوردستان",
+            source_name="Kurdistan24",
+            category="kurdistan",
+            region="kurdistan_bashur",
+            importance_score=8.8,
+            publication_date=now_iso,
+            discovered_at=now_iso,
+        )
+        k24_art.compute_content_hash()
+        k24_art.compute_event_fingerprint()
+        k24_art.id = await db.insert_article(k24_art)
+
+        pipeline._extractor.fetch_article_content_and_image = AsyncMock(return_value=("", None))
+        pipeline._translator.translate_article = AsyncMock(
+            side_effect=AssertionError("Translator MUST NOT be called for native Sorani articles!")
+        )
+        ok = await pipeline.prepare_article_for_publishing(k24_art)
+        assert ok is True
+        pipeline._translator.translate_article.assert_not_called()
+        assert "🚀" not in (k24_art.translated_title or "")
+        assert "!!" not in (k24_art.translated_title or "")
+        assert "پێشمەرگە" in (k24_art.translated_title or "")
+    finally:
+        await db.close()
+
+
+def test_source_prioritization_and_noisy_western_feed_demotion():
+    from config import RSS_FEEDS, SOURCE_CREDIBILITY, TELEGRAM_SOURCE_CHANNELS
+    from core.balancer import select_paced_batch
+    from core.importance_ranker import article_selection_sort_key, get_source_priority_rank
+
+    tg_users = {ch["username"] for ch in TELEGRAM_SOURCE_CHANNELS}
+    assert "rudawdigital" not in tg_users
+    assert {"AjaNews", "Kurdistan24news"}.issubset(tg_users)
+
+    noisy = {
+        "The Guardian World", "DW News", "France24 EN", "CNBC World", "BleepingComputer",
+        "BBC World", "BBC Technology", "AP News", "NPR News", "UN News", "Military Times",
+    }
+    enabled_names = {f["name"] for f in RSS_FEEDS if f.get("enabled", True)}
+    assert noisy.isdisjoint(enabled_names)
+    assert {"Al Jazeera", "Rudaw Sorani", "Kurdistan24 Sorani", "Shafaq News", "Reuters World"}.issubset(enabled_names)
+
+    for hi in ("Al Jazeera", "Rudaw", "Kurdistan24", "NRT", "Shafaq News"):
+        assert SOURCE_CREDIBILITY[hi.lower()] >= 0.90
+        assert get_source_priority_rank(hi) == 0
+
+    for lo in ("The Guardian", "France24", "DW", "CNBC", "BleepingComputer"):
+        assert SOURCE_CREDIBILITY[lo.lower()] <= 0.45
+        assert get_source_priority_rank(lo) == 2
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    aja = Article(
+        id=1,
+        original_url="https://t.me/AjaNews/8001",
+        canonical_url="https://t.me/AjaNews/8001",
+        original_title="Baghdad security command strengthens air defense in Iraq",
+        source_name="Al Jazeera",
+        category="military_conflict",
+        region="middle_east",
+        importance_score=8.1,
+        publication_date=now_iso,
+    )
+    rudaw = Article(
+        id=2,
+        original_url="https://t.me/rudawdigital/8002",
+        canonical_url="https://t.me/rudawdigital/8002",
+        original_title="Erbil KRG parliament discusses border security agreement",
+        source_name="Rudaw",
+        category="kurdistan",
+        region="kurdistan_bashur",
+        importance_score=8.0,
+        publication_date=now_iso,
+    )
+    guardian = Article(
+        id=3,
+        original_url="https://www.theguardian.com/world/2026/nov/27/eu-iraq-talks",
+        canonical_url="https://www.theguardian.com/world/2026/nov/27/eu-iraq-talks",
+        original_title="European ministers discuss Iraq diplomacy",
+        source_name="The Guardian World",
+        category="politics_world",
+        region="middle_east",
+        importance_score=8.7,
+        publication_date=now_iso,
+    )
+    ranked = sorted([guardian, aja, rudaw], key=article_selection_sort_key)
+    assert ranked[0] is rudaw
+    assert ranked[1] is aja
+    assert ranked[2] is guardian
+
+    res = select_paced_batch([guardian, aja], target_posts=1, source_mix={"telegram": 1, "x": 0, "search": 0})
+    assert res.selected == [aja]
+
+
+@pytest.mark.asyncio
+async def test_telegram_k24_image_url_preserved_through_pipeline_to_publisher(tmp_path):
+    from core.importance_ranker import RelevanceEvaluation
+    from core.pipeline import ArticlePipeline
+    from monitoring.health import HealthMonitor
+    from monitoring.metrics import Metrics
+    from processing.deduplicator import SemanticDeduplicator
+    from storage.database import Database
+
+    db = Database(str(tmp_path / "k24_img_passthrough.db"))
+    await db.connect()
+    try:
+        pub = TelegramPublisher()
+        pub._channel_id = "@KurdishGlobalNews"
+        pub._bot = AsyncMock()
+        pub._bot.send_photo = AsyncMock(return_value=MagicMock(message_id=9191))
+
+        valid_png = _make_valid_png_bytes(64, 64)
+        fake_card = tmp_path / "k24_card.jpg"
+        fake_card.write_bytes(b"JPG")
+        pub._card_generator.generate_card_file = AsyncMock(return_value=fake_card)
+
+        pipeline = ArticlePipeline(db, pub, HealthMonitor(), Metrics())
+        pipeline._semantic_dedup = SemanticDeduplicator(db, api_key="", base_backoff=0.0)
+        pipeline._ranker.evaluate_global_relevance = AsyncMock(
+            return_value=RelevanceEvaluation(
+                score=8,
+                is_breaking=False,
+                category="kurdistan",
+                reason="Kurdistan security meeting",
+                passed=True,
+            )
+        )
+        pipeline._extractor.fetch_article_content_and_image = AsyncMock(
+            return_value=("", "https://cdn4.telegram-cdn.org/file/ignored_og_preview.jpg")
+        )
+
+        # 1. Kurdistan24news post with extracted Telegram CDN photo -> preserved into _download_telegram_cdn_image & card_generator
+        cdn_photo_url = "https://cdn4.telegram-cdn.org/file/k24_real_photo_777.jpg"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        k24_with_photo = Article(
+            original_url="https://t.me/Kurdistan24news/777",
+            canonical_url="https://t.me/Kurdistan24news/777",
+            original_title="هێزەکانی پێشمەرگە لە هەولێر کۆبوونەوەیەکی ئەمنییان ئەنجامدا",
+            normalized_title="هێزەکانی پێشمەرگە لە هەولێر کۆبوونەوەیەکی ئەمنییان ئەنجامدا",
+            original_summary="لە کۆبوونەوەکەدا پلانی پاراستنی سنوورەکانی هەرێمی کوردستان تاوتوێ کرا.",
+            source_name="Kurdistan24",
+            category="kurdistan",
+            region="kurdistan_bashur",
+            image_url=cdn_photo_url,
+            publication_date=now_iso,
+            discovered_at=now_iso,
+        )
+        k24_with_photo.compute_content_hash()
+        k24_with_photo.compute_event_fingerprint()
+        k24_with_photo.id = await db.insert_article(k24_with_photo)
+
+        with patch.object(
+            pub, "_download_telegram_cdn_image", new_callable=AsyncMock, return_value=valid_png
+        ) as mock_cdn_dl:
+            ok = await pipeline.process_article(k24_with_photo)
+
+        assert ok is True
+        assert k24_with_photo.image_url == cdn_photo_url
+        mock_cdn_dl.assert_awaited_once()
+        assert mock_cdn_dl.call_args.args[0] == cdn_photo_url
+        assert pub._card_generator.generate_card_file.call_args.kwargs["image_bytes"] == valid_png
+
+        # 2. Kurdistan24news post without extracted photo -> stays empty (no og:image leak) & falls back to luxury background
+        pub._card_generator.generate_card_file.reset_mock()
+        fake_card.write_bytes(b"JPG")
+        k24_no_photo = Article(
+            original_url="https://t.me/Kurdistan24news/778",
+            canonical_url="https://t.me/Kurdistan24news/778",
+            original_title="حکوومەتی هەرێمی کوردستان پڕۆژەیەکی نوێی سەربازی پەسەند کرد",
+            normalized_title="حکوومەتی هەرێمی کوردستان پڕۆژەیەکی نوێی سەربازی پەسەند کرد",
+            original_summary="وەزارەتی پێشمەرگە وردەکاریی بڕیارەکەی بۆ ڕێکخستنەوەی هێزەکان بڵاوکردەوە.",
+            source_name="Kurdistan24",
+            category="kurdistan",
+            region="kurdistan_bashur",
+            image_url="",
+            publication_date=now_iso,
+            discovered_at=now_iso,
+        )
+        k24_no_photo.compute_content_hash()
+        k24_no_photo.compute_event_fingerprint()
+        k24_no_photo.id = await db.insert_article(k24_no_photo)
+
+        ok_no_photo = await pipeline.process_article(k24_no_photo)
+        assert ok_no_photo is True
+        assert k24_no_photo.image_url == ""
+        assert pub._card_generator.generate_card_file.call_args.kwargs["image_bytes"] is None
+    finally:
+        await db.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 3.2 TELEGRAM MEDIA EXTRACTION & CDN DOWNLOAD TESTS
 # ═══════════════════════════════════════════════════════════════════════════

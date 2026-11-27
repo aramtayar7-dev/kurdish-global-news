@@ -18,32 +18,37 @@ from config import REQUEST_TIMEOUT, USER_AGENT
 
 logger = logging.getLogger("sources.official")
 
-# Official feeds from international organizations
-OFFICIAL_FEEDS: list[dict[str, str]] = [
+# Official feeds (European/US/international institutional feeds disabled under Reuters-only external whitelist)
+OFFICIAL_FEEDS: list[dict[str, object]] = [
     {
         "name": "UN News",
         "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
         "category": "politics_world",
+        "enabled": False,
     },
     {
         "name": "WHO News",
         "url": "https://www.who.int/rss-feeds/news-english.xml",
         "category": "politics_world",
+        "enabled": False,
     },
     {
         "name": "NATO News",
         "url": "https://www.nato.int/cps/en/natolive/news.xml",
         "category": "military_conflict",
+        "enabled": False,
     },
     {
         "name": "EU News",
         "url": "https://ec.europa.eu/commission/presscorner/api/rss",
         "category": "politics_world",
+        "enabled": False,
     },
     {
         "name": "IAEA News",
         "url": "https://www.iaea.org/feeds/topnews",
         "category": "economy_markets",
+        "enabled": False,
     },
 ]
 
@@ -69,17 +74,20 @@ class OfficialSourcesAdapter(BaseSource):
             await self._session.close()
 
     async def fetch_articles(self) -> list[RawArticle]:
-        """Fetch articles from all official feeds."""
+        """Fetch articles from all enabled official feeds."""
         if not self._session:
             await self.initialize()
 
         articles: list[RawArticle] = []
-        tasks = [self._fetch_feed(feed) for feed in OFFICIAL_FEEDS]
+        active_feeds = [feed for feed in OFFICIAL_FEEDS if feed.get("enabled", True)]
+        if not active_feeds:
+            return articles
+        tasks = [self._fetch_feed(feed) for feed in active_feeds]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                feed_name = OFFICIAL_FEEDS[i]["name"]
+                feed_name = active_feeds[i]["name"]
                 logger.warning("Official feed '%s' failed: %s", feed_name, str(result)[:200])
                 continue
             if isinstance(result, list):

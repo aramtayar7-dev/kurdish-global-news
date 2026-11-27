@@ -64,7 +64,7 @@ GEMINI_TRANSLATION_SYSTEM_PROMPT = (
     "2. Headline & No Repetition: Write a crisp, punchy, neutral Sorani headline. NEVER repeat the headline verbatim or paraphrase it as the first sentence of the summary.\n"
     "3. 5Ws & Facts: Clearly convey what happened, who is involved, where, why it matters, and exact numbers/facts strictly from the source text. Do NOT invent facts, casualties, victories, or quotations.\n"
     "4. Accurate Terms (No Mistranslation): Translate roles and ages faithfully — NEVER translate 'man', 'official', or an older adult (e.g., a 62-year-old) as 'گەنج'; use accurate Sorani terms such as 'پیاوێکی تەمەن ٦٢ ساڵ' or 'بەرپرسێک'.\n"
-    "5. Natural Sorani (No Raw Jargon): Replace untranslated foreign jargon (such as 'ئیفێمیزم' or 'ڕیگۆلیتی') with clear natural Sorani phrasing (e.g., 'دەربڕینی ناڕاستەوخۆ' or 'تۆز و خۆڵی هاوشێوەی سەر مانگ').\n"
+    "5. Natural Sorani (No Raw Jargon): Replace untranslated foreign jargon (such as 'ئیفێمیزم' or 'ڕیگۆلیتی') with clear natural Sorani phrasing (e.g., 'دەربڕینی ناڕاستەوخۆ' or 'تۆز و خۆڵی هاوشێوەی سەر مانگ'). Keep verified organization names natural and accurate (e.g., 'حیزبوڵڵا', 'حەماس', 'ئەنساروڵڵا', 'حووسییەکان') — NEVER censor or distort verified organization names.\n"
     "6. Proper Sorani Orthography: Always use proper Sorani characters (ڕ, ڵ, ۆ, ێ, ە, ه, ک, ی) rather than Arabic ي or ك.\n"
     "7. No Agency Datelines or RSS Footers: NEVER copy or prepend news-agency datelines (e.g., 'قامیشلی، سوریا (نۆرس پرێس) –', 'هەولێر -', 'واشنتۆن (ڕۆیتەرز) -') or RSS footers ('Continue reading...', 'Read more...', 'بەردەوام بە لە خوێندنەوە', 'زیاتر بخوێنەوە'). Begin directly with clean Sorani news sentences and NEVER emit broken punctuation such as ', و,' or '، و،'.\n"
     "8. Output Format: Respond ONLY with valid JSON matching this schema (NO markdown fences, NO commentary):\n"
@@ -102,6 +102,192 @@ def normalize_sorani_chars(text: str) -> str:
     return re.sub(r"[ \t]+", " ", cleaned).strip()
 
 
+_HASHTAG_SYMBOL_RE = re.compile(r"(?<!\S)#([\w\u0621-\u064A\u0671-\u06D5\u06F0-\u06F9_]+)")
+_ARABIC_EXCLUSIVE_CHAR_RE = re.compile(r"[أإآةذضصطظث]")
+_TOKEN_WRAP_RE = re.compile(
+    r"^([^\w\u0621-\u064A\u0671-\u06D5]*)([\w\u0621-\u064A\u0671-\u06D5]+)([^\w\u0621-\u064A\u0671-\u06D5]*)$"
+)
+_PURE_ARABIC_KURDISH_WORD_RE = re.compile(r"^[\u0621-\u064A\u0671-\u06D5]+$")
+_ARABIC_EXCLUSION_WORDS: frozenset[str] = frozenset({
+    "الله", "لله", "بالله", "تالله", "والله", "هذه", "هذا",
+    "عليه", "إليه", "اليه", "منه", "عنه", "فيه", "معه", "له",
+    "أنه", "انه", "بأنه", "بانه", "لأنه", "لانه", "حوله", "ضده",
+    "تجاهه", "نفسه", "بعده", "قبله", "بينه", "كله", "جله",
+})
+_SORANI_STANDALONE_HEH_WORDS: frozenset[str] = frozenset({"له", "به", "که", "نه", "مه"})
+_SORANI_STANDALONE_NEXT_WORDS: frozenset[str] = frozenset({
+    "و", "لە", "له", "بۆ", "بە", "به", "کە", "نە", "نه",
+    "لەسەر", "لەگەڵ", "دوای", "پێش", "ئەم", "ئەو", "ئەگەر",
+    "بەڵام", "چونکە", "بەپێی", "تاکو", "هەتا", "یان", "هیچ",
+    "هەموو", "زۆر", "بوو", "بوون", "بێت", "نییە", "هەیە",
+    "دەبێت", "دەکات", "دەڵێت", "کرد", "وتی", "گوتی", "ڕایگەیاند", "رایگەیاند",
+})
+_SORANI_BOUND_SUFFIXES: frozenset[str] = frozenset({
+    "ی", "ن", "م", "ت", "وه", "وەم", "وەت", "وە",
+    "یه", "یە", "یهک", "یەک", "یک", "یەتی", "یهتی", "تی",
+    "تان", "مان", "یان", "که", "کە", "کان", "کانی", "کەی", "کهی",
+    "ێک", "ێکی", "ێکدا", "دا", "دایە", "دایه", "ەوە", "هوه", "ست",
+})
+_SORANI_BEH_FOLLOWERS: frozenset[str] = frozenset({
+    "شدار", "شداری", "شداربووان", "شداربوو", "غدا", "غداد",
+    "پەلە", "پهله", "پێی", "پیی", "هۆی", "هوی", "رگری",
+    "ردەوامی", "ردهوامی", "رپرس", "رپرسی", "رپرسان", "رپرسانی",
+    "رپەرچ", "رامبەر", "رز", "رزە", "هێز", "شێک", "ره", "رەو",
+})
+_SORANI_NEH_FOLLOWERS: frozenset[str] = frozenset({
+    "وت", "خۆش", "خشە", "خشه", "تەوە", "تهوه", "بوو", "بوون", "بێت", "کرد", "کرا",
+})
+_SORANI_LEXICAL_CORRECTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?<![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])پشتراست(?![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"), "پشتڕاست"),
+    (re.compile(r"(?<![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])پشت\s+راست(?![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"), "پشتڕاست"),
+    (re.compile(r"(?<![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])ئاگربهست(?![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"), "ئاگربەست"),
+    (re.compile(r"(?<![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])شهر(?![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"), "شەڕ"),
+)
+
+
+def _is_arabic_lexical_word(word: str) -> bool:
+    if not word:
+        return False
+    if word in _ARABIC_EXCLUSION_WORDS or word.startswith("ال") or word.endswith("الله"):
+        return True
+    return bool(_ARABIC_EXCLUSIVE_CHAR_RE.search(word))
+
+
+def _normalize_sorani_line_tokens(line: str, *, convert_arabic_ky: bool = True) -> str:
+    tokens = [t for t in line.split(" ") if t]
+    if not tokens:
+        return ""
+
+    if convert_arabic_ky:
+        normalized_tokens: list[str] = []
+        for tok in tokens:
+            m = _TOKEN_WRAP_RE.match(tok)
+            if m and not _is_arabic_lexical_word(m.group(2)):
+                core = m.group(2).replace("ك", "ک").replace("ي", "ی")
+                normalized_tokens.append(f"{m.group(1)}{core}{m.group(3)}")
+            else:
+                normalized_tokens.append(tok)
+        tokens = normalized_tokens
+
+    merged: list[str] = []
+    idx = 0
+    while idx < len(tokens):
+        curr_raw = tokens[idx]
+        m_prev = _TOKEN_WRAP_RE.match(curr_raw)
+        if not m_prev:
+            merged.append(curr_raw)
+            idx += 1
+            continue
+
+        prev_lead, prev_core, prev_trail = m_prev.groups()
+        broken_chain = False
+
+        while (
+            not prev_trail
+            and idx + 1 < len(tokens)
+            and prev_core.endswith("\u0647")
+            and len(prev_core) >= 2
+            and _PURE_ARABIC_KURDISH_WORD_RE.match(prev_core)
+            and not _is_arabic_lexical_word(prev_core)
+        ):
+            m_next = _TOKEN_WRAP_RE.match(tokens[idx + 1])
+            if not m_next:
+                break
+            next_lead, next_core, next_trail = m_next.groups()
+            if (
+                next_lead
+                or not _PURE_ARABIC_KURDISH_WORD_RE.match(next_core)
+                or _is_arabic_lexical_word(next_core)
+                or next_core in _SORANI_STANDALONE_NEXT_WORDS
+            ):
+                break
+
+            should_merge = False
+            next_becomes_broken_fragment = False
+
+            if len(prev_core) == 2 and prev_core not in _SORANI_STANDALONE_HEH_WORDS:
+                should_merge = True
+                if (
+                    next_core.endswith("\u0647")
+                    and len(next_core) <= 4
+                    and next_core not in _SORANI_STANDALONE_HEH_WORDS
+                ):
+                    next_becomes_broken_fragment = True
+            elif prev_core == "به":
+                if (
+                    next_core in _SORANI_BEH_FOLLOWERS
+                    or (len(next_core) in (2, 3, 4) and next_core.endswith("\u0647") and next_core[0] in ("ر", "پ", "ش", "غ"))
+                    or next_core.startswith(("رگر", "ردە", "رده", "رپر", "رپە", "رامب", "شدار"))
+                ):
+                    should_merge = True
+                    if (
+                        next_core.endswith("\u0647")
+                        and len(next_core) <= 4
+                        and next_core not in _SORANI_STANDALONE_HEH_WORDS
+                    ):
+                        next_becomes_broken_fragment = True
+            elif prev_core == "نه":
+                if next_core in _SORANI_NEH_FOLLOWERS or next_core.startswith(("ته", "تە")):
+                    should_merge = True
+            elif len(prev_core) >= 3 and (next_core in _SORANI_BOUND_SUFFIXES or broken_chain):
+                if next_core == "که" and prev_core.endswith(("هوه", "ەوه", "ەوە", "ەو\u0647")):
+                    nn_match = _TOKEN_WRAP_RE.match(tokens[idx + 2]) if idx + 2 < len(tokens) else None
+                    nn_core = nn_match.group(2) if nn_match else ""
+                    if nn_core not in {"ی", "ن", "م", "ت", "ان", "انی"}:
+                        should_merge = False
+                    else:
+                        should_merge = True
+                else:
+                    should_merge = True
+                    if (
+                        next_core.endswith("\u0647")
+                        and len(next_core) <= 4
+                        and next_core not in _SORANI_STANDALONE_HEH_WORDS
+                    ):
+                        next_becomes_broken_fragment = True
+
+            if not should_merge:
+                break
+
+            prev_core = f"{prev_core[:-1]}\u06D5{next_core}"
+            prev_trail = next_trail
+            broken_chain = next_becomes_broken_fragment
+            idx += 1
+
+        if (
+            prev_core.endswith("\u0647")
+            and len(prev_core) >= 2
+            and _PURE_ARABIC_KURDISH_WORD_RE.match(prev_core)
+            and not _is_arabic_lexical_word(prev_core)
+        ):
+            prev_core = f"{prev_core[:-1]}\u06D5"
+
+        merged.append(f"{prev_lead}{prev_core}{prev_trail}")
+        idx += 1
+
+    return " ".join(merged)
+
+
+def normalize_sorani_orthography(text: str, *, convert_arabic_ky: bool = True) -> str:
+    """
+    Deterministically fix Sorani orthography and fallback-translator spacing artifacts:
+      - Strips stray hashtags (#حووسییەکان -> حووسییەکان, #سەعدە -> سەعدە)
+      - Rejoins spaced Arabic-style 'ه ' syllables inside Kurdish words into proper 'ە' (U+06D5)
+        without altering legitimate initial 'ه' (U+0647) in words such as 'هەولێر'
+      - Normalizes trailing Kurdish 'ه' to 'ە' while keeping genuine Arabic tokens intact
+      - Applies targeted MT orthography repairs (e.g. 'پشتراست' -> 'پشتڕاست')
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+
+    cleaned = _HASHTAG_SYMBOL_RE.sub(r"\1", text.strip())
+    lines = [_normalize_sorani_line_tokens(ln, convert_arabic_ky=convert_arabic_ky) for ln in cleaned.splitlines()]
+    joined = "\n".join(ln.strip() for ln in lines if ln.strip() or len(lines) == 1)
+    for pattern, repl in _SORANI_LEXICAL_CORRECTIONS:
+        joined = pattern.sub(repl, joined)
+    return joined.strip()
+
+
 # Leading agency dateline patterns (Sorani/Arabic and English wire services)
 _DATELINE_WITH_AGENCY_RE = re.compile(
     r"^\s*[^\n()—–\-\.\!\?]{1,55}?\([^()\n]{2,45}\)\s*(?:[-–—−]+|:)?\s+",
@@ -134,7 +320,16 @@ def strip_news_dateline(text: str) -> str:
 
 
 _SORANI_DISTINCT_RE = re.compile(r"[پچژڤگڵڕێۆە]")
+_SORANI_EXCLUSIVE_RE = re.compile(r"[ڵڕێۆە]")
 _ARABIC_ONLY_LETTERS_RE = re.compile(r"[أإآىًٌٍ]")
+_PERSIAN_ONLY_CHAR_RE = re.compile(r"[آۀ]")
+_PERSIAN_STOPWORDS_RE = re.compile(
+    r"(?:^|[\s،.؟!:\-\(\)])"
+    r"(?:در|از|است|هست|نیست|شد|شود|شده|خواهد|خواهند|برای|درباره|"
+    r"این|آن|های|نیز|گفت|کردند|گزارش|فوری|امروز|گذشته|کشور|دولت|"
+    r"سپاه|ارتش|نیروهای|مسلح|موشکی|حمله|منطقه|ایران|تهران|تاکید|افزود|می[\u200c\s](?:شود|کند|گوید|باشد))"
+    r"(?=$|[\s،.؟!:\-\(\)])"
+)
 _ARABIC_STOPWORDS_RE = re.compile(
     r"(?:^|[\s،.؟!:\-\(\)])"
     r"(?:في|على|إلى|الى|عن|مع|أن|إن|التي|الذي|هذا|هذه|أعلنت|أفادت|قالت|أكدت|"
@@ -155,8 +350,7 @@ _SORANI_STOPWORDS_RE = re.compile(
 def is_valid_kurdish_sorani(text: str) -> bool:
     """
     Strictly return True ONLY when text is genuine Central Kurdish (Sorani).
-    Rejects English, untranslated Arabic (even though both share Unicode U+0600-U+06FF),
-    empty strings, and heavily Latin-mixed outputs.
+    Rejects English, Arabic, Persian (Farsi), empty strings, and heavily Latin-mixed outputs.
     """
     if not text or not text.strip():
         return False
@@ -177,25 +371,28 @@ def is_valid_kurdish_sorani(text: str) -> bool:
     if ratio < 0.70:
         return False
 
-    # Arabic teh marbuta ('ة') never occurs in standard Central Kurdish Sorani
-    if "\u0629" in cleaned:
+    # Arabic teh marbuta ('ة') and Persian madda/heh-yeh never occur in standard Sorani
+    if "\u0629" in cleaned or _PERSIAN_ONLY_CHAR_RE.search(cleaned):
         return False
 
-    sorani_markers = _SORANI_DISTINCT_RE.findall(cleaned)
-    if not sorani_markers:
+    # Genuine Sorani contains exclusively Sorani letters (ڵ, ڕ, ێ, ۆ, ە), not just Persian-shared پ/چ/ژ/گ
+    if not _SORANI_EXCLUSIVE_RE.search(cleaned):
         return False
 
     arabic_stops = len(_ARABIC_STOPWORDS_RE.findall(cleaned))
+    persian_stops = len(_PERSIAN_STOPWORDS_RE.findall(cleaned))
     sorani_stops = len(_SORANI_STOPWORDS_RE.findall(cleaned))
     arabic_only_diac = len(_ARABIC_ONLY_LETTERS_RE.findall(cleaned))
 
     if arabic_stops >= 1 and arabic_stops >= sorani_stops:
         return False
-    if arabic_only_diac >= 1 and len(sorani_markers) < 2:
+    if persian_stops >= 1 and persian_stops >= sorani_stops:
+        return False
+    if arabic_only_diac >= 1 and len(_SORANI_DISTINCT_RE.findall(cleaned)) < 2:
         return False
     if arabic_only_diac >= 2 and sorani_stops == 0:
         return False
-    if len(arabic_script_chars) >= 35 and len(sorani_markers) < 2 and sorani_stops == 0:
+    if len(arabic_script_chars) >= 35 and len(_SORANI_DISTINCT_RE.findall(cleaned)) < 2 and sorani_stops == 0:
         return False
 
     return True
@@ -204,6 +401,30 @@ def is_valid_kurdish_sorani(text: str) -> bool:
 def is_kurdish_sorani(text: str) -> bool:
     """Backward-compatible alias enforcing strict Central Kurdish (Sorani) validation."""
     return is_valid_kurdish_sorani(text)
+
+
+def is_native_sorani_article(title: str, summary: str = "") -> bool:
+    """
+    Return True ONLY when an incoming article is ALREADY written in genuine
+    Central Kurdish (Sorani) — e.g. from Rudaw, Kurdistan24, NRT, or any native Sorani feed —
+    while returning False for Arabic, Persian, or English dispatches.
+    """
+    raw_title = (title or "").strip()
+    if not raw_title:
+        return False
+    norm_title = normalize_sorani_orthography(normalize_sorani_chars(raw_title))
+    if not is_valid_kurdish_sorani(norm_title):
+        return False
+
+    raw_summary = (summary or "").strip()
+    if raw_summary:
+        norm_summary = normalize_sorani_orthography(
+            strip_news_dateline(normalize_sorani_chars(raw_summary))
+        )
+        if norm_summary and not is_valid_kurdish_sorani(norm_summary):
+            return False
+
+    return True
 
 
 def trim_at_sentence_boundary(text: str, max_len: int = 650) -> str:
@@ -343,11 +564,17 @@ class GeminiTranslationProvider(TranslationProvider):
         from processing.content_formatter import sanitize_neutral_sorani_text, strip_rss_boilerplate
 
         final_title = sanitize_neutral_sorani_text(
-            normalize_sorani_chars(str(data.get("title", "")).strip())
+            normalize_sorani_orthography(
+                normalize_sorani_chars(str(data.get("title", "")).strip())
+            )
         )
         final_summary = sanitize_neutral_sorani_text(
             strip_rss_boilerplate(
-                strip_news_dateline(normalize_sorani_chars(str(data.get("summary", "")).strip()))
+                strip_news_dateline(
+                    normalize_sorani_orthography(
+                        normalize_sorani_chars(str(data.get("summary", "")).strip())
+                    )
+                )
             )
         )
 
@@ -399,7 +626,9 @@ class GeminiTranslationProvider(TranslationProvider):
         from processing.content_formatter import sanitize_neutral_sorani_text
 
         translated = sanitize_neutral_sorani_text(
-            normalize_sorani_chars(str(data.get("text", "")).strip())
+            normalize_sorani_orthography(
+                normalize_sorani_chars(str(data.get("text", "")).strip())
+            )
         )
         if not translated:
             raise TranslationError("Gemini returned empty translation text.")
@@ -594,9 +823,14 @@ class TranslationEngine:
         await self._google_fallback.cleanup()
 
     async def translate_title(self, title: str, target_lang: str = "ckb") -> str:
-        """Translate headline to Sorani Kurdish through fallback chain."""
-        if not title.strip():
+        """Translate headline to Sorani Kurdish through fallback chain (skips all LLMs/MT for native Sorani)."""
+        if not title or not title.strip():
             return ""
+        if is_native_sorani_article(title):
+            from processing.content_formatter import sanitize_neutral_sorani_text
+            return sanitize_neutral_sorani_text(
+                normalize_sorani_orthography(normalize_sorani_chars(title))
+            )
         translated = await self._translate_with_fallback(title, target_lang=target_lang)
         cleaned = self._post_process(translated, title)
         if not is_valid_kurdish_sorani(cleaned):
@@ -604,9 +838,15 @@ class TranslationEngine:
         return cleaned
 
     async def translate_summary(self, summary: str, target_lang: str = "ckb") -> str:
-        """Translate summary to Sorani Kurdish through fallback chain."""
-        if not summary.strip():
+        """Translate summary to Sorani Kurdish through fallback chain (skips all LLMs/MT for native Sorani)."""
+        if not summary or not summary.strip():
             return ""
+        if is_native_sorani_article(summary):
+            from processing.content_formatter import sanitize_neutral_sorani_text, strip_rss_boilerplate
+            cleaned = strip_rss_boilerplate(
+                strip_news_dateline(normalize_sorani_orthography(normalize_sorani_chars(summary)))
+            )
+            return sanitize_neutral_sorani_text(trim_at_sentence_boundary(cleaned, max_len=650))
         translated = await self._translate_with_fallback(summary, target_lang=target_lang)
         cleaned = self._post_process(translated, summary)
         if not is_valid_kurdish_sorani(cleaned):
@@ -620,28 +860,50 @@ class TranslationEngine:
         target_lang: str = "ckb",
     ) -> tuple[str, str]:
         """
-        Translate or rewrite an article in a single Gemini pass when available;
+        Translate an article in Arabic, Persian, or English in a single Gemini pass when available;
         fall back cleanly to Google Translate (`ckb`) ONLY if Gemini fails or has no keys.
-        NEVER falls back to raw English or Arabic source text.
-        For strictly verified native Sorani articles, uses Kurdish editorial rewrite.
+        NEVER sends already-Sorani (native Kurdish) articles (e.g. Rudaw, Kurdistan24, NRT)
+        to Gemini, OpenRouter, or Google Translate — preserves authentic Sorani directly with
+        neutral emoji/punctuation/orthography cleanup only.
+        NEVER falls back to raw English, Arabic, or Persian source text.
         """
-        native_kurdish = is_valid_kurdish_sorani(f"{title} {summary}")
         has_source_summary = bool(summary and summary.strip())
         self.last_event_metadata = {"event_key": "", "event_entities": []}
         self._gemini_provider.last_event_metadata = {"event_key": "", "event_entities": []}
 
-        # Tier 1: Single high-quality Gemini pass (translates+summarizes OR rewrites native Kurdish)
-        from processing.content_formatter import sanitize_neutral_sorani_text
+        from processing.content_formatter import sanitize_neutral_sorani_text, strip_rss_boilerplate
 
+        if is_native_sorani_article(title, summary):
+            clean_title = sanitize_neutral_sorani_text(
+                normalize_sorani_orthography(normalize_sorani_chars(title))
+            )
+            clean_summary = ""
+            if has_source_summary:
+                normalized_sum = strip_rss_boilerplate(
+                    strip_news_dateline(normalize_sorani_orthography(normalize_sorani_chars(summary)))
+                )
+                clean_summary = sanitize_neutral_sorani_text(
+                    trim_at_sentence_boundary(sanitize_neutral_sorani_text(normalized_sum), max_len=650)
+                )
+            if is_valid_kurdish_sorani(clean_title) and (
+                not has_source_summary or not clean_summary or is_valid_kurdish_sorani(clean_summary)
+            ):
+                logger.info(
+                    "Native Sorani detected — skipping Gemini/OpenRouter/Google Translate for headline '%s'",
+                    clean_title[:60],
+                )
+                return clean_title, clean_summary
+
+        # Tier 1: Single high-quality Gemini pass (translates+summarizes Arabic, Persian, or English)
         if self._gemini_provider.has_keys:
             try:
                 final_title, final_summary = await self._gemini_provider.translate_article(
                     title=title,
                     summary=summary,
-                    is_kurdish=native_kurdish,
+                    is_kurdish=False,
                 )
-                final_title = sanitize_neutral_sorani_text(final_title)
-                final_summary = sanitize_neutral_sorani_text(final_summary)
+                final_title = sanitize_neutral_sorani_text(normalize_sorani_orthography(final_title))
+                final_summary = sanitize_neutral_sorani_text(normalize_sorani_orthography(final_summary))
                 self.last_event_metadata = dict(
                     getattr(self._gemini_provider, "last_event_metadata", None)
                     or {"event_key": "", "event_entities": []}
@@ -651,8 +913,7 @@ class TranslationEngine:
                 ):
                     raise TranslationError("Gemini output failed strict Sorani Kurdish verification.")
                 logger.info(
-                    "Gemini single-pass %s completed for headline '%s'",
-                    "Kurdish editorial rewrite" if native_kurdish else "Sorani translation",
+                    "Gemini single-pass Sorani translation completed for headline '%s'",
                     title[:50],
                 )
                 return final_title, final_summary
@@ -661,28 +922,11 @@ class TranslationEngine:
                 if not ENABLE_TRANSLATION_FALLBACK:
                     raise
 
-        # Native Kurdish safety fallback (only when input itself passed strict Sorani verification)
-        if native_kurdish:
-            clean_title = sanitize_neutral_sorani_text(normalize_sorani_chars(title))
-            clean_summary = (
-                sanitize_neutral_sorani_text(
-                    trim_at_sentence_boundary(
-                        sanitize_neutral_sorani_text(strip_news_dateline(normalize_sorani_chars(summary))),
-                        max_len=650,
-                    )
-                )
-                if has_source_summary
-                else ""
-            )
-            if is_valid_kurdish_sorani(clean_title) and (
-                not has_source_summary or (clean_summary and is_valid_kurdish_sorani(clean_summary))
-            ):
-                logger.info("Using verified native Sorani text directly after Gemini fallback.")
-                return clean_title, clean_summary
-
         # Tier 2 Fallback: Lightweight Google Translate ckb safety net
         fallback_title = await self._google_fallback.translate(title, target_lang=target_lang)
-        fallback_title = sanitize_neutral_sorani_text(self._post_process(fallback_title, title))
+        fallback_title = sanitize_neutral_sorani_text(
+            normalize_sorani_orthography(self._post_process(fallback_title, title))
+        )
         if not is_valid_kurdish_sorani(fallback_title):
             raise TranslationError("Fallback headline failed strict Sorani Kurdish verification.")
 
@@ -691,7 +935,9 @@ class TranslationEngine:
             # Keep fallback summary concise so caption stays within Telegram limit
             trimmed_source = trim_at_sentence_boundary(strip_news_dateline(summary.strip()), max_len=1200)
             translated_sum = await self._google_fallback.translate(trimmed_source, target_lang=target_lang)
-            cleaned_sum = strip_news_dateline(self._post_process(translated_sum, trimmed_source))
+            cleaned_sum = strip_news_dateline(
+                normalize_sorani_orthography(self._post_process(translated_sum, trimmed_source))
+            )
             fallback_summary = sanitize_neutral_sorani_text(
                 trim_at_sentence_boundary(cleaned_sum, max_len=650)
             )
@@ -722,7 +968,9 @@ class TranslationEngine:
         if not translated:
             return ""
         from processing.content_formatter import sanitize_neutral_sorani_text
-        cleaned = normalize_sorani_chars(re.sub(r"\s+", " ", translated).strip())
+        cleaned = normalize_sorani_orthography(
+            normalize_sorani_chars(re.sub(r"\s+", " ", translated).strip())
+        )
         return sanitize_neutral_sorani_text(cleaned)
 
     async def validate_translation(self, translated: str, original: str) -> bool:

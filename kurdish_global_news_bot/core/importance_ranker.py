@@ -127,6 +127,31 @@ PRIORITY_TIER_1B = "1B"
 PRIORITY_TIER_2 = "2"
 PRIORITY_TIER_3 = "3"
 
+
+def get_source_priority_rank(source_name: str = "") -> int:
+    """
+    Deterministic regional source priority rank:
+      - 0: Priority regional sources (Al Jazeera / @AjaNews, Rudaw, Kurdistan24, NRT, Shafaq, BasNews, Iraqi/Kurdish outlets)
+      - 1: Standard international wires & Middle East / defense / OSINT feeds (Reuters, AP, BBC, CENTCOM, Clash Report)
+      - 2: Demoted noisy Western/European domestic feeds (The Guardian, DW News, France24, CNBC, BleepingComputer)
+    """
+    raw = (source_name or "").strip().lower()
+    if not raw:
+        return 1
+    demoted = getattr(config, "DEMOTED_NOISY_WESTERN_SOURCES", set())
+    if raw in demoted or any(d in raw for d in ("guardian", "dw news", "france24", "cnbc", "bleepingcomputer")):
+        return 2
+    prioritized = getattr(config, "HIGH_PRIORITY_REGIONAL_SOURCES", set())
+    if raw in prioritized or any(
+        k in raw
+        for k in (
+            "al jazeera", "ajanews", "الجزيرة", "rudaw", "kurdistan24", "kurdistan 24",
+            "k24", "nrt", "shafaq", "basnews", "pukmedia", "north press", "rojava", "rawafid", "rawafiid",
+        )
+    ):
+        return 0
+    return 1
+
 # ── Deterministic Second-Layer Blocked Topic Guards ──
 BLOCKED_CATEGORY_NAMES: set[str] = {
     "international sports",
@@ -860,9 +885,10 @@ def select_top_candidates_for_gemini(
         kurd_rank = 0 if is_genuine_kurdistan_event(art) else 1
         pol_rank = 0 if is_politics_or_war(art) else 1
         reg_rank = 0 if is_regional_geopolitics(art) else 1
+        src_prio = get_source_priority_rank(getattr(art, "source_name", "") or "")
         cred = -ArticleExtractor.get_source_credibility(art.source_name)
         ts = -_candidate_recency_ts(art)
-        return (kurd_rank, pol_rank, reg_rank, cred, ts)
+        return (kurd_rank, pol_rank, reg_rank, src_prio, cred, ts)
 
     ordered = sorted(kept, key=_fresh_relevance_key)
     if (
@@ -1123,9 +1149,10 @@ def article_selection_sort_key(article: Article) -> tuple:
     }[tier]
     breaking_rank = 0 if is_strict_breaking(article) else 1
     regional_rank = 0 if is_regional_geopolitics(article) else 1
+    src_prio = get_source_priority_rank(getattr(article, "source_name", "") or "")
     score = -float(getattr(article, "importance_score", 0.0) or 0.0)
     pub = getattr(article, "published_at", "") or getattr(article, "publication_date", "") or ""
-    return (tier_order, breaking_rank, regional_rank, score, pub)
+    return (tier_order, breaking_rank, regional_rank, src_prio, score, pub)
 
 
 class ImportanceRanker:
@@ -1530,7 +1557,9 @@ class ImportanceRanker:
         base_score = total_score / total_weight if total_weight > 0 else 0.0
 
         focus_boost = self._calculate_focus_boost(article)
-        final_score = max(0.0, min(1.0, base_score + focus_boost))
+        prio = get_source_priority_rank(getattr(article, "source_name", "") or "")
+        source_adj = 0.05 if prio == 0 else (-0.18 if prio == 2 else 0.0)
+        final_score = max(0.0, min(1.0, base_score + focus_boost + source_adj))
         priority = self._determine_priority(final_score, article)
         return final_score, priority
 

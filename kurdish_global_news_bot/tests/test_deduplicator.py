@@ -192,10 +192,10 @@ class TestCrossLanguageEventFingerprinting:
         pipeline._semantic_dedup = SemanticDeduplicator(temp_db, base_backoff=0.0)
 
         # Phrased distinctly across 3 languages so lexical stage passes them to single batch Gemini call
-        bbc_en = _make_article(
+        reuters_en = _make_article(
             title="Explosive UAV intercepted above northern aviation hub overnight",
-            url="https://bbc.com/news/erbil-incident-1",
-            source_name="BBC",
+            url="https://reuters.com/world/erbil-incident-1",
+            source_name="Reuters",
             category="kurdistan",
             region="South Kurdistan",
             summary=(
@@ -225,7 +225,7 @@ class TestCrossLanguageEventFingerprinting:
                 "جموجۆڵێکی نائاسایی ئاسمانی ڕابگرن بێ هیچ زیانێک."
             ),
         )
-        for art in (bbc_en, sab_ar, rudaw_ku):
+        for art in (reuters_en, sab_ar, rudaw_ku):
             art.id = await temp_db.insert_article(art)
 
         # Single Gemini batch scoring call yields shared English event_key & event_entities!
@@ -234,7 +234,7 @@ class TestCrossLanguageEventFingerprinting:
                 RelevanceEvaluation(
                     score=9,
                     is_breaking=True,
-                    category="kurdistan" if "rudaw" in art.original_url or "bbc" in art.original_url else "military_conflict",
+                    category="kurdistan" if "rudaw" in art.original_url or "reuters" in art.original_url else "military_conflict",
                     reason="Erbil airport UAV interception",
                     passed=True,
                     event_key="erbil_airport_drone_attack",
@@ -256,7 +256,7 @@ class TestCrossLanguageEventFingerprinting:
         with patch.object(pipeline._ranker, "evaluate_batch_relevance", side_effect=mock_batch_eval), \
              patch.object(pipeline._extractor, "fetch_article_content_and_image", new=AsyncMock(return_value=("", None))), \
              patch.object(pipeline._translator, "translate_article", side_effect=mock_translate):
-            res = await pipeline.process_batch([bbc_en, sab_ar, rudaw_ku], max_publish=8)
+            res = await pipeline.process_batch([reuters_en, sab_ar, rudaw_ku], max_publish=8)
 
         # Only ONE article publishes; duplicates blocked BEFORE calling translation/card generation!
         assert res["published"] == 1

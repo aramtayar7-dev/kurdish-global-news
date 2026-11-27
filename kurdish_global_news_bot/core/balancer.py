@@ -43,6 +43,7 @@ from core.importance_ranker import (
     classify_priority_tier,
     classify_topic_bucket,
     classify_geographic_region,
+    get_source_priority_rank,
     is_bashur_article,
     is_regional_geopolitics,
     is_strict_breaking,
@@ -304,9 +305,10 @@ def batch_publish_sort_key(article: Article) -> tuple:
         band_rank = 3
 
     regional_rank = 0 if is_regional_geopolitics(article) else 1
+    src_prio = get_source_priority_rank(getattr(article, "source_name", "") or "")
     score = -float(getattr(article, "importance_score", 0.0) or 0.0)
     pub = getattr(article, "published_at", "") or getattr(article, "publication_date", "") or ""
-    return (breaking_rank, band_rank, bashur_rank, tier_rank, regional_rank, score, pub)
+    return (breaking_rank, band_rank, bashur_rank, tier_rank, regional_rank, src_prio, score, pub)
 
 
 class QuotaBalancer:
@@ -818,6 +820,7 @@ class QuotaBalancer:
                     0 if classify_topic_bucket(a) == "politics_war" else 1,
                     0 if (bashur_selected_count < bashur_budget and is_bashur_article(a)) else 1,
                     0 if _get_region(a) != "global" else 1,
+                    get_source_priority_rank(getattr(a, "source_name", "") or ""),
                     *article_selection_sort_key(a),
                 ),
             )
@@ -839,6 +842,7 @@ class QuotaBalancer:
                     0 if classify_topic_bucket(a) == "politics_war" else 1,
                     0 if (bashur_selected_count < bashur_budget and is_bashur_article(a)) else 1,
                     0 if _get_region(a) != "global" else 1,
+                    get_source_priority_rank(getattr(a, "source_name", "") or ""),
                     *article_selection_sort_key(a),
                 ),
             )

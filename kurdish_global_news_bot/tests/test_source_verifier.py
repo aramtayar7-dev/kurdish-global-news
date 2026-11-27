@@ -118,16 +118,16 @@ async def temp_db(tmp_path):
 # ═══════════════════════════════════════════════════
 class TestChannelRosterAndMetadata:
     def test_active_telegram_channels_have_required_metadata_and_ajanews_replaces_sabereen(self):
-        assert len(TELEGRAM_SOURCE_CHANNELS) == 6
+        assert len(TELEGRAM_SOURCE_CHANNELS) == 5
         usernames = {ch["username"] for ch in TELEGRAM_SOURCE_CHANNELS}
         assert usernames == {
             "AjaNews",
-            "rudawdigital",
             "Kurdistan24news",
             "nrttvofficial",
             "liveuamap",
             "ClashReport",
         }
+        assert "rudawdigital" not in usernames
         assert "SabrenNewss" not in usernames
         assert "Sabren_News1" not in usernames
 
@@ -684,9 +684,9 @@ class TestTelegramChannelFailureIsolation:
         articles = await src.fetch_articles()
 
         sources_returned = {a.source_name for a in articles}
-        assert len(articles) == 5
+        assert len(articles) == 4
         assert "NRT" not in sources_returned
-        assert {"Al Jazeera", "Rudaw", "Kurdistan24", "Liveuamap", "Clash Report"}.issubset(sources_returned)
+        assert {"Al Jazeera", "Kurdistan24", "Liveuamap", "Clash Report"}.issubset(sources_returned)
 
 
 # ═══════════════════════════════════════════════════

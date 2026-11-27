@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sources.base import BaseSource, RawArticle
-from config import SEARCH_KEYWORDS, REQUEST_TIMEOUT
+from config import SEARCH_KEYWORDS, REQUEST_TIMEOUT, is_blocked_western_source
 
 logger = logging.getLogger("sources.duckduckgo")
 
@@ -85,11 +85,15 @@ class DuckDuckGoSource(BaseSource):
         if not url.startswith(("http://", "https://")):
             return None
 
+        source_name = result.get("source", "DuckDuckGo").strip()
+        if is_blocked_western_source(url=url, source_name=source_name):
+            return None
+
         return RawArticle(
             url=url,
             title=title,
             summary=result.get("body", "").strip()[:1000],
-            source_name=result.get("source", "DuckDuckGo").strip(),
+            source_name=source_name,
             category="",  # Will be classified later
             publication_date=result.get("date", ""),
             image_url=result.get("image", ""),

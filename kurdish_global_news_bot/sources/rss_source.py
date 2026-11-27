@@ -15,7 +15,7 @@ import aiohttp
 import feedparser
 
 from sources.base import BaseSource, RawArticle
-from config import RSS_FEEDS, REQUEST_TIMEOUT, USER_AGENT
+from config import RSS_FEEDS, REQUEST_TIMEOUT, USER_AGENT, is_blocked_western_source
 from processing.content_formatter import strip_rss_boilerplate
 
 logger = logging.getLogger("sources.rss")
@@ -141,18 +141,27 @@ class RSSSource(BaseSource):
             await self.initialize()
 
         articles: list[RawArticle] = []
-        tasks = [self._fetch_feed(feed) for feed in RSS_FEEDS]
+        active_feeds = [
+            feed
+            for feed in RSS_FEEDS
+            if feed.get("enabled", True)
+            and not is_blocked_western_source(
+                str(feed.get("url", "")),
+                str(feed.get("name", "")),
+            )
+        ]
+        tasks = [self._fetch_feed(feed) for feed in active_feeds]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for i, result in enumerate(results):
-            feed_name = RSS_FEEDS[i]["name"]
+            feed_name = active_feeds[i]["name"]
             if isinstance(result, Exception):
                 logger.warning("RSS feed '%s' failed: %s", feed_name, str(result)[:200])
                 continue
             if isinstance(result, list):
                 articles.extend(result)
 
-        logger.info("RSS discovered %d articles from %d feeds.", len(articles), len(RSS_FEEDS))
+        logger.info("RSS discovered %d articles from %d feeds.", len(articles), len(active_feeds))
         return articles
 
     async def _fetch_feed(self, feed_config: dict[str, str]) -> list[RawArticle]:

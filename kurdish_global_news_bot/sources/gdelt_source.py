@@ -16,7 +16,7 @@ from urllib.parse import quote_plus
 import aiohttp
 
 from sources.base import BaseSource, RawArticle
-from config import REQUEST_TIMEOUT, USER_AGENT
+from config import REQUEST_TIMEOUT, USER_AGENT, is_blocked_western_source
 
 logger = logging.getLogger("sources.gdelt")
 
@@ -135,6 +135,10 @@ class GDELTSource(BaseSource):
         if not url.startswith(("http://", "https://")):
             return None
 
+        source_domain = item.get("domain", "GDELT").strip()
+        if is_blocked_western_source(url=url, source_name=source_domain):
+            return None
+
         # GDELT provides seendate in format YYYYMMDDTHHMMSS
         seen_date = item.get("seendate", "")
         pub_date = ""
@@ -149,7 +153,7 @@ class GDELTSource(BaseSource):
             url=url,
             title=title,
             summary=item.get("title", "")[:500],
-            source_name=item.get("domain", "GDELT").strip(),
+            source_name=source_domain,
             category="",
             publication_date=pub_date,
             image_url=item.get("socialimage", ""),

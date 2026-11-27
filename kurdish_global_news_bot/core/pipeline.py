@@ -59,12 +59,22 @@ from processing.deduplicator import (
 )
 from processing.extractor import ArticleExtractor
 from processing.validator import ArticleValidator
-from processing.translator import TranslationEngine, TranslationError, is_valid_kurdish_sorani
+from processing.translator import (
+    TranslationEngine,
+    TranslationError,
+    is_native_sorani_article,
+    is_valid_kurdish_sorani,
+    normalize_sorani_chars,
+    normalize_sorani_orthography,
+    strip_news_dateline,
+    trim_at_sentence_boundary,
+)
 from processing.content_formatter import (
     ContentFormatter,
     normalize_neutral_terminology,
     prepend_tier3_attribution,
     prepend_x_video_attribution,
+    sanitize_neutral_sorani_text,
     strip_rss_boilerplate,
 )
 from tg_bot.publisher import TelegramPublisher
@@ -574,11 +584,9 @@ class ArticlePipeline:
 
         # ── Step 5: Extract full article text & og:image, verify depth ──
         full_text, og_image = await self._extractor.fetch_article_content_and_image(article.original_url)
-        if _is_telegram_channel_url(article.original_url):
-            # Ignore watermarked static screenshots / og:image previews on Telegram source channels
-            article.image_url = ""
-        elif not article.image_url and og_image:
-            article.image_url = og_image
+        if not _is_telegram_channel_url(article.original_url):
+            if not article.image_url and og_image:
+                article.image_url = og_image
 
         is_verified_tg = _is_verified_telegram_dispatch(article.original_url)
         min_detail_len = (
@@ -623,16 +631,41 @@ class ArticlePipeline:
         if scrape_blocked:
             return await self._reject_blocked_topic(article, scrape_blocked)
 
-        # ── Step 5b: Translate to Kurdish Sorani & Gemini Proofread ──
+        # ── Step 5b: Bypass LLM/Translation on Native Sorani; Translate Foreign Languages Only ──
         await self._db.update_article_status(article_id, ArticleStatus.TRANSLATING)
+        native_sorani = is_native_sorani_article(article.original_title, article_content)
         try:
             with Timer(self._metrics, "translation_time"):
-                article.translated_title, article.translated_summary = (
-                    await self._translator.translate_article(
-                        title=article.original_title,
-                        summary=article_content,
+                if native_sorani:
+                    article.translated_title = sanitize_neutral_sorani_text(
+                        normalize_sorani_orthography(normalize_sorani_chars(article.original_title))
                     )
-                )
+                    if article_content.strip():
+                        cleaned_native_sum = sanitize_neutral_sorani_text(
+                            strip_rss_boilerplate(
+                                strip_news_dateline(
+                                    normalize_sorani_orthography(normalize_sorani_chars(article_content))
+                                )
+                            )
+                        )
+                        article.translated_summary = sanitize_neutral_sorani_text(
+                            trim_at_sentence_boundary(cleaned_native_sum, max_len=650)
+                        )
+                    else:
+                        article.translated_summary = ""
+                    logger.info(
+                        "[NATIVE SORANI] Bypassed Gemini/OpenRouter/Google Translate for article %s (%s): '%s'",
+                        article_id,
+                        article.source_name,
+                        article.translated_title[:60],
+                    )
+                else:
+                    article.translated_title, article.translated_summary = (
+                        await self._translator.translate_article(
+                            title=article.original_title,
+                            summary=article_content,
+                        )
+                    )
 
             title_ok = await self._translator.validate_translation(
                 article.translated_title, article.original_title
@@ -642,10 +675,12 @@ class ArticlePipeline:
             if (article.translated_summary or "").strip() and not is_valid_kurdish_sorani(article.translated_summary):
                 raise TranslationError("Summary failed strict Central Kurdish (Sorani) gate.")
 
-            article.translated_title = normalize_neutral_terminology(article.translated_title)
+            article.translated_title = sanitize_neutral_sorani_text(
+                normalize_neutral_terminology(article.translated_title)
+            )
             if article.translated_summary:
-                article.translated_summary = normalize_neutral_terminology(
-                    strip_rss_boilerplate(article.translated_summary)
+                article.translated_summary = sanitize_neutral_sorani_text(
+                    normalize_neutral_terminology(strip_rss_boilerplate(article.translated_summary))
                 )
 
             # Uncorroborated Tier-3 & unofficial X eyewitness attribution (only when uncorroborated)

@@ -47,6 +47,7 @@ _SOURCE_GROUP_MAP: dict[str, str] = {
     "sabereen plus": "sabereen",
     # Kurdish media (Telegram + RSS → same group)
     "rudaw": "rudaw",
+    "rudaw sorani": "rudaw",
     "rudaw digital": "rudaw",
     "rudaw english": "rudaw",
     "rudaw arabic": "rudaw",
@@ -150,15 +151,11 @@ _SOURCE_GROUP_MAP: dict[str, str] = {
 
 # Source group → Tier mapping
 _GROUP_TIER_MAP: dict[str, int] = {
-    # Tier 1: Official wire/broadcast & CENTCOM
+    # Tier 1: Official wire/broadcast, Al Jazeera & CENTCOM
+    "aljazeera": TIER_1,
     "reuters": TIER_1,
     "ap": TIER_1,
     "bbc": TIER_1,
-    "france24": TIER_1,
-    "dw": TIER_1,
-    "aljazeera": TIER_1,
-    "guardian": TIER_1,
-    "npr": TIER_1,
     "un": TIER_1,
     "who": TIER_1,
     "nato": TIER_1,
@@ -167,9 +164,8 @@ _GROUP_TIER_MAP: dict[str, int] = {
     "cnn": TIER_1,
     "nytimes": TIER_1,
     "washingtonpost": TIER_1,
-    "bleepingcomputer": TIER_1,
     "centcom": TIER_1,
-    # Tier 2: Established Regional / Kurdish / OSINT
+    # Tier 2: Established Regional / Kurdish / OSINT & Demoted Western Feeds
     "rudaw": TIER_2,
     "kurdistan24": TIER_2,
     "basnews": TIER_2,
@@ -187,6 +183,11 @@ _GROUP_TIER_MAP: dict[str, int] = {
     "defensenews": TIER_2,
     "militarytimes": TIER_2,
     "thehackernews": TIER_2,
+    "france24": TIER_2,
+    "dw": TIER_2,
+    "guardian": TIER_2,
+    "npr": TIER_2,
+    "bleepingcomputer": TIER_2,
     "cnbc": TIER_2,
     "spacecom": TIER_2,
     "skynews": TIER_2,

@@ -491,43 +491,187 @@ SEARCH_KEYWORDS: list[str] = [
 ]
 
 # ═══════════════════════════════════════════════════
-# RSS Feeds (Global Sources — general feeds avoid hardcoded war labels)
+# RSS Feeds (Prioritized Regional + Global Sources)
 # Weighted ~60% Primary Focus / ~40% Secondary Focus
 # ═══════════════════════════════════════════════════
-RSS_FEEDS: list[dict[str, str]] = [
-    # ── Primary Focus Feeds (~60%): Politics, Diplomacy, Defense ──
-    {"name": "Reuters World", "url": "https://feeds.reuters.com/Reuters/worldNews", "category": "politics_world"},
-    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "category": "politics_world"},
-    {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "category": "politics_world"},
-    {"name": "AP News", "url": "https://rsshub.app/apnews/topics/apf-topnews", "category": "politics_world"},
-    {"name": "France24 EN", "url": "https://www.france24.com/en/rss", "category": "politics_world"},
-    {"name": "DW News", "url": "https://rss.dw.com/rdf/rss-en-all", "category": "politics_world"},
-    {"name": "The Guardian World", "url": "https://www.theguardian.com/world/rss", "category": "politics_world"},
-    {"name": "NPR News", "url": "https://feeds.npr.org/1001/rss.xml", "category": "politics_world"},
-    {"name": "UN News", "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml", "category": "politics_world"},
-    {"name": "Defense News Global", "url": "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/", "category": "military_conflict"},
-    {"name": "Military Times", "url": "https://www.militarytimes.com/arc/outboundfeeds/rss/category/news/", "category": "military_conflict"},
-    {"name": "GDELT Events", "url": "http://data.gdeltproject.org/gdeltv2/lastupdate.txt", "category": "military_conflict"},
+DEMOTED_NOISY_WESTERN_SOURCES: set[str] = {
+    "the guardian",
+    "the guardian world",
+    "guardian",
+    "dw news",
+    "dw",
+    "france24",
+    "france24 en",
+    "cnbc",
+    "cnbc world",
+    "bleepingcomputer",
+}
 
-    # ── Secondary Focus Feeds (~40%): AI, Cyber, Economy, Science ──
-    {"name": "Reuters Technology", "url": "https://feeds.reuters.com/reuters/technologyNews", "category": "ai_tech"},
-    {"name": "BBC Technology", "url": "https://feeds.bbci.co.uk/news/technology/rss.xml", "category": "ai_tech"},
-    {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "category": "cybersecurity"},
-    {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "category": "cybersecurity"},
-    {"name": "Reuters Business", "url": "https://feeds.reuters.com/reuters/businessNews", "category": "economy_markets"},
-    {"name": "CNBC World", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362", "category": "economy_markets"},
-    {"name": "Reuters Science", "url": "https://feeds.reuters.com/reuters/scienceNews", "category": "science_space"},
-    {"name": "Space.com", "url": "https://www.space.com/feeds/all", "category": "science_space"},
+HIGH_PRIORITY_REGIONAL_SOURCES: set[str] = {
+    "al jazeera",
+    "al jazeera arabic",
+    "al jazeera - breaking",
+    "ajanews",
+    "الجزيرة",
+    "قناة الجزيرة",
+    "rudaw",
+    "rudaw sorani",
+    "rudaw digital",
+    "rudaw english",
+    "rudawkurdish",
+    "kurdistan24",
+    "kurdistan24 sorani",
+    "kurdistan24 en",
+    "kurdistan24tv",
+    "k24",
+    "nrt",
+    "nrt tv",
+    "shafaq news",
+    "shafaqnews",
+    "basnews",
+    "englishbasnews",
+    "pukmedia",
+    "pukmedia sorani",
+    "pukmedia en",
+    "north press agency",
+    "rojava information center",
+    "rawafid",
+    "rawafiid",
+}
+
+BLOCKED_WESTERN_OUTLET_DOMAINS: tuple[str, ...] = (
+    "bbc.com",
+    "bbc.co.uk",
+    "theguardian.com",
+    "guardian.co.uk",
+    "dw.com",
+    "france24.com",
+    "apnews.com",
+    "cnbc.com",
+    "militarytimes.com",
+    "defensenews.com",
+    "bleepingcomputer.com",
+    "nytimes.com",
+    "cnn.com",
+    "politico.com",
+    "politico.eu",
+    "euronews.com",
+    "npr.org",
+    "washingtonpost.com",
+    "foxnews.com",
+    "nbcnews.com",
+    "abcnews.go.com",
+    "cbsnews.com",
+    "news.sky.com",
+    "sky.com",
+    "bloomberg.com",
+    "wsj.com",
+    "forbes.com",
+    "telegraph.co.uk",
+    "independent.co.uk",
+    "spiegel.de",
+    "lemonde.fr",
+    "thehackernews.com",
+    "space.com",
+)
+
+BLOCKED_WESTERN_OUTLET_NAMES: tuple[str, ...] = (
+    "bbc",
+    "the guardian",
+    "guardian",
+    "dw news",
+    "deutsche welle",
+    "france24",
+    "france 24",
+    "ap news",
+    "associated press",
+    "cnbc",
+    "military times",
+    "defense news",
+    "bleepingcomputer",
+    "new york times",
+    "nytimes",
+    "cnn",
+    "politico",
+    "euronews",
+    "npr",
+    "washington post",
+    "fox news",
+    "nbc news",
+    "abc news",
+    "cbs news",
+    "sky news",
+    "bloomberg",
+    "wall street journal",
+    "forbes",
+    "the hacker news",
+    "space.com",
+)
+
+
+def is_blocked_western_source(url: str = "", source_name: str = "") -> bool:
+    """
+    Enforce strict Reuters-only external Western source whitelist:
+    returns True for blocked US/European outlets (BBC, DW, France24, The Guardian,
+    AP, CNBC, Military Times, BleepingComputer, NYT, CNN, Politico, Euronews, etc.),
+    while ALWAYS allowing Reuters and Kurdistan/Iraq/Middle East regional sources.
+    """
+    from urllib.parse import urlparse
+
+    src = (source_name or "").strip().lower()
+    host = ""
+    if url:
+        try:
+            host = (urlparse(url.strip()).hostname or "").lower().removeprefix("www.")
+        except Exception:
+            host = ""
+
+    if "reuters" in src or host == "reuters.com" or host.endswith(".reuters.com"):
+        return False
+
+    if host and any(host == d or host.endswith(f".{d}") for d in BLOCKED_WESTERN_OUTLET_DOMAINS):
+        return True
+
+    if src and any(name in src for name in BLOCKED_WESTERN_OUTLET_NAMES):
+        return True
+
+    return False
+
+
+RSS_FEEDS: list[dict[str, object]] = [
+    # ── Primary Focus Feeds (~60%): Al Jazeera, Kurdistan, Iraq & Reuters (sole external Western feed) ──
+    {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "category": "politics_world", "enabled": True},
+    {"name": "Rudaw Sorani", "url": "https://www.rudaw.net/sorani/rss", "category": "kurdistan", "enabled": True},
+    {"name": "Kurdistan24 Sorani", "url": "https://www.kurdistan24.net/ckb/rss.xml", "category": "kurdistan", "enabled": True},
+    {"name": "Shafaq News", "url": "https://shafaq.com/en/rss", "category": "politics_world", "enabled": True},
+    {"name": "Reuters World", "url": "https://feeds.reuters.com/Reuters/worldNews", "category": "politics_world", "enabled": True},
+    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "category": "politics_world", "enabled": False},
+    {"name": "AP News", "url": "https://rsshub.app/apnews/topics/apf-topnews", "category": "politics_world", "enabled": False},
+    {"name": "NPR News", "url": "https://feeds.npr.org/1001/rss.xml", "category": "politics_world", "enabled": False},
+    {"name": "UN News", "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml", "category": "politics_world", "enabled": False},
+    {"name": "Defense News Global", "url": "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/", "category": "military_conflict", "enabled": False},
+    {"name": "Military Times", "url": "https://www.militarytimes.com/arc/outboundfeeds/rss/category/news/", "category": "military_conflict", "enabled": False},
+    {"name": "GDELT Events", "url": "http://data.gdeltproject.org/gdeltv2/lastupdate.txt", "category": "military_conflict", "enabled": True},
+
+    # ── Secondary Focus Feeds (~40%): Reuters-only external secondary; all US/EU domestic feeds disabled ──
+    {"name": "Reuters Technology", "url": "https://feeds.reuters.com/reuters/technologyNews", "category": "ai_tech", "enabled": True},
+    {"name": "BBC Technology", "url": "https://feeds.bbci.co.uk/news/technology/rss.xml", "category": "ai_tech", "enabled": False},
+    {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews", "category": "cybersecurity", "enabled": False},
+    {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/", "category": "cybersecurity", "enabled": False},
+    {"name": "Reuters Business", "url": "https://feeds.reuters.com/reuters/businessNews", "category": "economy_markets", "enabled": True},
+    {"name": "CNBC World", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362", "category": "economy_markets", "enabled": False},
+    {"name": "Reuters Science", "url": "https://feeds.reuters.com/reuters/scienceNews", "category": "science_space", "enabled": True},
+    {"name": "Space.com", "url": "https://www.space.com/feeds/all", "category": "science_space", "enabled": False},
 ]
 
 # ═══════════════════════════════════════════════════
 # Public Telegram News Channels (https://t.me/s/{username})
+# Note: Rudaw is fetched exclusively via web/RSS/search (not delayed Telegram reposts).
 # ═══════════════════════════════════════════════════
 TELEGRAM_SOURCE_CHANNELS: list[dict[str, str]] = [
     # Official International / Middle East Tier-1 Breaking Wire (Arabic — lang="ar", credibility_tier=1)
     {"username": "AjaNews", "name": "Al Jazeera", "region_hint": "middle_east", "lang": "ar", "credibility_tier": "1", "source_group": "aljazeera"},
     # Southern Kurdistan (Sorani Kurdish — lang="ckb", credibility_tier=2)
-    {"username": "rudawdigital", "name": "Rudaw", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "rudaw"},
     {"username": "Kurdistan24news", "name": "Kurdistan24", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "kurdistan24"},
     {"username": "nrttvofficial", "name": "NRT", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "nrt"},
     # Neutral Conflict / OSINT (English — credibility_tier=2)
@@ -546,52 +690,57 @@ MAX_POSTS_PER_SOURCE_GROUP_IN_WINDOW: int = _int(os.getenv("MAX_POSTS_PER_SOURCE
 # Source Credibility Scores
 # ═══════════════════════════════════════════════════
 SOURCE_CREDIBILITY: dict[str, float] = {
+    # Prioritized Tier-1 Regional & Wire Services
+    "al jazeera": 0.92,
+    "al jazeera arabic": 0.92,
+    "ajanews": 0.92,
+    "الجزيرة": 0.92,
+    "rudaw": 0.95,
+    "rudaw sorani": 0.95,
+    "rudaw digital": 0.95,
+    "kurdistan24": 0.95,
+    "kurdistan24 sorani": 0.95,
+    "nrt": 0.92,
+    "nrt tv": 0.92,
+    "shafaq news": 0.91,
+    "basnews": 0.90,
+    "centcom": 0.94,
     "reuters": 0.95,
-    "bbc": 0.93,
     "associated press": 0.95,
     "ap news": 0.95,
-    "al jazeera": 0.85,
-    "al jazeera arabic": 0.85,
-    "ajanews": 0.85,
-    "الجزيرة": 0.85,
-    "france24": 0.85,
-    "dw": 0.85,
-    "the guardian": 0.88,
-    "cnbc": 0.82,
-    "npr": 0.88,
-    "cnn": 0.80,
-    "new york times": 0.90,
-    "washington post": 0.88,
+    "bbc": 0.93,
     "bbc news": 0.93,
-    "sky news": 0.78,
-    "space.com": 0.80,
     "un news": 0.90,
-    "who": 0.92,
-    "kurdistan24": 0.86,
-    "rudaw": 0.86,
-    "rudaw digital": 0.86,
-    "nrt": 0.84,
-    "nrt tv": 0.84,
-    "liveuamap": 0.80,
-    "clash report": 0.78,
-    "centcom": 0.94,
-    "basnews": 0.82,
-    "shafaq news": 0.82,
-    "rawafid": 0.72,
+    "who": 0.90,
+    "cnn": 0.78,
+    "new york times": 0.84,
+    "washington post": 0.82,
+    "sky news": 0.72,
+    "space.com": 0.75,
+    "liveuamap": 0.82,
+    "clash report": 0.80,
+    "rawafid": 0.76,
     "aurora intel": 0.80,
     "osinttechnical": 0.80,
     "faytuks news": 0.80,
     "intel crab": 0.78,
     "osintdefender": 0.78,
     "elint news": 0.80,
-    "pukmedia": 0.78,
-    "north press agency": 0.82,
-    "rojava information center": 0.82,
-    "bianet": 0.78,
-    "khrn": 0.82,
+    "pukmedia": 0.85,
+    "north press agency": 0.84,
+    "rojava information center": 0.84,
+    "bianet": 0.80,
+    "khrn": 0.84,
     "defense news": 0.84,
-    "the hacker news": 0.84,
-    "bleepingcomputer": 0.84,
+    "the hacker news": 0.78,
+    # Demoted noisy Western / European domestic feeds
+    "npr": 0.55,
+    "the guardian": 0.45,
+    "the guardian world": 0.45,
+    "france24": 0.45,
+    "dw": 0.45,
+    "cnbc": 0.35,
+    "bleepingcomputer": 0.35,
     "sabereen news": 0.72,
     "sabereen plus": 0.72,
     "google news": 0.78,

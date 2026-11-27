@@ -16,6 +16,7 @@ from typing import Optional
 from config import CATEGORY_EMOJIS, CATEGORY_META
 from processing.translator import (
     is_valid_kurdish_sorani,
+    normalize_sorani_orthography,
     strip_news_dateline,
     trim_at_sentence_boundary,
 )
@@ -292,6 +293,13 @@ _RAW_NEUTRAL_TERM_RULES: tuple[tuple[str, str], ...] = (
     # Other partisan epithets
     (r"(?:ئێرانی\s+دوژمن|دوژمنی\s+ئێرانی|ڕژێمی\s+مەلاکان)", "ئێران"),
     (r"(?:العدو\s+(?:الإيراني|الايراني)|النظام\s+الصفوي)", "ئێران"),
+    # Strip editorialized slur qualifiers while preserving verified organization names natural
+    # (e.g. حیزبوڵڵا، حەماس، ئەنساروڵڵا، حووسییەکان remain untouched; legal 'تیرۆریستان' preserved)
+    (
+        r"(?:میلیشیای|گرووپی|ڕێکخراوی|حیزبی)\s+(?:تیرۆریستیی?|الإرهابية?)\s+(?=(?:حیزبوڵڵا|حەماس|ئەنساروڵڵا|حووسییەکان))",
+        "__KGN_STRIP__",
+    ),
+    (r"(?:تیرۆریستیی?|الإرهابية?)", "__KGN_STRIP__"),
     # Unsupported rhetorical attack characterizations (handled context-safely; not replacing legal/quoted usages)
     (r"دەستدرێژییەکانی", "هێرشەکانی"),
     (r"دەستدرێژییەکی", "هێرشێکی"),
@@ -311,9 +319,9 @@ _COMPILED_NEUTRAL_TERM_RULES: list[tuple[re.Pattern[str], str]] = [
     for pat, repl in _RAW_NEUTRAL_TERM_RULES
 ]
 
-# Contextual rules (rhetorical attack noun replacements skipped under legal/attributed prefix cues)
+# Contextual rules (rhetorical attack noun / slur replacements skipped under legal/attributed prefix cues)
 _CONTEXT_SENSITIVE_REPLACEMENTS: frozenset[str] = frozenset(
-    {"هێرشەکانی", "هێرشێکی", "هێرشە", "هێرش"}
+    {"هێرشەکانی", "هێرشێکی", "هێرشە", "هێرش", "__KGN_STRIP__"}
 )
 
 
@@ -377,6 +385,8 @@ def _apply_neutral_term_rules(text: str) -> tuple[str, int]:
                 if is_passive_labeled or _ATTRIBUTION_OR_LEGAL_CONTEXT_RE.search(clause_prefix):
                     return m.group(0)
             replacements += 1
+            if r == "__KGN_STRIP__":
+                return ""
             conj = (m.group("conj") + " ") if m.group("conj") else ""
             suffix = m.group("suffix") or ""
             return f"{conj}{r}{suffix}"
@@ -397,6 +407,7 @@ def normalize_neutral_terminology(text: str) -> str:
         return ""
 
     result = strip_rss_boilerplate(text)
+    result = normalize_sorani_orthography(result, convert_arabic_ky=False)
     result, _ = _strip_sarcastic_country_quotes(result)
     masked, quote_map = _protect_direct_quotations(result)
     masked, _ = _apply_neutral_term_rules(masked)
@@ -417,7 +428,8 @@ def sanitize_neutral_sorani_text(text: str) -> str:
 
     Removes decorative/targeted emojis, collapses excessive punctuation,
     removes sarcastic quotation marks around explicit country/state names
-    without disturbing legitimate quotations/attributions, applies controlled
+    without disturbing legitimate quotations/attributions, applies Sorani orthography
+    normalization (broken 'ه ' spacing & stray hashtags), applies controlled
     contextual neutral phrase replacements, and normalizes whitespace.
     """
     if not isinstance(text, str) or not text:
@@ -425,6 +437,7 @@ def sanitize_neutral_sorani_text(text: str) -> str:
 
     # 1. Remove targeted Unicode emoji/ZWJ sequences without corrupting Sorani/Arabic or U+10000+ text
     cleaned = EMOJI_PATTERN.sub("", text)
+    cleaned = normalize_sorani_orthography(cleaned, convert_arabic_ky=False)
 
     # 2. Strip sarcastic quotes wrapped solely around explicit country names
     cleaned, quote_strips = _strip_sarcastic_country_quotes(cleaned)
@@ -472,11 +485,12 @@ _DUPLICATE_PUNCT_RE = re.compile(r"[.!؟?،,؛;:\"'«»“”‘’()\[\]{}\-–
 
 
 def _normalize_for_duplicate_check(text: str) -> str:
-    """Normalize headline or summary for duplicate detection (strip emojis, prefixes, punctuation, whitespace)."""
+    """Normalize headline or summary for duplicate detection (strip emojis, prefixes, orthography, punctuation, whitespace)."""
     if not isinstance(text, str) or not text.strip():
         return ""
     work = html.unescape(text)
     work = EMOJI_PATTERN.sub(" ", work)
+    work = normalize_sorani_orthography(work)
     for _ in range(2):
         updated = _DUPLICATE_PREFIX_RE.sub("", work)
         if updated == work:
@@ -490,7 +504,7 @@ def _is_duplicate_summary(headline: str, summary: str) -> bool:
     """
     Return True when `summary` adds no distinct detail beyond `headline`
     (empty, identical, substring of headline, SequenceMatcher ratio >= 0.85,
-    or token overlap >= 0.90).
+    token overlap >= 0.90, or single-sentence near-repeat of headline).
     """
     norm_summary = _normalize_for_duplicate_check(summary)
     if not norm_summary:
@@ -508,6 +522,11 @@ def _is_duplicate_summary(headline: str, summary: str) -> bool:
 
     h_tokens = norm_headline.split()
     s_tokens = norm_summary.split()
+    summary_body = re.sub(r"[.!?؟\s]+$", "", EMOJI_PATTERN.sub("", summary or "").strip())
+    is_single_sentence = not bool(re.search(r"[.!؟]", summary_body))
+    if is_single_sentence and norm_headline in norm_summary and len(s_tokens) <= len(h_tokens) + 4:
+        return True
+
     if h_tokens and s_tokens:
         h_set = set(h_tokens)
         s_set = set(s_tokens)
