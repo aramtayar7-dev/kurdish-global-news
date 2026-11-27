@@ -7,6 +7,7 @@ category labels, emojis, RTL-friendly layout, and clean sentence-boundary trimmi
 
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import html
 import logging
 import re
@@ -463,6 +464,62 @@ def sanitize_neutral_sorani_text(text: str) -> str:
     return result
 
 
+_DUPLICATE_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:🔴|🔄)\s*)?(?:بەپەلە|نوێکردنەوە|عاجل|breaking|urgent)\s*(?:\||:|[-–—])+\s*",
+    re.IGNORECASE,
+)
+_DUPLICATE_PUNCT_RE = re.compile(r"[.!؟?،,؛;:\"'«»“”‘’()\[\]{}\-–—_|/\\]+")
+
+
+def _normalize_for_duplicate_check(text: str) -> str:
+    """Normalize headline or summary for duplicate detection (strip emojis, prefixes, punctuation, whitespace)."""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    work = html.unescape(text)
+    work = EMOJI_PATTERN.sub(" ", work)
+    for _ in range(2):
+        updated = _DUPLICATE_PREFIX_RE.sub("", work)
+        if updated == work:
+            break
+        work = updated
+    work = _DUPLICATE_PUNCT_RE.sub(" ", work)
+    return re.sub(r"\s+", " ", work).strip().lower()
+
+
+def _is_duplicate_summary(headline: str, summary: str) -> bool:
+    """
+    Return True when `summary` adds no distinct detail beyond `headline`
+    (empty, identical, substring of headline, SequenceMatcher ratio >= 0.85,
+    or token overlap >= 0.90).
+    """
+    norm_summary = _normalize_for_duplicate_check(summary)
+    if not norm_summary:
+        return True
+
+    norm_headline = _normalize_for_duplicate_check(headline)
+    if not norm_headline:
+        return False
+
+    if norm_summary == norm_headline or norm_summary in norm_headline:
+        return True
+
+    if SequenceMatcher(None, norm_headline, norm_summary).ratio() >= 0.85:
+        return True
+
+    h_tokens = norm_headline.split()
+    s_tokens = norm_summary.split()
+    if h_tokens and s_tokens:
+        h_set = set(h_tokens)
+        s_set = set(s_tokens)
+        overlap = len(h_set & s_set)
+        if (overlap / len(s_set)) >= 0.90 and (overlap / len(h_set)) >= 0.90:
+            return True
+        if (overlap / len(s_set)) >= 0.90 and len(s_tokens) <= len(h_tokens) + 2:
+            return True
+
+    return False
+
+
 class ContentFormatter:
     """Formats articles for Telegram publication in Kurdish Sorani."""
 
@@ -507,11 +564,11 @@ class ContentFormatter:
         summary = sanitize_neutral_sorani_text(
             strip_news_dateline(article.translated_summary or "")
         )
-        if summary:
+        if summary and not _is_duplicate_summary(headline, summary):
             trimmed = sanitize_neutral_sorani_text(
                 self._truncate_summary(summary, max_len=650)
             )
-            if trimmed:
+            if trimmed and not _is_duplicate_summary(headline, trimmed):
                 parts.append(f"\n{self._escape_html(trimmed)}")
 
         parts.append("\n━━━━━━━━━━━━━━━")
@@ -569,7 +626,7 @@ class ContentFormatter:
         summary = sanitize_neutral_sorani_text(
             strip_news_dateline(article.translated_summary or "")
         )
-        if not summary:
+        if not summary or _is_duplicate_summary(headline, summary):
             caption = f"{header}\n{footer}"
             return caption if len(caption) <= 1024 else f"{header[:900]}</b>\n{footer}"[:1024]
 
@@ -580,6 +637,9 @@ class ContentFormatter:
         candidate_summary = sanitize_neutral_sorani_text(
             self._truncate_summary(summary, max_len=max_summary_budget)
         )
+        if not candidate_summary or _is_duplicate_summary(headline, candidate_summary):
+            caption = f"{header}\n{footer}"
+            return caption if len(caption) <= 1024 else f"{header[:900]}</b>\n{footer}"[:1024]
         escaped_summary = self._escape_html(candidate_summary)
         result = f"{header}\n\n{escaped_summary}\n{footer}"
 
@@ -589,6 +649,9 @@ class ContentFormatter:
             candidate_summary = sanitize_neutral_sorani_text(
                 self._truncate_summary(summary, max_len=max_summary_budget)
             )
+            if not candidate_summary or _is_duplicate_summary(headline, candidate_summary):
+                minimal = f"{header}\n{footer}"
+                return minimal if len(minimal) <= 1024 else f"<b>{headline[:200]}</b>\n{footer}"[:1024]
             escaped_summary = self._escape_html(candidate_summary)
             result = f"{header}\n\n{escaped_summary}\n{footer}"
 

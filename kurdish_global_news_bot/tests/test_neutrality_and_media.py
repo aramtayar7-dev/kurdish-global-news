@@ -30,6 +30,7 @@ from processing.content_formatter import (
     EMOJI_PATTERN,
     PUNCTUATION_PATTERN,
     ContentFormatter,
+    _is_duplicate_summary,
     sanitize_neutral_sorani_text,
 )
 from processing.gemini_client import GeminiClient, resolve_gemini_system_instruction
@@ -323,6 +324,54 @@ async def test_sanitizer_integrated_before_publish():
     assert "قەوارەی زایۆنی" not in sent_caption
     assert "هەرێمی کوردستان" in sent_caption
     assert "ئەمریکا" in sent_caption
+
+
+def test_formatter_omits_duplicate_summary_on_short_breaking_dispatch():
+    formatter = ContentFormatter()
+
+    # Exact & near-identical short @AjaNews breaking post -> text appears ONLY ONCE (no repeated body paragraph)
+    headline_txt = "ئایزنکۆت: ٨ ڕۆژی ماوە بۆ ئەرکی پێکهێنانی حکومەت، بەنیازم لەو ماوەیەدا حکومەت پێکبهێنم"
+    near_identical_summary = "بەپەلە | ئایزنکۆت: ٨ ڕۆژی ماوە بۆ ئەرکی پێکهێنانی حکومەت، بەنیازم لەو ماوەیەدا حکومەت پێکبهێنم."
+    assert _is_duplicate_summary(f"🔴 بەپەلە | {headline_txt}", near_identical_summary) is True
+    assert _is_duplicate_summary(headline_txt, "٨ ڕۆژی ماوە بۆ ئەرکی پێکهێنانی حکومەت") is True
+
+    short_breaking = Article(
+        original_title="Eisencot: 8 days left to form government",
+        translated_title=headline_txt,
+        translated_summary=near_identical_summary,
+        source_name="Al Jazeera",
+        category="politics_world",
+        original_url="https://t.me/AjaNews/7200",
+        is_breaking=True,
+        importance_score=9.2,
+    )
+    msg = formatter.format_telegram_message(short_breaking)
+    caption = formatter.format_caption(short_breaking)
+    assert msg.count(headline_txt) == 1
+    assert caption.count(headline_txt) == 1
+    assert "━━━━━━━━━━━━━━━" in msg
+    assert "📂 سیاسەت و جیهان" in caption
+
+    # Distinct headline + longer multi-sentence body -> BOTH headline and summary render normally
+    normal_art = Article(
+        original_title="Defense ministers hold security talks",
+        translated_title="وەزیرانی بەرگری لەسەر ئاسایشی سنوورەکان کۆبوونەوە",
+        translated_summary=(
+            "لە کۆبوونەوەکەدا میکانیزمی نوێی هاوکاریی سەربازی و پاراستنی ئاسمانی ناوچەکە تاوتوێ کران. "
+            "هەروەها هەردوولا ڕێککەوتن لەسەر ئاڵوگۆڕی زانیاریی هەواڵگری و بەهێزکردنی خاڵە سنوورییەکان."
+        ),
+        source_name="Reuters",
+        category="military_conflict",
+        original_url="https://reuters.com/world/defense-talks",
+        is_breaking=False,
+    )
+    assert _is_duplicate_summary(normal_art.translated_title, normal_art.translated_summary) is False
+    normal_msg = formatter.format_telegram_message(normal_art)
+    normal_cap = formatter.format_caption(normal_art)
+    assert normal_art.translated_title in normal_msg
+    assert "میکانیزمی نوێی هاوکاریی سەربازی" in normal_msg
+    assert normal_art.translated_title in normal_cap
+    assert "میکانیزمی نوێی هاوکاریی سەربازی" in normal_cap
 
 
 # ═══════════════════════════════════════════════════════════════════════════
