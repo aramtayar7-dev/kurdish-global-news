@@ -463,3 +463,73 @@ def test_watchdog_redacts_openrouter_and_groq_secrets(monkeypatch):
     assert "sk-or-v1-abcdef" not in scrubbed
     assert "gsk_1234567890" not in scrubbed
     assert "[REDACTED]" in scrubbed
+
+
+@pytest.mark.asyncio
+async def test_openrouter_enforces_min_tokens_retries_length_truncation_and_recovers_json():
+    """Ensures OpenRouter enforces max_tokens >= 1024, retries on finish_reason=length, and cleans wrapped/truncated JSON."""
+    client = OpenRouterClient(
+        api_key="sk-or-testkey-12345",
+        models=["openrouter/free"],
+    )
+
+    payloads: list[dict] = []
+
+    resp_clipped = AsyncMock()
+    resp_clipped.status = 200
+    resp_clipped.json = AsyncMock(
+        return_value={
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {
+                        "content": '{"title":"بەرگریی ئاسمانی چەند مووشەکێکی خستە خوارەوە","summary":"وەزارەتە'
+                    },
+                }
+            ]
+        }
+    )
+
+    resp_complete = AsyncMock()
+    resp_complete.status = 200
+    resp_complete.json = AsyncMock(
+        return_value={
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            'Here is the output:\n```json\n'
+                            '{"title": "بەرگریی ئاسمانی چەند مووشەکێکی خستە خوارەوە", '
+                            '"summary": "وەزارەتی بەرگری ڕایگەیاند هێزەکان بەرپەرچی هێرشەکانیان داوەتەوە."}\n```'
+                        )
+                    },
+                }
+            ]
+        }
+    )
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        payloads.append(dict(json))
+        if len(payloads) == 1:
+            return _MockResponseContext(resp_clipped)
+        return _MockResponseContext(resp_complete)
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+    mock_session.post = MagicMock(side_effect=fake_post)
+    client._session = mock_session
+
+    res = await client.generate_json("Sys", "User", max_tokens=800)
+    assert len(payloads) == 2
+    assert payloads[0]["max_tokens"] >= 1024
+    assert payloads[1]["max_tokens"] >= 2048
+    assert res["title"] == "بەرگریی ئاسمانی چەند مووشەکێکی خستە خوارەوە"
+    assert "وەزارەتی بەرگری" in res["summary"]
+
+    # Also verify safe JSON recovery if a truncated Sorani payload hits hard model limits after retry
+    recovered = OpenRouterClient._parse_json_safely(
+        '{"title":"کۆبوونەوەی ئەمنی لە هەولێر","summary":"بەرپرسانی سەربازی کۆبوونەوەیەکی بەپەلەیان ئەنجام دا. دواتر هێزەکان'
+    )
+    assert recovered["title"] == "کۆبوونەوەی ئەمنی لە هەولێر"
+    assert "بەرپرسانی سەربازی" in recovered["summary"]

@@ -95,6 +95,18 @@ def _is_telegram_channel_url(url: str) -> bool:
     return host in {"t.me", "telegram.me", "telegram.dog"}
 
 
+def _is_verified_telegram_dispatch(url: str) -> bool:
+    """Return True when URL is a canonical post from a configured verified Telegram channel."""
+    if not _is_telegram_channel_url(url):
+        return False
+    try:
+        parsed = urlparse((url or "").strip())
+        domain_no_port = (parsed.netloc or "").split(":")[0].lower().removeprefix("www.")
+        return ArticleValidator._is_configured_telegram_post_url(domain_no_port, parsed.path or "")
+    except Exception:
+        return False
+
+
 def _is_transient_quota_or_sorani_error(err_msg: str) -> bool:
     """Return True when translation failed due to API 429/quota exhaustion or temporary timeout."""
     lower = (err_msg or "").lower()
@@ -568,7 +580,15 @@ class ArticlePipeline:
         elif not article.image_url and og_image:
             article.image_url = og_image
 
-        if full_text and len(full_text) >= 160:
+        is_verified_tg = _is_verified_telegram_dispatch(article.original_url)
+        min_detail_len = (
+            int(getattr(config, "TELEGRAM_MIN_ARTICLE_DETAIL_CHARS", 55))
+            if is_verified_tg
+            else int(getattr(config, "MIN_ARTICLE_DETAIL_CHARS", 160))
+        )
+        max_detail_similarity = 101.0 if is_verified_tg else 70.0
+
+        if full_text and len(full_text) >= min_detail_len:
             article_content = strip_rss_boilerplate(full_text)[:3000]
             article.original_summary = article_content
             logger.info(
@@ -581,8 +601,8 @@ class ArticlePipeline:
             insufficient, reason = ArticleExtractor.is_insufficient_detail(
                 article.original_title,
                 fallback,
-                min_len=160,
-                max_similarity=70.0,
+                min_len=min_detail_len,
+                max_similarity=max_detail_similarity,
             )
             if insufficient:
                 await self._db.update_article_status(

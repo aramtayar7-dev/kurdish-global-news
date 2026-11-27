@@ -272,6 +272,8 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
 # ═══════════════════════════════════════════════════
 MAX_ARTICLE_AGE_HOURS: float = float(os.getenv("MAX_ARTICLE_AGE_HOURS", "3.0"))
 MAX_ARTICLE_AGE_MINUTES: int = _int(os.getenv("MAX_ARTICLE_AGE_MINUTES"), 30)
+MIN_ARTICLE_DETAIL_CHARS: int = max(55, _int(os.getenv("MIN_ARTICLE_DETAIL_CHARS"), 160))
+TELEGRAM_MIN_ARTICLE_DETAIL_CHARS: int = max(30, _int(os.getenv("TELEGRAM_MIN_ARTICLE_DETAIL_CHARS"), 55))
 DEDUP_WINDOW_HOURS: int = _int(os.getenv("DEDUP_WINDOW_HOURS"), 12)
 DEDUP_HISTORY_HOURS: int = _int(os.getenv("DEDUP_HISTORY_HOURS"), 72)
 

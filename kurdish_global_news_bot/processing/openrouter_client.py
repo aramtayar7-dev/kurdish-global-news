@@ -34,6 +34,12 @@ logger = logging.getLogger("processing.openrouter")
 
 # Regex to strip thinking/reasoning traces emitted by reasoning models
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_UNCLOSED_THINK_BEFORE_JSON_RE = re.compile(r"^.*?<think>.*?(?=\{)", re.DOTALL | re.IGNORECASE)
+_FENCED_JSON_BLOCK_RE = re.compile(
+    r"```(?:json)?\s*(\{.*?)(?:\s*```|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+_OPENROUTER_MIN_MAX_TOKENS = 1280
 
 NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION = """You are a professional international news editor producing accurate,
 neutral, fact-based Central Kurdish (Sorani) news headlines and
@@ -201,19 +207,118 @@ class OpenRouterClient:
 
     @staticmethod
     def _strip_markdown_and_think(raw_text: str) -> str:
-        """Strip reasoning <think> blocks, markdown fences, and stray preamble."""
+        """Strip reasoning <think> blocks, markdown code fences (closed or unclosed), and stray preamble."""
         cleaned = _THINK_BLOCK_RE.sub("", raw_text).strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        elif cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
+        if "<think>" in cleaned.lower():
+            cleaned = _UNCLOSED_THINK_BEFORE_JSON_RE.sub("", cleaned).strip()
+        fenced = _FENCED_JSON_BLOCK_RE.search(cleaned)
+        if fenced:
+            cleaned = fenced.group(1).strip()
+        else:
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            elif cleaned.startswith("```"):
+                cleaned = cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
         return cleaned.strip()
 
+    @staticmethod
+    def _recover_truncated_json(cleaned: str) -> Optional[dict[str, Any]]:
+        """
+        Safely recover a JSON object truncated mid-stream (e.g. cut inside a long Sorani summary)
+        without fabricating fields. Only returns a dict when meaningful complete structure parses.
+        """
+        start = cleaned.find("{")
+        if start == -1:
+            return None
+        fragment = cleaned[start:]
+
+        in_string = False
+        escaped = False
+        stack: list[str] = []
+        last_safe_idx = 0
+
+        for idx, ch in enumerate(fragment):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                    last_safe_idx = idx
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                stack.append("}")
+            elif ch == "[":
+                stack.append("]")
+            elif ch in ("}", "]"):
+                if stack and stack[-1] == ch:
+                    stack.pop()
+                    last_safe_idx = idx
+                if not stack:
+                    break
+
+        repaired = re.sub(r"\\u[0-9a-fA-F]{0,3}$", "", fragment)
+        if repaired.endswith("\\"):
+            repaired = repaired[:-1]
+        if in_string:
+            # Drop any partial incomplete word after last space when string was clipped mid-token
+            last_quote = repaired.rfind('"')
+            if last_quote != -1 and len(repaired) - last_quote > 24:
+                tail_slice = repaired[last_quote + 1 :]
+                cut_punct = max(tail_slice.rfind("."), tail_slice.rfind("؟"), tail_slice.rfind("!"))
+                if cut_punct >= 16:
+                    repaired = repaired[: last_quote + 1 + cut_punct + 1]
+                else:
+                    last_sp = tail_slice.rfind(" ")
+                    if last_sp >= 12:
+                        repaired = repaired[: last_quote + 1 + last_sp]
+            repaired = f'{repaired}"'
+
+        # Strip dangling comma or colon before closing containers
+        repaired = re.sub(r"[,:\s]+$", "", repaired)
+        closing = "".join(reversed(stack))
+        repaired = f"{repaired}{closing}"
+
+        parsed = None
+        try:
+            parsed = json.loads(repaired)
+        except Exception:
+            # Fallback if clipped inside an object key or incomplete token after a previously valid field
+            if 0 < last_safe_idx < len(fragment):
+                prefix = re.sub(r"[,:\s]+$", "", fragment[: last_safe_idx + 1])
+                open_braces = prefix.count("{") - prefix.count("}")
+                if open_braces > 0:
+                    try:
+                        parsed = json.loads(prefix + ("}" * open_braces))
+                    except Exception:
+                        parsed = None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        # Require meaningful extracted content rather than empty/stunted fragments
+        title_val = parsed.get("title")
+        items_val = parsed.get("items")
+        if isinstance(title_val, str) and len(title_val.strip()) >= 5:
+            return parsed
+        if isinstance(items_val, list) and len(items_val) > 0:
+            return parsed
+        return None
+
     @classmethod
-    def _parse_json_safely(cls, raw_content: str) -> dict[str, Any]:
-        """Attempt multi-pass JSON extraction and recovery from LLM response text."""
+    def _parse_json_safely(
+        cls,
+        raw_content: str,
+        *,
+        allow_truncation_recovery: bool = True,
+    ) -> dict[str, Any]:
+        """Attempt multi-pass JSON extraction, markdown stripping, and safe truncation recovery."""
         cleaned = cls._strip_markdown_and_think(raw_content)
         try:
             parsed = json.loads(cleaned)
@@ -234,6 +339,12 @@ class OpenRouterClient:
             except Exception:
                 pass
 
+        if allow_truncation_recovery:
+            recovered = cls._recover_truncated_json(cleaned)
+            if recovered is not None:
+                logger.warning("Recovered valid fields from truncated OpenRouter JSON response.")
+                return recovered
+
         raise OpenRouterError(f"Failed to parse valid JSON from OpenRouter output: {raw_content[:200]}")
 
     async def generate_json(
@@ -241,11 +352,12 @@ class OpenRouterClient:
         system_prompt: str,
         user_content: str,
         temperature: float = 0.0,
-        max_tokens: int = 800,
+        max_tokens: int = 1280,
     ) -> dict[str, Any]:
         """
         Execute chat completion on OpenRouter, failing over across free Kurdish-capable models.
-        Automatically retries without response_format if HTTP 400 is returned.
+        Enforces `max_tokens >= 1280` for OpenRouter free/reasoning headroom, retries once on
+        HTTP 400 response_format rejection or length-truncated output, and recovers cleanly.
         """
         if not self._api_keys:
             raise OpenRouterError("OPENROUTER_API_KEY is not configured.")
@@ -254,6 +366,8 @@ class OpenRouterClient:
         last_error = ""
 
         resolved_system_prompt = resolve_openrouter_system_prompt(system_prompt)
+        effective_max_tokens = max(_OPENROUTER_MIN_MAX_TOKENS, int(max_tokens or _OPENROUTER_MIN_MAX_TOKENS))
+
         # Failover across configured models
         for model in self._models:
             key = self._select_available_key()
@@ -274,7 +388,7 @@ class OpenRouterClient:
                     {"role": "user", "content": user_content},
                 ],
                 "temperature": temperature,
-                "max_tokens": max_tokens,
+                "max_tokens": effective_max_tokens,
             }
 
             # Attempt 1: Structured JSON object response_format
@@ -287,78 +401,111 @@ class OpenRouterClient:
             for attempt_idx, fmt_override in enumerate(attempts_for_model):
                 payload = dict(base_payload)
                 payload.update(fmt_override)
+                retried_for_length = False
+                move_to_next_model = False
 
-                try:
-                    async with session.post(
-                        self._base_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=self._timeout_seconds),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                            choices = data.get("choices", [])
-                            if not choices:
-                                last_error = f"Model {model} returned empty choices list."
-                                logger.warning("OpenRouter model %s returned empty choices.", model)
-                                break  # try next model
+                while True:
+                    try:
+                        async with session.post(
+                            self._base_url,
+                            headers=headers,
+                            json=payload,
+                            timeout=aiohttp.ClientTimeout(total=self._timeout_seconds),
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json(content_type=None)
+                                choices = data.get("choices", [])
+                                if not choices:
+                                    last_error = f"Model {model} returned empty choices list."
+                                    logger.warning("OpenRouter model %s returned empty choices.", model)
+                                    move_to_next_model = True
+                                    break
 
-                            msg = choices[0].get("message", {})
-                            content = str(msg.get("content", "")).strip()
-                            if not content:
-                                last_error = f"Model {model} returned empty message content."
-                                logger.warning("OpenRouter model %s returned empty content.", model)
-                                break  # try next model
+                                first_choice = choices[0] or {}
+                                finish_reason = str(first_choice.get("finish_reason") or "").strip().lower()
+                                msg = first_choice.get("message", {})
+                                content = str(msg.get("content", "")).strip()
+                                if not content:
+                                    last_error = f"Model {model} returned empty message content."
+                                    logger.warning("OpenRouter model %s returned empty content.", model)
+                                    move_to_next_model = True
+                                    break
 
-                            parsed = self._parse_json_safely(content)
-                            logger.info(
-                                "OpenRouter fallback successfully served request using model: %s",
-                                model,
-                            )
-                            return parsed
+                                try:
+                                    parsed = self._parse_json_safely(
+                                        content,
+                                        allow_truncation_recovery=(finish_reason != "length" or retried_for_length),
+                                    )
+                                    logger.info(
+                                        "OpenRouter fallback successfully served request using model: %s",
+                                        model,
+                                    )
+                                    return parsed
+                                except OpenRouterError:
+                                    if finish_reason == "length" and not retried_for_length:
+                                        retried_for_length = True
+                                        boosted = min(4096, max(int(payload["max_tokens"]) * 2, 2048))
+                                        logger.warning(
+                                            "OpenRouter model %s truncated JSON (finish_reason=length); retrying once with max_tokens=%d.",
+                                            model,
+                                            boosted,
+                                        )
+                                        payload = dict(payload)
+                                        payload["max_tokens"] = boosted
+                                        continue
+                                    raise
 
-                        resp_text = await resp.text()
-                        status = resp.status
+                            resp_text = await resp.text()
+                            status = resp.status
 
-                        # If 400 and we sent response_format, immediately retry this model without response_format
-                        if status == 400 and attempt_idx == 0:
-                            logger.info(
-                                "OpenRouter model %s rejected response_format (HTTP 400); retrying without format...",
-                                model,
-                            )
-                            continue
+                            # If 400 and we sent response_format, immediately retry this model without response_format
+                            if status == 400 and attempt_idx == 0:
+                                logger.info(
+                                    "OpenRouter model %s rejected response_format (HTTP 400); retrying without format...",
+                                    model,
+                                )
+                                break
 
-                        # If 429 (Rate Limit), mark key cooldown and try next model
-                        if status == 429:
-                            self._mark_key_cooldown(key, 60.0)
-                            last_error = f"Model {model} HTTP 429: {resp_text[:120]}"
-                            logger.warning("OpenRouter model %s hit HTTP 429; advancing to next model.", model)
+                            # If 429 (Rate Limit), mark key cooldown and try next model
+                            if status == 429:
+                                self._mark_key_cooldown(key, 60.0)
+                                last_error = f"Model {model} HTTP 429: {resp_text[:120]}"
+                                logger.warning("OpenRouter model %s hit HTTP 429; advancing to next model.", model)
+                                move_to_next_model = True
+                                break
+
+                            # If 402 (Payment / Credits required for free model)
+                            if status == 402:
+                                last_error = f"Model {model} HTTP 402: {resp_text[:120]}"
+                                logger.warning("OpenRouter model %s returned HTTP 402; advancing to next model.", model)
+                                move_to_next_model = True
+                                break
+
+                            # If 404 (Model removed or unavailable)
+                            if status == 404:
+                                last_error = f"Model {model} HTTP 404: {resp_text[:120]}"
+                                logger.warning("OpenRouter model %s returned HTTP 404; advancing to next model.", model)
+                                move_to_next_model = True
+                                break
+
+                            # 5xx or other upstream error
+                            last_error = f"Model {model} HTTP {status}: {resp_text[:120]}"
+                            logger.warning("OpenRouter model %s returned HTTP %d; advancing...", model, status)
+                            move_to_next_model = True
                             break
 
-                        # If 402 (Payment / Credits required for free model)
-                        if status == 402:
-                            last_error = f"Model {model} HTTP 402: {resp_text[:120]}"
-                            logger.warning("OpenRouter model %s returned HTTP 402; advancing to next model.", model)
-                            break
-
-                        # If 404 (Model removed or unavailable)
-                        if status == 404:
-                            last_error = f"Model {model} HTTP 404: {resp_text[:120]}"
-                            logger.warning("OpenRouter model %s returned HTTP 404; advancing to next model.", model)
-                            break
-
-                        # 5xx or other upstream error
-                        last_error = f"Model {model} HTTP {status}: {resp_text[:120]}"
-                        logger.warning("OpenRouter model %s returned HTTP %d; advancing...", model, status)
+                    except asyncio.TimeoutError:
+                        last_error = f"Model {model} request timed out after {self._timeout_seconds}s."
+                        logger.warning("OpenRouter model %s timed out; advancing to next model.", model)
+                        move_to_next_model = True
+                        break
+                    except Exception as ex:
+                        last_error = f"Model {model} error: {str(ex)[:120]}"
+                        logger.warning("OpenRouter model %s error (%s); advancing...", model, ex)
+                        move_to_next_model = True
                         break
 
-                except asyncio.TimeoutError:
-                    last_error = f"Model {model} request timed out after {self._timeout_seconds}s."
-                    logger.warning("OpenRouter model %s timed out; advancing to next model.", model)
-                    break
-                except Exception as ex:
-                    last_error = f"Model {model} network error: {str(ex)[:120]}"
-                    logger.warning("OpenRouter model %s error (%s); advancing...", model, ex)
+                if move_to_next_model:
                     break
 
         raise OpenRouterError(f"All OpenRouter models failed. Last error: {last_error}")

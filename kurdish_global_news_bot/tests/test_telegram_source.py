@@ -1494,4 +1494,114 @@ class TestAjaNewsOfficialIntegration:
         assert "🚀" not in sanitized_sorani and "قەوارەی زایۆنی" not in sanitized_sorani
         assert is_valid_kurdish_sorani(sanitized_sorani) is True
 
+    @pytest.mark.asyncio
+    async def test_short_breaking_ajanews_dispatch_85_chars_passes_while_40_char_and_120_char_web_rejected(self, temp_db):
+        mock_bot = AsyncMock()
+        mock_bot.send_photo = AsyncMock(return_value=MagicMock(message_id=9555))
+        mock_bot.send_message = AsyncMock(return_value=MagicMock(message_id=9556))
+
+        publisher = TelegramPublisher()
+        publisher._channel_id = "@KurdishGlobalNews"
+        publisher._bot = mock_bot
+        publisher._image_handler.download_image = AsyncMock(return_value=None)
+
+        pipeline = ArticlePipeline(temp_db, publisher, HealthMonitor(), Metrics())
+        pipeline._semantic_dedup = SemanticDeduplicator(temp_db, api_key="", base_backoff=0.0)
+
+        # 1. 85-char breaking Al Jazeera (AjaNews) military dispatch (title == summary) -> PASSES 55-char gate
+        breaking_text_85 = "عاجل | وزارة الدفاع: الدفاعات الجوية تعترض صواريخ معادية فوق المنطقة العسكرية الشرقية"
+        assert 80 <= len(breaking_text_85) <= 95
+        aja_85 = Article(
+            original_url="https://t.me/AjaNews/6101",
+            canonical_url="https://t.me/AjaNews/6101",
+            original_title=breaking_text_85,
+            original_summary=breaking_text_85,
+            source_name="Al Jazeera",
+            category="military_conflict",
+            region="middle_east",
+            importance_score=9.2,
+            is_breaking=True,
+            publication_date=_iso_hours_ago(0.1),
+        )
+        aja_85.id = await temp_db.insert_article(aja_85)
+
+        # 2. 40-char empty/stub Telegram dispatch -> REJECTED (< 55 char gate)
+        short_40 = "عاجل | تحركات بحرية في البحر الأحمر الآن"
+        assert len(short_40) == 40
+        aja_40 = Article(
+            original_url="https://t.me/AjaNews/6102",
+            canonical_url="https://t.me/AjaNews/6102",
+            original_title=short_40,
+            original_summary=short_40,
+            source_name="Al Jazeera",
+            category="military_conflict",
+            region="middle_east",
+            importance_score=9.0,
+            is_breaking=True,
+            publication_date=_iso_hours_ago(0.2),
+        )
+        aja_40.id = await temp_db.insert_article(aja_40)
+
+        # 3. 120-char normal web/RSS article -> STILL REJECTED (< 160 char gate)
+        web_120 = (
+            "European parliament lawmakers reviewed economic sanctions compliance rules and embassy security "
+            "allocations in Brussels."
+        )
+        assert 110 <= len(web_120) <= 130
+        rss_120 = Article(
+            original_url="https://www.reuters.com/world/middle-east/defense-short-120",
+            canonical_url="https://www.reuters.com/world/middle-east/defense-short-120",
+            original_title="European lawmakers review sanctions rules",
+            original_summary=web_120,
+            source_name="Reuters",
+            category="politics_world",
+            region="middle_east",
+            importance_score=8.5,
+            is_breaking=False,
+            publication_date=_iso_hours_ago(0.3),
+        )
+        rss_120.id = await temp_db.insert_article(rss_120)
+
+        async def _fake_eval(art):
+            entities_map = {
+                aja_85.id: ("eastern_missile_interception", ["east", "airdefense", "interception"], "military_conflict"),
+                aja_40.id: ("redsea_vessel_patrol", ["redsea", "maritime", "patrol"], "military_conflict"),
+                rss_120.id: ("brussels_sanctions_vote", ["brussels", "parliament", "sanctions"], "politics_world"),
+            }
+            ev_key, ents, cat = entities_map[art.id]
+            return RelevanceEvaluation(
+                score=9 if art.id == aja_85.id else 8,
+                is_breaking=bool(art.is_breaking),
+                category=cat,
+                reason="Test dispatch",
+                passed=True,
+                event_key=ev_key,
+                event_entities=ents,
+            )
+
+        with patch.object(pipeline._ranker, "evaluate_global_relevance", side_effect=_fake_eval), \
+             patch.object(pipeline._extractor, "fetch_article_content_and_image", new=AsyncMock(return_value=("", None))), \
+             patch.object(
+                 pipeline._translator,
+                 "translate_article",
+                 new=AsyncMock(
+                     return_value=(
+                         "بەرگریی ئاسمانی ژمارەیەک مووشەکی لە ڕۆژهەڵاتی ناوچەکە خستە خوارەوە",
+                         "وەزارەتی بەرگری ڕایگەیاند سیستەمەکانی بەرگریی ئاسمانی بەرپەرچی هێرشێکی مووشەکییان داوەتەوە. هیچ زیانێکی گیانی تۆمار نەکراوە.",
+                     )
+                 ),
+             ):
+            ok_85 = await pipeline.process_article(aja_85)
+            ok_40 = await pipeline.process_article(aja_40)
+            ok_web_120 = await pipeline.process_article(rss_120)
+
+        assert ok_85 is True
+        assert ok_40 is False
+        assert ok_web_120 is False
+
+        db_40 = await temp_db.get_article_by_canonical_url(aja_40.canonical_url)
+        db_web = await temp_db.get_article_by_canonical_url(rss_120.canonical_url)
+        assert db_40 is not None and "55 min limit" in (db_40.error_message or "")
+        assert db_web is not None and "160 min limit" in (db_web.error_message or "")
+
 
