@@ -14,7 +14,12 @@ from PIL import Image
 
 from config import ASSETS_DIR, CARD_HEIGHT, CARD_WIDTH
 import processing.card_generator as card_gen_mod
-from processing.card_generator import MARGIN_X, NewsCardGenerator, _RTL_RESHAPER
+from processing.card_generator import (
+    MARGIN_X,
+    NewsCardGenerator,
+    _RTL_RESHAPER,
+    detect_country_flag_filename,
+)
 from storage.models import Article
 from tg_bot.publisher import TelegramPublisher
 
@@ -252,3 +257,186 @@ class TestNewsCardGenerator:
             visual = NewsCardGenerator._prepare_rtl_text(word)
             assert visual
             assert not any(0xE000 <= ord(ch) <= 0xF8FF for ch in visual)
+
+    @pytest.mark.parametrize(
+        "text,expected_flag",
+        [
+            ("عومان، مەسقەت و سەڵتەنەتی عومان", "oman.png"),
+            ("Oman talks held in Muscat", "oman.png"),
+            ("بەحرەین لە مەنامە کۆبوونەوەی ئەنجامدا", "bahrain.png"),
+            ("Bahrain security summit in Manama", "bahrain.png"),
+            ("لەیەمەن و سەنعا حوسی هێرشی کردە سەر عەدەن", "yemen.png"),
+            ("Yemen Houthi strike near Sanaa and Aden", "yemen.png"),
+            ("لوبنان و بەیروت و هەڵوێستی حزبوڵڵا و حیزبوڵڵا", "lebanon.png"),
+            ("Hezbollah statement from Beirut, Lebanon", "lebanon.png"),
+            ("میسر و قاهیرە و سینا و کەناڵی سوێس", "egypt.png"),
+            ("Egypt closes Suez transit near Cairo", "egypt.png"),
+            ("ئوردن و عەممان پێشوازیان لە شاندەکە کرد", "jordan.png"),
+            ("Jordan envoy arrives in Amman", "jordan.png"),
+            ("قەتەر لە دەوحە ناوبژیوانی دەکات", "qatar.png"),
+            ("Qatar hosts talks in Doha", "qatar.png"),
+            ("ئیمارات و دوبەی و ئەبوزەبی و شاریقە", "uae.png"),
+            ("UAE summit in Dubai and Abu Dhabi, Emirates", "uae.png"),
+            ("کوەیت و کوێت ڕاگەیەندراوێکیان بڵاوکردەوە", "kuwait.png"),
+            ("Kuwait parliament approves budget", "kuwait.png"),
+            ("سعودیە و سعوودیە لە ڕیاز و جددە و جەددە", "saudi.png"),
+            ("Saudi talks between Riyadh and Jeddah", "saudi.png"),
+            # Negative / false-positive guards
+            ("سیناریۆی نوێ لە عێراق و بەغدا تاوتوێ کرا", "iraq.png"),
+            ("سیناریۆی نوێ لە بەرپرسیارێتی ناوچەیی تاوتوێ کرا", None),
+            ("Woman speaks about diplomacy globally", None),
+            ("Officials told us talks continue today", None),
+            ("ئاڵۆزییەکانی ڕۆژهەڵاتی ناوەڕاست لە ئوردن باس کرا", "jordan.png"),
+            # Kurdistan & higher priority over Iraq
+            ("کوردستان و هەرێمی کوردستان لە هەولێر و سلێمانی و دهۆک و کەرکوک و هەڵەبجە", "kurdistan.png"),
+            ("باشوری کوردستان و رۆژهەلات و باکوور و رۆژئاوە و پێشمەرگە", "kurdistan.png"),
+            ("عێراق و بەغدا لەگەڵ هەولێر و کەرکوک ڕێککەوتن", "kurdistan.png"),
+            ("Kurdistan forces in Erbil, Sulaymaniyah, Duhok, and Kirkuk", "kurdistan.png"),
+            ("Baghdad talks with Erbil and Kurdistan", "kurdistan.png"),
+            # 10 previous countries
+            ("عێراق و بەغدا و بەسرە و نەجەف و کەربەلا و مووسڵ", "iraq.png"),
+            ("Iraq summit in Baghdad", "iraq.png"),
+            ("ئێران و تاران و تەهران و سپای پاسداران و ئەسفەهان و مەشهەد", "iran.png"),
+            ("Iran envoy meets officials in Tehran", "iran.png"),
+            ("تورکیا و ئەنقەرە و ئیستەنبوڵ و ئەنکەرە", "turkey.png"),
+            ("Türkiye talks between Ankara and Istanbul", "turkey.png"),
+            ("سووریا و سوریا لە دیمەشق و حەلەب و حومس", "syria.png"),
+            ("Syria report from Damascus and Aleppo", "syria.png"),
+            ("ئیسرائیل و تەلئەبیب و تەلئەڤیڤ", "israel.png"),
+            ("Israel officials meet in Tel Aviv", "israel.png"),
+            ("فەلەستین و کەرتی غەززە و غەززە و ڕامەڵڵا و ڕەفەح و خان یونس", "palestine.png"),
+            ("Palestine, Gaza, and Ramallah update", "palestine.png"),
+            ("ئەمریکا و ویلایەتە یەکگرتووەکان لە واشنتۆن و کۆشکی سپی و پێنتاگۆن", "usa.png"),
+            ("US Pentagon and Washington announcement", "usa.png"),
+            ("ڕووسیا و روسیا لە مۆسکۆ و کرێملین", "russia.png"),
+            ("Russia and Moscow Kremlin briefing", "russia.png"),
+            ("چین و پەکین و بێیجینگ", "china.png"),
+            ("China trade talks in Beijing", "china.png"),
+            ("بەریتانیا و لەندەن و شانشینی یەکگرتوو", "uk.png"),
+            ("UK and Britain officials in London", "uk.png"),
+            # 9 new global countries
+            ("فەرەنسا و پاریس و لێدوانی ماکرۆن", "france.png"),
+            ("France President Macron in Paris", "france.png"),
+            ("ئەڵمانیا و بەرلین بڕیاریان دا", "germany.png"),
+            ("Germany government statement in Berlin", "germany.png"),
+            ("ئۆکراینا و کیێڤ و زیلینسکی", "ukraine.png"),
+            ("Ukraine talks in Kyiv", "ukraine.png"),
+            ("ئیتاڵیا و ڕۆما میوانداری دەکەن", "italy.png"),
+            ("Italy conference in Rome", "italy.png"),
+            ("ئیسپانیا و مەدرید ڕاگەیەندراویان دا", "spain.png"),
+            ("Spain summit in Madrid", "spain.png"),
+            ("کەنەدا و ئۆتاوا هاوکاری دەنێرن", "canada.png"),
+            ("Canada briefing from Ottawa", "canada.png"),
+            ("ژاپۆن و تۆکیۆ پلانێکیان ڕاگەیاند", "japan.png"),
+            ("Japan statement in Tokyo", "japan.png"),
+            ("هیندستان و نیودەلهی ڕێککەوتن", "india.png"),
+            ("India talks in New Delhi", "india.png"),
+            ("پاکستان و ئیسلامئاباد کۆبوونەوە", "pakistan.png"),
+            ("Pakistan officials in Islamabad", "pakistan.png"),
+        ],
+    )
+    def test_detect_country_flag_all_10_countries_and_guards(self, text: str, expected_flag: str | None):
+        assert detect_country_flag_filename(text) == expected_flag
+
+    def test_all_30_country_flag_assets_exist(self):
+        expected = {
+            "oman.png", "bahrain.png", "yemen.png", "lebanon.png", "egypt.png",
+            "jordan.png", "qatar.png", "uae.png", "kuwait.png", "saudi.png",
+            "iraq.png", "iran.png", "turkey.png", "syria.png", "israel.png",
+            "palestine.png", "usa.png", "russia.png", "china.png", "uk.png",
+            "kurdistan.png", "france.png", "germany.png", "ukraine.png", "italy.png",
+            "spain.png", "canada.png", "japan.png", "india.png", "pakistan.png",
+        }
+        flags_dir = ASSETS_DIR / "flags"
+        for fname in expected:
+            p = flags_dir / fname
+            assert p.exists(), f"Missing flag asset: {p}"
+            with Image.open(p) as im:
+                assert im.width > 0 and im.height > 0
+
+    @pytest.mark.asyncio
+    async def test_card_renders_top_left_flag_badge_when_matched_and_clean_when_unmatched(self):
+        generator = NewsCardGenerator()
+        solid_dark_bg = Image.new("RGB", (1280, 720), (15, 25, 45))
+        buf = io.BytesIO()
+        solid_dark_bg.save(buf, format="JPEG")
+        bg_bytes = buf.getvalue()
+
+        art_no_flag = Article(
+            translated_title="کۆبوونەوەی ئەمنی جیهانی دەستیپێکرد",
+            category="politics_world",
+            source_name="Reuters",
+        )
+        art_with_flag = Article(
+            translated_title="کۆبوونەوەی ئەمنی لە دەوحە و قەتەر دەستیپێکرد",
+            category="politics_world",
+            source_name="Reuters",
+        )
+
+        card_plain_bytes = await generator.generate_card_bytes(art_no_flag, image_bytes=bg_bytes)
+        card_flag_bytes = await generator.generate_card_bytes(art_with_flag, image_bytes=bg_bytes)
+
+        with Image.open(io.BytesIO(card_plain_bytes)) as plain_img, Image.open(
+            io.BytesIO(card_flag_bytes)
+        ) as flag_img:
+            assert plain_img.size == (1280, 720)
+            assert flag_img.size == (1280, 720)
+
+            # Plain card top-left corner at (MARGIN_X + 45, 36 + 28) has only dark background
+            plain_px = plain_img.getpixel((MARGIN_X + 45, 36 + 28))
+            assert max(plain_px) < 60
+
+            # Qatar maroon/white flag badge renders in the top-left center pixel
+            flag_px = flag_img.getpixel((MARGIN_X + 45, 36 + 28))
+            assert flag_px != plain_px
+            assert flag_px[0] > 90  # maroon or bright white flag pigment present
+
+    @pytest.mark.asyncio
+    async def test_admin_manual_photo_post_also_renders_kurdistan_corner_flag(self):
+        """Confirm manual Telegram bot posts (admin_poster) use card_generator corner flags too."""
+        from types import SimpleNamespace
+        from tg_bot.admin_poster import publish_admin_manual_post
+
+        solid_dark_bg = Image.new("RGB", (1280, 720), (15, 25, 45))
+        bg_buf = io.BytesIO()
+        solid_dark_bg.save(bg_buf, format="JPEG")
+        photo_bytes = bg_buf.getvalue()
+
+        captured_card_bytes: list[bytes] = []
+        bot = MagicMock()
+        bot.defaults = None
+        tg_file = MagicMock()
+        tg_file.download_as_bytearray = AsyncMock(return_value=bytearray(photo_bytes))
+        bot.get_file = AsyncMock(return_value=tg_file)
+
+        async def _capture_send_photo(*args, **kwargs):
+            captured_card_bytes.append(kwargs["photo"].read())
+            return SimpleNamespace(message_id=9001)
+
+        bot.send_photo = AsyncMock(side_effect=_capture_send_photo)
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=9002))
+
+        msg = SimpleNamespace(
+            message_id=77,
+            from_user=SimpleNamespace(id=111222333),
+            chat=SimpleNamespace(id=111222333, type="private"),
+            caption="عێراق و هەرێمی کوردستان لە هەولێر کۆبوونەوە",
+            text=None,
+            photo=[SimpleNamespace(file_id="hi_res_photo")],
+        )
+
+        result = await publish_admin_manual_post(
+            bot,
+            msg,
+            channel_id="@KurdishGlobalNews",
+            admin_chat_id=111222333,
+            channel_handle="@KurdishGlobalNews",
+        )
+        assert result["status"] == "published"
+        assert len(captured_card_bytes) == 1
+
+        with Image.open(io.BytesIO(captured_card_bytes[0])) as rendered:
+            # Kurdistan flag golden sun emblem sits centered at (MARGIN_X + 45, 36 + 28)
+            center_px = rendered.getpixel((MARGIN_X + 45, 36 + 28))
+            assert center_px[0] > 180 and center_px[1] > 140  # yellow sun emblem rendered over dark photo!
+

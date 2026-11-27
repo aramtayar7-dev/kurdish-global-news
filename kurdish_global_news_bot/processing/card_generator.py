@@ -17,6 +17,7 @@ import asyncio
 import io
 import logging
 from pathlib import Path
+import re
 import tempfile
 from typing import Optional
 
@@ -74,6 +75,225 @@ CATEGORY_COLORS: dict[str, tuple[int, int, int]] = {
 
 MARGIN_X = 56
 CONTENT_MAX_WIDTH = CARD_WIDTH - (MARGIN_X * 2)  # 1168px
+
+_LETTER_CLASS = r"A-Za-z0-9_\u0621-\u064A\u0660-\u0669\u0671-\u06D5\u06F0-\u06F9"
+_KU_LEFT = rf"(?:(?<![{_LETTER_CLASS}])(?:لە|بۆ|بە)?)"
+_KU_RIGHT = rf"(?:یەکان|ەکان|یی|دا|یش|ی|ە)?(?![{_LETTER_CLASS}])"
+
+_COUNTRY_FLAG_KEYWORDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "kurdistan.png",
+        (
+            "هەرێمی کوردستان",
+            "باشوری کوردستان",
+            "باشووری کوردستان",
+            "کوردستان",
+            "رۆژهەلات",
+            "ڕۆژهەڵات",
+            "باکوور",
+            "رۆژئاوە",
+            "ڕۆژئاوا",
+            "هەولێر",
+            "سلێمانی",
+            "دهۆک",
+            "کەرکوک",
+            "هەڵەبجە",
+            "پێشمەرگە",
+        ),
+        ("Kurdistan", "Erbil", "Sulaymaniyah", "Duhok", "Kirkuk"),
+    ),
+    (
+        "oman.png",
+        ("سەڵتەنەتی عومان", "عومان", "مەسقەت"),
+        ("Oman", "Muscat"),
+    ),
+    (
+        "bahrain.png",
+        ("بەحرەین", "مەنامە"),
+        ("Bahrain", "Manama"),
+    ),
+    (
+        "yemen.png",
+        ("یەمەن", "سەنعا", "حوسی", "عەدەن"),
+        ("Yemen", "Sanaa", "Houthi", "Aden"),
+    ),
+    (
+        "lebanon.png",
+        ("لوبنان", "بەیروت", "حزبوڵڵا", "حیزبوڵڵا"),
+        ("Lebanon", "Beirut", "Hezbollah"),
+    ),
+    (
+        "egypt.png",
+        ("میسر", "قاهیرە", "سینا", "سوێس"),
+        ("Egypt", "Cairo", "Suez"),
+    ),
+    (
+        "jordan.png",
+        ("ئوردن", "عەممان"),
+        ("Jordan", "Amman"),
+    ),
+    (
+        "qatar.png",
+        ("قەتەر", "دەوحە"),
+        ("Qatar", "Doha"),
+    ),
+    (
+        "uae.png",
+        ("ئیمارات", "دوبەی", "ئەبوزەبی", "شاریقە"),
+        ("Abu Dhabi", "Emirates", "UAE", "Dubai"),
+    ),
+    (
+        "kuwait.png",
+        ("کوەیت", "کوێت"),
+        ("Kuwait",),
+    ),
+    (
+        "saudi.png",
+        ("سعودیە", "سعوودیە", "ڕیاز", "جددە", "جەددە"),
+        ("Saudi", "Riyadh", "Jeddah"),
+    ),
+    (
+        "iraq.png",
+        ("عێراق", "بەغدا", "بەسرە", "نەجەف", "کەربەلا", "مووسڵ"),
+        ("Iraq", "Baghdad"),
+    ),
+    (
+        "iran.png",
+        ("ئێران", "تاران", "تەهران", "سپای پاسداران", "ئەسفەهان", "مەشهەد"),
+        ("Iran", "Tehran"),
+    ),
+    (
+        "turkey.png",
+        ("تورکیا", "ئەنقەرە", "ئیستەنبوڵ", "ئەنکەرە"),
+        ("Turkey", "Türkiye", "Ankara", "Istanbul"),
+    ),
+    (
+        "syria.png",
+        ("سووریا", "سوریا", "دیمەشق", "حەلەب", "حومس"),
+        ("Syria", "Damascus", "Aleppo"),
+    ),
+    (
+        "israel.png",
+        ("ئیسرائیل", "تەلئەبیب", "تەلئەڤیڤ"),
+        ("Israel", "Tel Aviv"),
+    ),
+    (
+        "palestine.png",
+        ("کەرتی غەززە", "فەلەستین", "غەززە", "ڕامەڵڵا", "ڕەفەح", "خان یونس"),
+        ("Palestine", "Gaza", "Ramallah"),
+    ),
+    (
+        "usa.png",
+        ("ئەمریکا", "ویلایەتە یەکگرتووەکان", "واشنتۆن", "کۆشکی سپی", "پێنتاگۆن"),
+        ("United States", "Washington", "Pentagon", "USA", "US"),
+    ),
+    (
+        "russia.png",
+        ("ڕووسیا", "روسیا", "مۆسکۆ", "کرێملین"),
+        ("Russia", "Moscow", "Kremlin"),
+    ),
+    (
+        "china.png",
+        ("چین", "پەکین", "بێیجینگ"),
+        ("China", "Beijing"),
+    ),
+    (
+        "uk.png",
+        ("شانشینی یەکگرتوو", "بەریتانیا", "لەندەن"),
+        ("United Kingdom", "Britain", "London", "UK"),
+    ),
+    (
+        "france.png",
+        ("فەرەنسا", "پاریس", "ماکرۆن"),
+        ("France", "Paris", "Macron"),
+    ),
+    (
+        "germany.png",
+        ("ئەڵمانیا", "بەرلین"),
+        ("Germany", "Berlin"),
+    ),
+    (
+        "ukraine.png",
+        ("ئۆکراینا", "کیێڤ", "زیلینسکی"),
+        ("Ukraine", "Kyiv"),
+    ),
+    (
+        "italy.png",
+        ("ئیتاڵیا", "ڕۆما"),
+        ("Italy", "Rome"),
+    ),
+    (
+        "spain.png",
+        ("ئیسپانیا", "مەدرید"),
+        ("Spain", "Madrid"),
+    ),
+    (
+        "canada.png",
+        ("کەنەدا", "ئۆتاوا"),
+        ("Canada", "Ottawa"),
+    ),
+    (
+        "japan.png",
+        ("ژاپۆن", "تۆکیۆ"),
+        ("Japan", "Tokyo"),
+    ),
+    (
+        "india.png",
+        ("هیندستان", "نیودەلهی"),
+        ("India", "New Delhi"),
+    ),
+    (
+        "pakistan.png",
+        ("پاکستان", "ئیسلامئاباد"),
+        ("Pakistan", "Islamabad"),
+    ),
+)
+
+
+def _compile_country_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    compiled: list[tuple[str, re.Pattern[str]]] = []
+    for filename, ku_terms, en_terms in _COUNTRY_FLAG_KEYWORDS:
+        ku_parts: list[str] = []
+        for term in ku_terms:
+            if term in {"رۆژهەلات", "ڕۆژهەڵات"}:
+                ku_parts.append(rf"{_KU_LEFT}{re.escape(term)}(?!ی\s+ناوە[ڕر]است){_KU_RIGHT}")
+            elif term == "باکوور":
+                ku_parts.append(rf"(?<!کۆریای\s)(?<!ئەمریکای\s){_KU_LEFT}{re.escape(term)}{_KU_RIGHT}")
+            else:
+                ku_parts.append(rf"{_KU_LEFT}{re.escape(term)}{_KU_RIGHT}")
+        en_parts: list[str] = []
+        for term in en_terms:
+            if term == "US":
+                # Avoid matching English pronoun "us" under IGNORECASE
+                en_parts.append(r"(?-i:\bUS\b|\bU\.S\.)")
+            else:
+                en_parts.append(rf"\b{re.escape(term)}\b")
+        pattern = re.compile("|".join(ku_parts + en_parts), re.IGNORECASE)
+        compiled.append((filename, pattern))
+    return tuple(compiled)
+
+
+_COMPILED_COUNTRY_FLAG_PATTERNS = _compile_country_patterns()
+
+
+def detect_country_flag_filename(text: str) -> Optional[str]:
+    """Detect the highest-priority country/region flag PNG filename in text."""
+    if not text or not text.strip():
+        return None
+    matches: list[tuple[int, str]] = []
+    matched_names: set[str] = set()
+    for filename, pattern in _COMPILED_COUNTRY_FLAG_PATTERNS:
+        m = pattern.search(text)
+        if m is not None:
+            matches.append((m.start(), filename))
+            matched_names.add(filename)
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0])
+    winner = matches[0][1]
+    if winner == "iraq.png" and "kurdistan.png" in matched_names:
+        return "kurdistan.png"
+    return winner
 
 
 class NewsCardGenerator:
@@ -362,6 +582,64 @@ class NewsCardGenerator:
         lines = lines[:3]
         return lines, font, int(38 * 1.42)
 
+    def _resolve_article_flag_path(self, article: Article) -> Optional[Path]:
+        """Resolve local PNG flag icon for an article's headline/text, if matched."""
+        headline_text = f"{article.translated_title or ''} {article.original_title or ''}"
+        filename = detect_country_flag_filename(headline_text)
+        if filename is None:
+            filename = detect_country_flag_filename(article.translated_summary or "")
+        if filename is None:
+            return None
+        flag_path = self._assets_dir / "flags" / filename
+        return flag_path if flag_path.exists() else None
+
+    def _draw_country_flag_badge(self, canvas: Image.Image, flag_path: Path) -> None:
+        """Draw a polished rounded country flag badge in the top-left corner."""
+        try:
+            with Image.open(flag_path) as raw_flag:
+                flag_rgba = raw_flag.convert("RGBA")
+        except Exception as e:
+            logger.warning("Failed to load country flag icon (%s): %s", flag_path, e)
+            return
+
+        flag_w, flag_h = 90, 56
+        radius = 10
+        pos_x, pos_y = MARGIN_X, 36
+
+        flag_resized = flag_rgba.resize((flag_w, flag_h), Image.Resampling.LANCZOS)
+
+        # Anti-aliased supersampled rounded mask
+        scale = 4
+        mask_hi = Image.new("L", (flag_w * scale, flag_h * scale), 0)
+        ImageDraw.Draw(mask_hi).rounded_rectangle(
+            [(0, 0), (flag_w * scale - 1, flag_h * scale - 1)],
+            radius=radius * scale,
+            fill=255,
+        )
+        mask = mask_hi.resize((flag_w, flag_h), Image.Resampling.LANCZOS)
+
+        rounded_flag = Image.new("RGBA", (flag_w, flag_h), (0, 0, 0, 0))
+        rounded_flag.paste(flag_resized, (0, 0), mask)
+
+        # Subtle drop shadow and crisp thin frame border so dark/light bands stay legible
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(overlay)
+        odraw.rounded_rectangle(
+            [(pos_x + 2, pos_y + 3), (pos_x + flag_w + 2, pos_y + flag_h + 3)],
+            radius=radius,
+            fill=(0, 0, 0, 145),
+        )
+        canvas.alpha_composite(overlay)
+        canvas.alpha_composite(rounded_flag, dest=(pos_x, pos_y))
+
+        border_draw = ImageDraw.Draw(canvas)
+        border_draw.rounded_rectangle(
+            [(pos_x, pos_y), (pos_x + flag_w - 1, pos_y + flag_h - 1)],
+            radius=radius,
+            outline=(255, 255, 255, 195),
+            width=1,
+        )
+
     def render_card_sync(
         self,
         article: Article,
@@ -372,6 +650,9 @@ class NewsCardGenerator:
         bg = self._prepare_background(image_bytes, article=article)
         canvas = self._apply_bottom_gradient(bg)
         self._draw_logo_or_badge(canvas)
+        flag_path = self._resolve_article_flag_path(article)
+        if flag_path is not None:
+            self._draw_country_flag_badge(canvas, flag_path)
 
         draw = ImageDraw.Draw(canvas)
         rtl_kw = self._rtl_kwargs()
