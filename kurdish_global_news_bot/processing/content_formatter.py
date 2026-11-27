@@ -157,8 +157,71 @@ def _prepend_attribution_with_prefix(translated_summary: str, prefix_text: str) 
 
 # Unicode Arabic/Kurdish letter boundaries so punctuation (، ؛ ؟ .) separates cleanly
 # while partial substrings inside unrelated words are never matched.
-_BOUNDARY_LEFT = r"(?<![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"
-_BOUNDARY_RIGHT = r"(?![A-Za-z0-9_\u0621-\u064A\u0671-\u06D5])"
+_BOUNDARY_LEFT = r"(?<![A-Za-z0-9_\u0621-\u064A\u0660-\u0669\u0671-\u06D5\u06F0-\u06F9\u200C])"
+_BOUNDARY_RIGHT = r"(?![A-Za-z0-9_\u0621-\u064A\u0660-\u0669\u0671-\u06D5\u06F0-\u06F9\u200C])"
+
+# Targeted Unicode emoji, flag, skin-tone, variation selector, and ZWJ ranges.
+# Deliberately avoids \U00010000-\U0010FFFF so non-emoji supplementary characters are preserved.
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002600-\U000027BF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA70-\U0001FAFF"
+    "\U0001F3FB-\U0001F3FF"
+    "]"
+    "|[\uFE0E\uFE0F]"
+    "|\u200D"
+    "|\u20E3"
+)
+
+PUNCTUATION_PATTERN = re.compile(r"[!?؟۔]{2,}")
+_REPEATED_PERIOD_PATTERN = re.compile(r"\.{2,}")
+
+# Explicit country/state names stripped only when tightly wrapped in decorative/sarcastic quotes
+_EXPLICIT_COUNTRY_NAMES_ALTERNATION = (
+    r"ئیسرائیل|ئسرائیل|إسرائيل|اسرائيل|Israel|"
+    r"ئەمریکا|ئەمەریکا|أمريكا|امريكا|الولايات\s+المتحدة|United\s+States|U\.S\.|USA|"
+    r"ئێران|إيران|ايران|Iran|"
+    r"عێراق|العراق|Iraq|"
+    r"سووریا|سوریا|سوريا|سورية|Syria|"
+    r"تورکیا|تركيا|Türkiye|Turkey|"
+    r"ڕووسیا|روسیا|روسيا|Russia|"
+    r"ئۆکرانیا|أوكرانيا|اوكرانيا|Ukraine|"
+    r"فەلەستین|فلسطين|Palestine|"
+    r"لوبنان|لبنان|Lebanon|"
+    r"یەمەن|اليمن|Yemen|"
+    r"چین|الصين|China|"
+    r"بەریتانیا|بريطانيا|Britain|UK|"
+    r"فەڕەنسا|فەرەنسا|فرنسا|France|"
+    r"ئەڵمانیا|ألمانيا|المانيا|Germany|"
+    r"هەرێمی\s+کوردستان|کوردستان|إقليم\s+كردستان|كردستان|Kurdistan|"
+    r"قەوارە[یى]\s+زایۆن[یى]|الكيان\s+الصهيوني|الكيان\s+المؤقت|[ڕر]ژێمی\s+زایۆن[یى]"
+)
+
+_SARCASTIC_COUNTRY_QUOTE_RE = re.compile(
+    rf"{_BOUNDARY_LEFT}"
+    rf"(?:[\"']|«|“|‘|„)\s*"
+    rf"(?P<country>{_EXPLICIT_COUNTRY_NAMES_ALTERNATION})"
+    rf"\s*(?:[\"']|»|”|’|“)"
+    rf"{_BOUNDARY_RIGHT}",
+    re.IGNORECASE,
+)
+
+# Legitimate direct quotations / statement excerpts protected from editorial rewrites
+_DIRECT_QUOTATION_RE = re.compile(
+    r"«[^»\n]+»|“[^”\n]+”|‘[^’\n]+’|\"[^\"\n]+\""
+)
+
+# Attribution and legal cues that signal reported characterization rather than narrator voice
+_ATTRIBUTION_OR_LEGAL_CONTEXT_RE = re.compile(
+    r"(?:ڕایگەیاند|گوتی|وتیشی|دەڵێت|ئاماژەی\s+(?:دا|کرد)|بەپێی|بەگوێرەی|بە\s+وتەی|"
+    r"جريمة|القانون\s+الدولي|یاسای\s+نێودەوڵەتی|القوانين|"
+    r"دادگا|پەیماننامەی|قال|صرح|أعلن|وصفت?ه?\s+بالعدوان|ما\s+وصفه)",
+    re.IGNORECASE,
+)
+_PASSIVE_LABEL_SUFFIX_RE = re.compile(r"^\s+ناو\s*(?:دەبرێت|دەنرێت|برا|دەبەن|دەهێنرێت)")
 
 # Ordered longest/most-specific first; replaces partisan epithets with neutral journalistic forms
 _RAW_NEUTRAL_TERM_RULES: tuple[tuple[str, str], ...] = (
@@ -228,6 +291,12 @@ _RAW_NEUTRAL_TERM_RULES: tuple[tuple[str, str], ...] = (
     # Other partisan epithets
     (r"(?:ئێرانی\s+دوژمن|دوژمنی\s+ئێرانی|ڕژێمی\s+مەلاکان)", "ئێران"),
     (r"(?:العدو\s+(?:الإيراني|الايراني)|النظام\s+الصفوي)", "ئێران"),
+    # Unsupported rhetorical attack characterizations (handled context-safely; not replacing legal/quoted usages)
+    (r"دەستدرێژییەکانی", "هێرشەکانی"),
+    (r"دەستدرێژییەکی", "هێرشێکی"),
+    (r"دەستدرێژییە", "هێرشە"),
+    (r"دەستدرێژیی?(?!\s*سێکسی)", "هێرش"),
+    (r"العدوان", "هێرش"),
 )
 
 _COMPILED_NEUTRAL_TERM_RULES: list[tuple[re.Pattern[str], str]] = [
@@ -241,23 +310,96 @@ _COMPILED_NEUTRAL_TERM_RULES: list[tuple[re.Pattern[str], str]] = [
     for pat, repl in _RAW_NEUTRAL_TERM_RULES
 ]
 
+# Contextual rules (rhetorical attack noun replacements skipped under legal/attributed prefix cues)
+_CONTEXT_SENSITIVE_REPLACEMENTS: frozenset[str] = frozenset(
+    {"هێرشەکانی", "هێرشێکی", "هێرشە", "هێرش"}
+)
+
+
+def _strip_sarcastic_country_quotes(text: str) -> tuple[str, int]:
+    """Remove scare/sarcastic quotation marks wrapped directly around explicit country/state names."""
+    count = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return match.group("country")
+
+    return _SARCASTIC_COUNTRY_QUOTE_RE.sub(_replace, text), count
+
+
+def _protect_direct_quotations(text: str) -> tuple[str, dict[str, str]]:
+    """
+    Temporarily mask legitimate direct quotations so neutral phrase replacement
+    never alters verbatim quoted speech or official statement excerpts.
+    Single-token sarcastic country quotes must be unwrapped before calling this.
+    """
+    placeholders: dict[str, str] = {}
+
+    def _mask(match: re.Match[str]) -> str:
+        quoted = match.group(0)
+        inner = quoted[1:-1].strip()
+        # Only protect multi-word statements or longer non-trivial quotes (not 1-word scare quotes)
+        if not inner or (len(inner.split()) < 2 and len(inner) < 24):
+            return quoted
+        token = f"__KGN_QUOTE_{len(placeholders)}__"
+        placeholders[token] = quoted
+        return token
+
+    return _DIRECT_QUOTATION_RE.sub(_mask, text), placeholders
+
+
+def _restore_direct_quotations(text: str, placeholders: dict[str, str]) -> str:
+    """Restore masked direct quotation spans verbatim."""
+    restored = text
+    for token, original in placeholders.items():
+        restored = restored.replace(token, original)
+    return restored
+
+
+def _apply_neutral_term_rules(text: str) -> tuple[str, int]:
+    """Apply explicit neutral term replacements respecting word boundaries and attribution/legal context."""
+    result = text
+    replacements = 0
+    for pattern, replacement in _COMPILED_NEUTRAL_TERM_RULES:
+        is_contextual = replacement in _CONTEXT_SENSITIVE_REPLACEMENTS
+
+        def _sub(m: re.Match[str], r: str = replacement, ctx: bool = is_contextual) -> str:
+            nonlocal replacements
+            if ctx:
+                prefix_window = result[max(0, m.start() - 120) : m.start()]
+                clause_prefix = prefix_window.rsplit(".", 1)[-1].rsplit("؟", 1)[-1].rsplit("!", 1)[-1]
+                suffix_window = result[m.end() : min(len(result), m.end() + 45)]
+                is_passive_labeled = bool(
+                    re.search(r"\bبە\s*$", clause_prefix) and _PASSIVE_LABEL_SUFFIX_RE.search(suffix_window)
+                )
+                if is_passive_labeled or _ATTRIBUTION_OR_LEGAL_CONTEXT_RE.search(clause_prefix):
+                    return m.group(0)
+            replacements += 1
+            conj = (m.group("conj") + " ") if m.group("conj") else ""
+            suffix = m.group("suffix") or ""
+            return f"{conj}{r}{suffix}"
+
+        result = pattern.sub(_sub, result)
+    return result, replacements
+
 
 def normalize_neutral_terminology(text: str) -> str:
     """
     Deterministically normalize partisan, hostile, or misnamed Kurdish/Arabic
     geopolitical terminology to neutral BBC/Reuters-style Central Kurdish terms.
-    Preserves sentence structure, punctuation, numbers, factual occupation/presence
-    descriptions, and avoids partial substring corruption. Idempotent.
+    Preserves sentence structure, punctuation, numbers, direct quotations,
+    legal/attribution context, factual descriptions, and avoids partial
+    substring corruption. Idempotent.
     """
-    if not text:
+    if not isinstance(text, str) or not text:
         return ""
 
     result = strip_rss_boilerplate(text)
-    for pattern, replacement in _COMPILED_NEUTRAL_TERM_RULES:
-        result = pattern.sub(
-            lambda m, r=replacement: f"{(m.group('conj') + ' ') if m.group('conj') else ''}{r}{m.group('suffix') or ''}",
-            result,
-        )
+    result, _ = _strip_sarcastic_country_quotes(result)
+    masked, quote_map = _protect_direct_quotations(result)
+    masked, _ = _apply_neutral_term_rules(masked)
+    result = _restore_direct_quotations(masked, quote_map)
 
     # Fix literal comma-and-comma artifacts (e.g. ', و,' / '، و،') and clean redundant spacing
     result = _AWKWARD_COMMA_AND_RE.sub(" و ", result)
@@ -266,6 +408,59 @@ def normalize_neutral_terminology(text: str) -> str:
     # Normalize redundant horizontal spaces cleanly while keeping intentional newlines
     lines = [re.sub(r"[ \t]{2,}", " ", ln).strip() if ln.strip() else "" for ln in result.splitlines()]
     return strip_rss_boilerplate("\n".join(lines).strip())
+
+
+def sanitize_neutral_sorani_text(text: str) -> str:
+    """
+    Deterministic, idempotent post-translation/pre-publish Sorani neutrality sanitizer.
+
+    Removes decorative/targeted emojis, collapses excessive punctuation,
+    removes sarcastic quotation marks around explicit country/state names
+    without disturbing legitimate quotations/attributions, applies controlled
+    contextual neutral phrase replacements, and normalizes whitespace.
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+
+    # 1. Remove targeted Unicode emoji/ZWJ sequences without corrupting Sorani/Arabic or U+10000+ text
+    cleaned = EMOJI_PATTERN.sub("", text)
+
+    # 2. Strip sarcastic quotes wrapped solely around explicit country names
+    cleaned, quote_strips = _strip_sarcastic_country_quotes(cleaned)
+
+    # 3. Protect direct multi-word quotations before applying neutral editorial replacements
+    masked, quote_map = _protect_direct_quotations(cleaned)
+    masked = strip_rss_boilerplate(masked)
+    masked, term_replacements = _apply_neutral_term_rules(masked)
+    cleaned = _restore_direct_quotations(masked, quote_map)
+
+    # Re-run sarcastic country quote cleanup in case an editorial substitute (e.g. "قەوارەی زایۆنی") normalized to a bare country name
+    cleaned, extra_strips = _strip_sarcastic_country_quotes(cleaned)
+    quote_strips += extra_strips
+
+    # 4. Normalize punctuation without altering single '?' / '؟' questions, decimals, or dates
+    cleaned = PUNCTUATION_PATTERN.sub(".", cleaned)
+    cleaned = _REPEATED_PERIOD_PATTERN.sub(".", cleaned)
+    cleaned = _AWKWARD_COMMA_AND_RE.sub(" و ", cleaned)
+    cleaned = re.sub(r"([،,])(?=[A-Za-z0-9\u0621-\u064A\u0671-\u06D5])", r"\1 ", cleaned)
+
+    # Remove orphaned spaces directly before standard sentence punctuation while keeping decimals/dates intact
+    cleaned = re.sub(r"[ \t]+([.!?؟،؛])", r"\1", cleaned)
+
+    # 5. Normalize whitespace deterministically while preserving line structure
+    lines = [re.sub(r"[ \t]{2,}", " ", ln).strip() for ln in cleaned.splitlines()]
+    result = "\n".join(lines)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    result = strip_rss_boilerplate(result.strip())
+
+    if term_replacements or quote_strips:
+        logger.debug(
+            "Sanitizer applied %d neutral term replacement(s) and stripped %d sarcastic country quote(s).",
+            term_replacements,
+            quote_strips,
+        )
+
+    return result
 
 
 class ContentFormatter:
@@ -277,7 +472,7 @@ class ContentFormatter:
         Prepends breaking badge (`🔴 بەپەلە | `) first when active, or threaded update
         tag (`🔄 نوێکردنەوە | `) for non-breaking live event updates.
         """
-        raw_title = normalize_neutral_terminology(
+        raw_title = sanitize_neutral_sorani_text(
             (article.translated_title or "").strip()
         )
         if getattr(article, "is_breaking", False):
@@ -309,12 +504,15 @@ class ContentFormatter:
         headline = self._format_headline(article)
         parts.append(f"{emoji} <b>{headline}</b>")
 
-        summary = normalize_neutral_terminology(
+        summary = sanitize_neutral_sorani_text(
             strip_news_dateline(article.translated_summary or "")
         )
         if summary:
-            trimmed = self._truncate_summary(summary, max_len=650)
-            parts.append(f"\n{self._escape_html(trimmed)}")
+            trimmed = sanitize_neutral_sorani_text(
+                self._truncate_summary(summary, max_len=650)
+            )
+            if trimmed:
+                parts.append(f"\n{self._escape_html(trimmed)}")
 
         parts.append("\n━━━━━━━━━━━━━━━")
         parts.append(f"📂 {self._escape_html(kurdish_cat)}")
@@ -368,7 +566,7 @@ class ContentFormatter:
                 footer_parts.append(f'🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
         footer = "\n".join(footer_parts)
 
-        summary = normalize_neutral_terminology(
+        summary = sanitize_neutral_sorani_text(
             strip_news_dateline(article.translated_summary or "")
         )
         if not summary:
@@ -379,14 +577,18 @@ class ContentFormatter:
         fixed_overhead = len(header) + len(footer) + 4  # spacing newlines
         max_summary_budget = min(650, max(120, 1024 - fixed_overhead))
 
-        candidate_summary = self._truncate_summary(summary, max_len=max_summary_budget)
+        candidate_summary = sanitize_neutral_sorani_text(
+            self._truncate_summary(summary, max_len=max_summary_budget)
+        )
         escaped_summary = self._escape_html(candidate_summary)
         result = f"{header}\n\n{escaped_summary}\n{footer}"
 
         # Iteratively step down by sentence boundary if HTML escaping expanded past 1024 chars
         while len(result) > 1024 and max_summary_budget > 80:
             max_summary_budget -= 60
-            candidate_summary = self._truncate_summary(summary, max_len=max_summary_budget)
+            candidate_summary = sanitize_neutral_sorani_text(
+                self._truncate_summary(summary, max_len=max_summary_budget)
+            )
             escaped_summary = self._escape_html(candidate_summary)
             result = f"{header}\n\n{escaped_summary}\n{footer}"
 

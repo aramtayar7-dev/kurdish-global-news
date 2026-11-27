@@ -117,18 +117,28 @@ async def temp_db(tmp_path):
 # 1. Telegram Channel Roster & Metadata Validation
 # ═══════════════════════════════════════════════════
 class TestChannelRosterAndMetadata:
-    def test_all_7_telegram_channels_have_required_metadata(self):
-        assert len(TELEGRAM_SOURCE_CHANNELS) == 7
+    def test_active_telegram_channels_have_required_metadata_and_ajanews_replaces_sabereen(self):
+        assert len(TELEGRAM_SOURCE_CHANNELS) == 6
         usernames = {ch["username"] for ch in TELEGRAM_SOURCE_CHANNELS}
         assert usernames == {
+            "AjaNews",
             "rudawdigital",
             "Kurdistan24news",
             "nrttvofficial",
             "liveuamap",
             "ClashReport",
-            "SabrenNewss",
-            "Sabren_News1",
         }
+        assert "SabrenNewss" not in usernames
+        assert "Sabren_News1" not in usernames
+
+        by_user = {ch["username"]: ch for ch in TELEGRAM_SOURCE_CHANNELS}
+        aja = by_user["AjaNews"]
+        assert aja["name"] == "Al Jazeera"
+        assert aja["region_hint"] == "middle_east"
+        assert aja["lang"] == "ar"
+        assert aja["credibility_tier"] == "1"
+        assert aja["source_group"] == "aljazeera"
+
         required_keys = {"username", "name", "region_hint", "lang", "credibility_tier", "source_group"}
         for ch in TELEGRAM_SOURCE_CHANNELS:
             assert required_keys.issubset(ch.keys())
@@ -359,25 +369,25 @@ class TestVerificationGuardAndCorroboration:
         pipeline = ArticlePipeline(temp_db, publisher, HealthMonitor(), Metrics())
         pipeline._semantic_dedup = SemanticDeduplicator(temp_db, api_key="", base_backoff=0.0)
 
-        # Uncorroborated Sabereen claim marked breaking 9.5 by Gemini -> MUST be downgraded & attributed
+        # Uncorroborated Tier-3 claim marked breaking 9.5 by Gemini -> MUST be downgraded & attributed
         sab_rumor = _make_article(
             art_id=None,
             title="Unconfirmed explosion reported at western desert compound",
             source_name="Sabereen Plus",
             category="military_conflict",
-            url="https://t.me/Sabren_News1/9501",
+            url="https://unverified-blog.example/rumor-9501",
             score=9.5,
             is_breaking=True,
         )
         sab_rumor.id = await temp_db.insert_article(sab_rumor)
 
-        # Duplicate cross-language pair: Sabereen (Arabic) + Reuters (English) with same event_key -> Reuters wins!
+        # Duplicate cross-language pair: Tier-3 channel + Reuters (English) with same event_key -> Reuters wins!
         sab_dup = _make_article(
             art_id=None,
             title="غارة تستهدف مستودعا عسكريا شرق بغداد",
             source_name="Sabereen News",
             category="military_conflict",
-            url="https://t.me/SabrenNewss/9502",
+            url="https://unverified-blog.example/raid-9502",
             score=9.2,
             is_breaking=True,
         )
@@ -450,7 +460,7 @@ class TestVerificationGuardAndCorroboration:
         sent_calls = mock_bot.send_photo.call_args_list
         captions_by_url = {c.kwargs["caption"]: c.kwargs["disable_notification"] for c in sent_calls}
         reuters_cap = next(cap for cap in captions_by_url if "Reuters" in cap)
-        rumor_cap = next(cap for cap in captions_by_url if "Sabren_News1/9501" in cap)
+        rumor_cap = next(cap for cap in captions_by_url if "Sabereen Plus" in cap)
         assert "🔴 بەپەلە | " in reuters_cap
         assert captions_by_url[reuters_cap] is False
         assert "🔴 بەپەلە | " not in rumor_cap
@@ -674,9 +684,9 @@ class TestTelegramChannelFailureIsolation:
         articles = await src.fetch_articles()
 
         sources_returned = {a.source_name for a in articles}
-        assert len(articles) == 6
+        assert len(articles) == 5
         assert "NRT" not in sources_returned
-        assert {"Rudaw", "Kurdistan24", "Liveuamap", "Clash Report", "Sabereen News", "Sabereen Plus"}.issubset(sources_returned)
+        assert {"Al Jazeera", "Rudaw", "Kurdistan24", "Liveuamap", "Clash Report"}.issubset(sources_returned)
 
 
 # ═══════════════════════════════════════════════════
@@ -699,10 +709,10 @@ class TestZeroExtraGeminiCallsAndEngineWiring:
         fresh_ts = _iso_minutes_ago(2)
         raw_items = [
             RawArticle(
-                url="https://t.me/SabrenNewss/8801",
+                url="https://blog.example.org/airbase-strike-8801",
                 title="Missiles strike regional airbase near Baghdad",
                 summary=(
-                    "Sabereen News reports emergency missile strikes at a regional airbase near Baghdad "
+                    "Local channel reports emergency missile strikes at a regional airbase near Baghdad "
                     "triggering air defense sirens across neighboring sectors and heightened military "
                     "deployment around key installations in central Iraq overnight."
                 ),
@@ -764,9 +774,9 @@ class TestZeroExtraGeminiCallsAndEngineWiring:
 
         # Zero direct GeminiClient.generate_json calls from source_verifier / dedup / pacing / card_generator
         mock_gemini_json.assert_not_awaited()
-        # Reuters published cleanly as Tier-1 breaking (corroborated by Sabereen), Sabereen duplicate dropped
+        # Reuters published cleanly as Tier-1 breaking (corroborated by Tier-3 blog), duplicate dropped
         reuters_db = await temp_db.get_article_by_canonical_url("https://reuters.com/world/airbase-strike-8802")
-        sab_db = await temp_db.get_article_by_canonical_url("https://t.me/SabrenNewss/8801")
+        sab_db = await temp_db.get_article_by_canonical_url("https://blog.example.org/airbase-strike-8801")
         assert reuters_db is not None and reuters_db.status == ArticleStatus.PUBLISHED
         assert reuters_db.is_breaking is True
         assert sab_db is not None and sab_db.status == ArticleStatus.REJECTED_DUPLICATE

@@ -495,8 +495,8 @@ class TestStrictSoraniGateAndNeutrality:
         tg_art = _make_article(
             901,
             "القوات العراقية تعزز الانتشار الأمني في المحافظة",
-            url="https://t.me/SabrenNewss/9901",
-            source_name="Sabereen News",
+            url="https://t.me/AjaNews/9901",
+            source_name="Al Jazeera",
             category="military_conflict",
             summary=(
                 "أعلنت قيادة العمليات المشتركة اليوم في بغداد تعزيز الإجراءات الأمنية وحماية الحدود "

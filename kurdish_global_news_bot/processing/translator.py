@@ -39,7 +39,11 @@ DEFAULT_TRANSLATE_HEADERS = {
     "Accept": "*/*",
 }
 
+from processing.openrouter_client import NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION
+
 GEMINI_TRANSLATION_SYSTEM_PROMPT = (
+    NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION
+    + "\n\n"
     "You are an expert international news journalist and senior Central Kurdish (Sorani / سۆرانی) editor "
     "working for Kurdish Global News — an independent, non-partisan international news organization.\n"
     "Translate and edit the given international news article into publication-ready, BBC/Reuters-style Central Kurdish (Sorani) in ONE step.\n\n"
@@ -69,6 +73,8 @@ GEMINI_TRANSLATION_SYSTEM_PROMPT = (
 )
 
 GEMINI_KURDISH_REWRITE_SYSTEM_PROMPT = (
+    NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION
+    + "\n\n"
     "You are a senior Central Kurdish (Sorani / سۆرانی) broadcast news editor at Kurdish Global News, "
     "an independent, non-partisan international news organization.\n"
     "The provided article is ALREADY written in Kurdish Sorani. Do NOT translate from English; instead summarize and rewrite it cleanly in neutral, objective BBC/Reuters-style journalistic Sorani.\n\n"
@@ -334,10 +340,12 @@ class GeminiTranslationProvider(TranslationProvider):
         except GeminiAPIError as e:
             raise TranslationError(str(e)) from e
 
-        final_title = normalize_neutral_terminology(
+        from processing.content_formatter import sanitize_neutral_sorani_text, strip_rss_boilerplate
+
+        final_title = sanitize_neutral_sorani_text(
             normalize_sorani_chars(str(data.get("title", "")).strip())
         )
-        final_summary = normalize_neutral_terminology(
+        final_summary = sanitize_neutral_sorani_text(
             strip_rss_boilerplate(
                 strip_news_dateline(normalize_sorani_chars(str(data.get("summary", "")).strip()))
             )
@@ -356,7 +364,10 @@ class GeminiTranslationProvider(TranslationProvider):
             "update_type": str(data.get("update_type", "")).strip().lower(),
         }
 
-        return final_title, trim_at_sentence_boundary(final_summary, max_len=650)
+        trimmed_summary = sanitize_neutral_sorani_text(
+            trim_at_sentence_boundary(final_summary, max_len=650)
+        )
+        return final_title, trimmed_summary
 
     async def translate(
         self,
@@ -373,6 +384,8 @@ class GeminiTranslationProvider(TranslationProvider):
         try:
             data = await self._client.generate_json(
                 system_prompt=(
+                    NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION
+                    + "\n\n"
                     "Translate the following news text into natural, journalistic Central Kurdish (Sorani). "
                     'Respond ONLY with JSON: {"text": "..."}'
                 ),
@@ -383,7 +396,11 @@ class GeminiTranslationProvider(TranslationProvider):
         except GeminiAPIError as e:
             raise TranslationError(str(e)) from e
 
-        translated = normalize_sorani_chars(str(data.get("text", "")).strip())
+        from processing.content_formatter import sanitize_neutral_sorani_text
+
+        translated = sanitize_neutral_sorani_text(
+            normalize_sorani_chars(str(data.get("text", "")).strip())
+        )
         if not translated:
             raise TranslationError("Gemini returned empty translation text.")
         return translated
@@ -614,6 +631,8 @@ class TranslationEngine:
         self._gemini_provider.last_event_metadata = {"event_key": "", "event_entities": []}
 
         # Tier 1: Single high-quality Gemini pass (translates+summarizes OR rewrites native Kurdish)
+        from processing.content_formatter import sanitize_neutral_sorani_text
+
         if self._gemini_provider.has_keys:
             try:
                 final_title, final_summary = await self._gemini_provider.translate_article(
@@ -621,6 +640,8 @@ class TranslationEngine:
                     summary=summary,
                     is_kurdish=native_kurdish,
                 )
+                final_title = sanitize_neutral_sorani_text(final_title)
+                final_summary = sanitize_neutral_sorani_text(final_summary)
                 self.last_event_metadata = dict(
                     getattr(self._gemini_provider, "last_event_metadata", None)
                     or {"event_key": "", "event_entities": []}
@@ -642,12 +663,13 @@ class TranslationEngine:
 
         # Native Kurdish safety fallback (only when input itself passed strict Sorani verification)
         if native_kurdish:
-            from processing.content_formatter import normalize_neutral_terminology
-            clean_title = normalize_neutral_terminology(normalize_sorani_chars(title))
+            clean_title = sanitize_neutral_sorani_text(normalize_sorani_chars(title))
             clean_summary = (
-                trim_at_sentence_boundary(
-                    normalize_neutral_terminology(strip_news_dateline(normalize_sorani_chars(summary))),
-                    max_len=650,
+                sanitize_neutral_sorani_text(
+                    trim_at_sentence_boundary(
+                        sanitize_neutral_sorani_text(strip_news_dateline(normalize_sorani_chars(summary))),
+                        max_len=650,
+                    )
                 )
                 if has_source_summary
                 else ""
@@ -660,7 +682,7 @@ class TranslationEngine:
 
         # Tier 2 Fallback: Lightweight Google Translate ckb safety net
         fallback_title = await self._google_fallback.translate(title, target_lang=target_lang)
-        fallback_title = self._post_process(fallback_title, title)
+        fallback_title = sanitize_neutral_sorani_text(self._post_process(fallback_title, title))
         if not is_valid_kurdish_sorani(fallback_title):
             raise TranslationError("Fallback headline failed strict Sorani Kurdish verification.")
 
@@ -670,7 +692,9 @@ class TranslationEngine:
             trimmed_source = trim_at_sentence_boundary(strip_news_dateline(summary.strip()), max_len=1200)
             translated_sum = await self._google_fallback.translate(trimmed_source, target_lang=target_lang)
             cleaned_sum = strip_news_dateline(self._post_process(translated_sum, trimmed_source))
-            fallback_summary = trim_at_sentence_boundary(cleaned_sum, max_len=650)
+            fallback_summary = sanitize_neutral_sorani_text(
+                trim_at_sentence_boundary(cleaned_sum, max_len=650)
+            )
             if not fallback_summary or not is_valid_kurdish_sorani(fallback_summary):
                 raise TranslationError("Fallback summary failed strict Sorani Kurdish verification.")
 
@@ -697,9 +721,9 @@ class TranslationEngine:
         """Post-process translated text for Sorani orthography and neutral terminology."""
         if not translated:
             return ""
-        from processing.content_formatter import normalize_neutral_terminology
+        from processing.content_formatter import sanitize_neutral_sorani_text
         cleaned = normalize_sorani_chars(re.sub(r"\s+", " ", translated).strip())
-        return normalize_neutral_terminology(cleaned)
+        return sanitize_neutral_sorani_text(cleaned)
 
     async def validate_translation(self, translated: str, original: str) -> bool:
         """Validate that a translation is strictly acceptable Central Kurdish (Sorani)."""

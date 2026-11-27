@@ -97,6 +97,11 @@ _SOURCE_GROUP_MAP: dict[str, str] = {
     "bbc news": "bbc",
     "bbc technology": "bbc",
     "al jazeera": "aljazeera",
+    "al jazeera arabic": "aljazeera",
+    "al jazeera - breaking": "aljazeera",
+    "ajanews": "aljazeera",
+    "الجزيرة": "aljazeera",
+    "قناة الجزيرة": "aljazeera",
     "france24": "france24",
     "france24 en": "france24",
     "dw": "dw",
@@ -261,6 +266,9 @@ def get_source_group(source_name: str) -> str:
         return _SOURCE_GROUP_MAP[key]
     for prefix, grp in (
         ("sabereen", "sabereen"),
+        ("al jazeera", "aljazeera"),
+        ("ajanews", "aljazeera"),
+        ("الجزيرة", "aljazeera"),
         ("kurdistan24", "kurdistan24"),
         ("kurdistan 24", "kurdistan24"),
         ("rudaw", "rudaw"),

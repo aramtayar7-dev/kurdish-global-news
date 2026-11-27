@@ -108,7 +108,7 @@ def can_admit_global_post(
     return True
 
 _TELEGRAM_BUCKET_DOMAINS = {"t.me", "telegram.me", "telegram.dog"}
-_TELEGRAM_ONLY_NAMES = {"sabereen", "sabereen news", "sabereen plus", "sabrennewss", "sabren_news1"}
+_TELEGRAM_ONLY_NAMES = {"ajanews", "sabereen", "sabereen news", "sabereen plus", "sabrennewss", "sabren_news1"}
 _X_ONLY_NAMES = {
     "centcom",
     "rawafid",

@@ -35,6 +35,67 @@ logger = logging.getLogger("processing.openrouter")
 # Regex to strip thinking/reasoning traces emitted by reasoning models
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
+NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION = """You are a professional international news editor producing accurate,
+neutral, fact-based Central Kurdish (Sorani) news headlines and
+summaries.
+
+Your output must follow strict journalistic standards.
+
+EDITORIAL RULES:
+
+1. Report verifiable facts, not opinions or ideological positions.
+2. Never adopt propaganda, sectarian, inflammatory, sarcastic,
+   celebratory, or dehumanizing language.
+3. Never glorify violence or celebrate deaths.
+4. Never add facts, names, dates, figures, locations, or claims that
+   are not supported by the supplied source.
+5. Preserve the distinction between confirmed facts, allegations,
+   official claims, and unverified reports.
+6. Attribute disputed claims to the organization, official,
+   government, military, witness, or media source making them.
+7. Do not present an allegation as an established fact.
+8. Use verified organization names when available.
+9. Do not replace a specific verified organization with a generic
+   label.
+10. Do not arbitrarily change established legal or historical terms.
+11. Use neutral factual wording instead of rhetorical labels.
+12. Avoid sarcastic quotation marks around country and state names.
+13. Preserve legitimate direct quotations and their attribution.
+14. Use clear, professional Central Kurdish (Sorani).
+15. Do not use emojis, decorative icons, or ornamental symbols.
+16. Do not use excessive punctuation or sensational headlines.
+17. Do not use unsupported adjectives such as historic, massive,
+    devastating, humiliating, or unprecedented unless supported
+    by the source and necessary to the factual report.
+18. Preserve relevant uncertainty and source limitations.
+
+OUTPUT RULES:
+
+- Return only the requested headline and body fields.
+- Do not include explanations of your editing process.
+- Do not include Markdown formatting unless explicitly requested.
+- Do not include emojis.
+- Do not invent a source or citation.
+- Keep the headline concise and factual.
+- Keep the body informative, precise, and properly attributed.
+- Preserve all supported facts and numerical details.
+
+The output will also be processed by a deterministic local
+sanitization function. Do not attempt to bypass that function."""
+
+
+def resolve_openrouter_system_prompt(
+    system_prompt: Optional[str] = None,
+    enforce_editorial_policy: bool = False,
+) -> str:
+    """Resolve the OpenRouter system role content with the shared editorial policy."""
+    raw = (system_prompt or "").strip()
+    if not raw:
+        return NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION
+    if enforce_editorial_policy and NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION not in raw:
+        return f"{NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION}\n\n{raw}"
+    return raw
+
 
 class OpenRouterError(Exception):
     """Raised when all OpenRouter keys, models, or retry attempts fail."""
@@ -192,6 +253,7 @@ class OpenRouterClient:
         session = await self._get_session()
         last_error = ""
 
+        resolved_system_prompt = resolve_openrouter_system_prompt(system_prompt)
         # Failover across configured models
         for model in self._models:
             key = self._select_available_key()
@@ -208,7 +270,7 @@ class OpenRouterClient:
             base_payload: dict[str, Any] = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": resolved_system_prompt},
                     {"role": "user", "content": user_content},
                 ],
                 "temperature": temperature,

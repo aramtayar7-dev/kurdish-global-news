@@ -184,29 +184,29 @@ class TestTelegramConfig:
         assert ENABLE_TELEGRAM is True
 
         by_user = {ch["username"]: ch for ch in TELEGRAM_SOURCE_CHANNELS}
-        assert "SabrenNewss" in by_user
-        assert "Sabren_News1" in by_user
+        assert "AjaNews" in by_user
+        assert "SabrenNewss" not in by_user
+        assert "Sabren_News1" not in by_user
+        assert all("sabereen" not in (ch.get("name") or "").lower() for ch in TELEGRAM_SOURCE_CHANNELS)
 
-        assert by_user["SabrenNewss"]["name"] == "Sabereen News"
-        assert by_user["SabrenNewss"]["region_hint"] == "iraq_region"
-        assert by_user["SabrenNewss"]["lang"] == "ar"
+        assert by_user["AjaNews"]["name"] == "Al Jazeera"
+        assert by_user["AjaNews"]["region_hint"] == "middle_east"
+        assert by_user["AjaNews"]["lang"] == "ar"
+        assert by_user["AjaNews"]["credibility_tier"] == "1"
+        assert by_user["AjaNews"]["source_group"] == "aljazeera"
 
-        assert by_user["Sabren_News1"]["name"] == "Sabereen Plus"
-        assert by_user["Sabren_News1"]["region_hint"] == "iraq_region"
-        assert by_user["Sabren_News1"]["lang"] == "ar"
+        assert "al jazeera" in SOURCE_CREDIBILITY
+        assert "ajanews" in SOURCE_CREDIBILITY
 
-        assert "sabereen news" in SOURCE_CREDIBILITY
-        assert "sabereen plus" in SOURCE_CREDIBILITY
-
-        # Validator allows configured canonical channel post URLs while still blocking spam/invite t.me links
+        # Validator allows configured canonical channel post URLs while blocking removed/spam t.me links
         from processing.validator import ArticleValidator
         validator = ArticleValidator()
-        ok_sab, _ = validator._validate_url("https://t.me/SabrenNewss/12345")
-        ok_plus, _ = validator._validate_url("https://t.me/Sabren_News1/987")
+        ok_aja, _ = validator._validate_url("https://t.me/AjaNews/12345")
+        bad_removed, _ = validator._validate_url("https://t.me/SabrenNewss/12345")
         bad_spam, reason_spam = validator._validate_url("https://t.me/unknown_spam_channel/99")
         bad_invite, _ = validator._validate_url("https://t.me/+secretInviteCode")
-        assert ok_sab is True
-        assert ok_plus is True
+        assert ok_aja is True
+        assert bad_removed is False
         assert bad_spam is False and "Blocked domain" in reason_spam
         assert bad_invite is False
 
@@ -748,19 +748,19 @@ class TestTelegramPipelineAndEngineIntegration:
 
             fresh_utc = _iso_hours_ago(0.4)
             tg_article = RawArticle(
-                url="https://t.me/SabrenNewss/555",
+                url="https://t.me/AjaNews/555",
                 title="Iraq security forces reinforce border perimeter near western Anbar",
                 summary=(
                     "Iraq security forces reinforced the border perimeter near western Anbar following "
                     "nighttime drone activity and coordination talks between defense commanders in Baghdad. "
                     "Additional radar units and patrols were deployed along key highways to secure installations."
                 ),
-                source_name="Sabereen News",
+                source_name="Al Jazeera",
                 category="news",
                 publication_date=fresh_utc,
                 image_url="https://cdn4.telegram-cdn.org/file/tg555.jpg",
-                country="iraq_region",
-                region="iraq_region",
+                country="middle_east",
+                region="middle_east",
             )
             rss_article = RawArticle(
                 url="https://reuters.com/world/middle-east/diplomacy-556",
@@ -790,10 +790,10 @@ class TestTelegramPipelineAndEngineIntegration:
             engine._pipeline.process_batch = AsyncMock(return_value={"published": 0})
             await engine._discovery_cycle()
 
-            saved_tg = await db.get_article_by_canonical_url("https://t.me/SabrenNewss/555")
+            saved_tg = await db.get_article_by_canonical_url("https://t.me/AjaNews/555")
             saved_rss = await db.get_article_by_canonical_url("https://reuters.com/world/middle-east/diplomacy-556")
             assert saved_tg is not None
-            assert saved_tg.source_name == "Sabereen News"
+            assert saved_tg.source_name == "Al Jazeera"
             assert saved_rss is not None
 
             # Second discovery cycle with exact same Telegram post -> no duplicate row inserted
@@ -833,17 +833,17 @@ class TestTelegramPipelineAndEngineIntegration:
     async def test_end_to_end_pipeline_filters_dedup_quota_breaking_normalization_and_card_image(
         self, temp_db
     ):
-        # 1. Verify Baghdad Sabereen News item is NOT misclassified as Bashur, protecting 5-of-8 quota
+        # 1. Verify Baghdad Al Jazeera Telegram item is NOT misclassified as Bashur, protecting 5-of-8 quota
         baghdad_tg_art = Article(
-            original_url="https://t.me/SabrenNewss/9001",
-            canonical_url="https://t.me/SabrenNewss/9001",
+            original_url="https://t.me/AjaNews/9001",
+            canonical_url="https://t.me/AjaNews/9001",
             original_title="Iraqi parliament debates federal security pact in Baghdad",
             original_summary=(
                 "Lawmakers in Baghdad held a special parliamentary debate on the federal security pact, "
                 "air defense radar procurement, and diplomatic coordination with neighboring capitals. "
                 "Committee leaders urged faster implementation of joint border safeguards."
             ),
-            source_name="Sabereen News",
+            source_name="Al Jazeera",
             category="politics_world",
             importance_score=0.88,
             country="iraq_region",
@@ -1047,14 +1047,14 @@ class TestTelegramPipelineAndEngineIntegration:
 
         # Case 2C: Same military event later arriving from another Telegram channel -> zero-API local dedup skips!
         dup_tg = Article(
-            original_url="https://t.me/SabrenNewss/9004",
-            canonical_url="https://t.me/SabrenNewss/9004",
+            original_url="https://t.me/AjaNews/9004",
+            canonical_url="https://t.me/AjaNews/9004",
             original_title="Explosions reported after missile attack on central military airbase",
             original_summary=(
                 "Emergency crews rushed to the central military airbase after reported missile strikes "
                 "and air defense activations across nearby neighborhoods."
             ),
-            source_name="Sabereen News",
+            source_name="Al Jazeera",
             category="military_conflict",
             publication_date=_iso_hours_ago(0.05),
         )
@@ -1079,11 +1079,11 @@ class TestTelegramPipelineAndEngineIntegration:
 
         # Case 2D: Blocked topic (traffic radar / municipal / sports) rejected & persisted to skipped_urls
         blocked_tg = Article(
-            original_url="https://t.me/SabrenNewss/9005",
-            canonical_url="https://t.me/SabrenNewss/9005",
+            original_url="https://t.me/AjaNews/9005",
+            canonical_url="https://t.me/AjaNews/9005",
             original_title="تنويه مروري: نشر رادارات وكاميرات المراقبة على الطريق السريع",
             original_summary="مديرية المرور تباشر بتفعيل كاميرات السرعة والرادارات لمتابعة المخالفات المرورية.",
-            source_name="Sabereen News",
+            source_name="Al Jazeera",
             category="news",
             publication_date=_iso_hours_ago(0.1),
         )
@@ -1201,26 +1201,26 @@ class TestTelegramVideoAndMediaExtraction:
     async def test_video_url_persisted_through_extractor_database_and_pipeline(self, temp_db, tmp_path):
         fresh_utc = _iso_hours_ago(0.2)
         raw = RawArticle(
-            url="https://t.me/Sabren_News1/8100",
-            title="Sabereen Plus reports border security radar deployment",
+            url="https://t.me/AjaNews/8100",
+            title="Al Jazeera reports border security radar deployment",
             summary=(
                 "Iraq defense units deployed mobile air surveillance systems along the western border "
                 "following security consultations in Baghdad. Additional engineering teams fortified "
                 "communications posts and monitoring towers across the sector."
             ),
-            source_name="Sabereen Plus",
+            source_name="Al Jazeera",
             category="military_conflict",
             publication_date=fresh_utc,
             image_url="https://cdn4.telegram-cdn.org/file/thumb_8100.jpg",
             video_url="https://cdn4.telegram-cdn.org/file/video_8100.mp4",
-            country="iraq_region",
-            region="iraq_region",
+            country="middle_east",
+            region="middle_east",
         )
 
         extracted = ArticleExtractor().extract(raw)
         assert extracted.video_url == "https://cdn4.telegram-cdn.org/file/video_8100.mp4"
         assert extracted.image_url == "https://cdn4.telegram-cdn.org/file/thumb_8100.jpg"
-        assert extracted.source_name == "Sabereen Plus"
+        assert extracted.source_name == "Al Jazeera"
 
         art_id = await temp_db.insert_article(extracted)
         assert art_id is not None
@@ -1285,8 +1285,8 @@ class TestTelegramVideoAndMediaExtraction:
         mock_bot.send_video.assert_awaited_once()
         mock_bot.send_photo.assert_not_awaited()
         sent_caption = mock_bot.send_video.call_args.kwargs["caption"]
-        assert "Sabereen Plus" in sent_caption
-        assert "https://t.me/Sabren_News1/8100" in sent_caption
+        assert "Al Jazeera" in sent_caption
+        assert "https://t.me/AjaNews/8100" in sent_caption
         assert "هەرێمی کوردستان" in sent_caption
         assert "ئەمریکا" in sent_caption
         assert "باکووری عێراق" not in sent_caption
@@ -1348,4 +1348,150 @@ class TestTelegramPhotoAndShortBreakingIngestion:
         ok_fluff, reason_fluff = is_strictly_military_or_political(fluff_tg)
         assert ok_fluff is False
         assert ("banned_" in reason_fluff) or ("Blocked topic" in reason_fluff)
+
+
+class TestAjaNewsOfficialIntegration:
+    """Verify AjaNews Tier-1 config, Sabereen removal, unified aljazeera cap, filter, and Sorani gates."""
+
+    def test_ajanews_active_tier1_and_sabereen_removed(self):
+        from core.balancer import get_source_bucket, select_paced_batch
+        from core.source_verifier import TIER_1, get_source_group, get_source_tier, is_official_media_source
+
+        by_user = {ch["username"]: ch for ch in TELEGRAM_SOURCE_CHANNELS}
+        assert "AjaNews" in by_user
+        assert "SabrenNewss" not in by_user
+        assert "Sabren_News1" not in by_user
+
+        aja = by_user["AjaNews"]
+        assert aja["name"] == "Al Jazeera"
+        assert aja["region_hint"] == "middle_east"
+        assert aja["lang"] == "ar"
+        assert aja["credibility_tier"] == "1"
+        assert aja["source_group"] == "aljazeera"
+
+        for alias in ("Al Jazeera", "AjaNews", "الجزيرة", "Al Jazeera Arabic"):
+            assert get_source_group(alias) == "aljazeera"
+            assert get_source_tier(alias) == TIER_1
+            assert is_official_media_source(alias, "https://t.me/AjaNews/4001") is True
+
+        # Bucket assignment keeps t.me/AjaNews in telegram and aljazeera.com in search, while unifying source_group="aljazeera" for 2-of-8 cap
+        now_iso = _iso_hours_ago(0.2)
+        tg_1 = Article(
+            id=1, canonical_url="https://t.me/AjaNews/4001", original_url="https://t.me/AjaNews/4001",
+            source_name="Al Jazeera", category="military_conflict", region="middle_east",
+            original_title="قصف صاروخي يستهدف قاعدة عسكرية في المنطقة",
+            original_summary="قصف صاروخي يستهدف قاعدة عسكرية في المنطقة وسط استنفار دفاعي.",
+            importance_score=8.6, is_breaking=False, publication_date=now_iso,
+        )
+        tg_2 = Article(
+            id=2, canonical_url="https://t.me/AjaNews/4002", original_url="https://t.me/AjaNews/4002",
+            source_name="Al Jazeera", category="politics_world", region="middle_east",
+            original_title="مجلس الأمن يعقد جلسة طارئة حول التصعيد العسكري",
+            original_summary="مجلس الأمن يعقد جلسة طارئة حول التصعيد العسكري والحدود.",
+            importance_score=8.5, is_breaking=False, publication_date=now_iso,
+        )
+        rss_3 = Article(
+            id=3, canonical_url="https://www.aljazeera.com/news/2026/11/27/security-summit",
+            original_url="https://www.aljazeera.com/news/2026/11/27/security-summit",
+            source_name="Al Jazeera", category="politics_world", region="middle_east",
+            original_title="Regional foreign ministers hold security consultations",
+            original_summary="Regional foreign ministers met to coordinate border defense agreements.",
+            importance_score=8.4, is_breaking=False, publication_date=now_iso,
+        )
+        assert get_source_bucket(tg_1) == "telegram"
+        assert get_source_bucket(rss_3) == "search"
+
+        # 2-of-8 cap across combined AjaNews Telegram + Al Jazeera RSS permits at most 2 non-breaking aljazeera posts
+        extra_sources = [
+            Article(
+                id=4 + i,
+                canonical_url=f"https://{dom}/world/middle-east/diplomacy-{9 + i}",
+                original_url=f"https://{dom}/world/middle-east/diplomacy-{9 + i}",
+                source_name=sname,
+                category="politics_world",
+                region="kurdistan_bashur" if i < 5 else "middle_east",
+                original_title=f"Erbil and Baghdad defense coordination talk {i}" if i < 5 else f"Middle East defense pact {i}",
+                original_summary=f"Erbil defense and security summit meeting number {i}.",
+                importance_score=8.3 - (i * 0.05),
+                is_breaking=False,
+                publication_date=now_iso,
+            )
+            for i, (dom, sname) in enumerate(
+                [
+                    ("rudaw.net", "Rudaw"),
+                    ("kurdistan24.net", "Kurdistan24"),
+                    ("basnews.com", "BasNews"),
+                    ("shafaq.com", "Shafaq News"),
+                    ("pukmedia.com", "PUKmedia"),
+                    ("reuters.com", "Reuters"),
+                    ("bbc.com", "BBC"),
+                ]
+            )
+        ]
+        balancer = QuotaBalancer(batch_limit=8)
+        plan = balancer.select_batch([tg_1, tg_2, rss_3] + extra_sources, limit=8)
+        aja_selected = [a for a in plan.selected if get_source_group(a.source_name) == "aljazeera"]
+        assert len(aja_selected) == 2
+
+    def test_ajanews_html_filters_sports_and_passes_neutral_sorani_military_flow(self):
+        from core.importance_ranker import is_strictly_military_or_political
+        from processing.content_formatter import sanitize_neutral_sorani_text
+        from processing.translator import is_valid_kurdish_sorani
+
+        fresh_iso = _iso_hours_ago(0.3)
+        html = _build_channel_html(
+            "AjaNews",
+            [
+                _build_msg_block(
+                    "AjaNews/5001",
+                    (
+                        "🚨 عاجل | وزارة الدفاع تعلن تصدي منظومات الدفاع الجوي لهجوم صاروخي استهدف مواقع عسكرية.<br/>"
+                        "قناة الجزيرة\n#AjaNews"
+                    ),
+                    dt_str=fresh_iso,
+                    photo_style="background-image:url('https://cdn4.telegram-cdn.org/file/aja_mil.jpg')",
+                ),
+                _build_msg_block(
+                    "AjaNews/5002",
+                    "المنتخب الوطني يفوز ببطولة كأس العالم لكرة القدم بعد نهائي مثير في الدوحة وسط حضور جماهيري كبير.",
+                    dt_str=fresh_iso,
+                ),
+            ],
+        )
+        src = TelegramSource()
+        cfg = next(ch for ch in TELEGRAM_SOURCE_CHANNELS if ch["username"] == "AjaNews")
+        parsed = src.parse_channel_html(html, cfg)
+        assert len(parsed) == 2
+        assert parsed[0].source_name == "Al Jazeera"
+        assert parsed[0].image_url == "https://cdn4.telegram-cdn.org/file/aja_mil.jpg"
+        assert "قناة الجزيرة" not in parsed[0].summary
+        assert "#AjaNews" not in parsed[0].summary
+
+        mil_art = Article(
+            id=11,
+            canonical_url=parsed[0].url,
+            original_url=parsed[0].url,
+            source_name=parsed[0].source_name,
+            original_title=parsed[0].title,
+            original_summary=parsed[0].summary,
+            region="middle_east",
+        )
+        sport_art = Article(
+            id=12,
+            canonical_url=parsed[1].url,
+            original_url=parsed[1].url,
+            source_name=parsed[1].source_name,
+            original_title=parsed[1].title,
+            original_summary=parsed[1].summary,
+            region="middle_east",
+        )
+        ok_mil, _ = is_strictly_military_or_political(mil_art)
+        ok_sport, _ = is_strictly_military_or_political(sport_art)
+        assert ok_mil is True
+        assert ok_sport is False
+
+        sanitized_sorani = sanitize_neutral_sorani_text("🚀 قەوارەی زایۆنی!! هێرشێکی مووشەکی ئەنجام دا؟؟")
+        assert "🚀" not in sanitized_sorani and "قەوارەی زایۆنی" not in sanitized_sorani
+        assert is_valid_kurdish_sorani(sanitized_sorani) is True
+
 

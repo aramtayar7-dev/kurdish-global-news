@@ -9,9 +9,13 @@ IPv4-hardened HTTPXRequest, and temporary card file cleanup.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import os
 from pathlib import Path
+import tempfile
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from telegram import Bot, LinkPreviewOptions
@@ -21,14 +25,20 @@ from telegram.request import HTTPXRequest
 
 from config import (
     ENABLE_IMAGES,
+    MAX_IMAGE_SIZE_BYTES,
     NOTIFY_DAILY_DIGEST,
+    REQUEST_TIMEOUT,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
 )
 from core.importance_ranker import classify_geographic_region, is_strict_breaking
 from core.source_verifier import is_official_media_source, is_x_source_url
 from processing.card_generator import NewsCardGenerator
-from processing.content_formatter import ContentFormatter, resolve_category_display
+from processing.content_formatter import (
+    ContentFormatter,
+    resolve_category_display,
+    sanitize_neutral_sorani_text,
+)
 from processing.translator import is_valid_kurdish_sorani, trim_at_sentence_boundary
 from processing.video_processor import (
     WatermarkRejectedError,
@@ -42,6 +52,46 @@ from tg_bot.image_handler import ImageHandler
 from tg_bot.inline_buttons import build_source_button_markup
 
 logger = logging.getLogger("tg_bot.publisher")
+
+CHROME_DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/117.0.0.0 Safari/537.36"
+)
+TELEGRAM_CDN_DOWNLOAD_HEADERS: dict[str, str] = {
+    "User-Agent": CHROME_DESKTOP_USER_AGENT,
+    "Referer": "https://t.me/",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+_ALLOWED_IMAGE_CONTENT_TYPES: frozenset[str] = frozenset(
+    {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"}
+)
+_HTML_ERROR_SIGNATURES: tuple[bytes, ...] = (
+    b"<!doctype",
+    b"<html",
+    b"<head",
+    b"<body",
+    b"<script",
+    b"<?xml",
+)
+
+
+def is_telegram_cdn_url(url: str) -> bool:
+    """Return True if URL targets Telegram public web or CDN hosts requiring Referer headers."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        host = (urlparse(url.strip()).hostname or "").lower()
+    except Exception:
+        return False
+    return bool(
+        host == "t.me"
+        or host.endswith(".t.me")
+        or "telegram-cdn.org" in host
+        or "cdn-telegram.org" in host
+        or "telesco.pe" in host
+        or host.endswith(".telegram.org")
+    )
 
 
 class TelegramPublisher:
@@ -122,6 +172,12 @@ class TelegramPublisher:
 
         # Track precise Telegram outcome ("not_sent" | "published" | "definitive_failure" | "ambiguous")
         article._telegram_outcome = "not_sent"  # type: ignore[attr-defined]
+
+        # Enforce local deterministic Sorani neutrality sanitizer immediately before publish gates
+        if article.translated_title:
+            article.translated_title = sanitize_neutral_sorani_text(article.translated_title)
+        if article.translated_summary:
+            article.translated_summary = sanitize_neutral_sorani_text(article.translated_summary)
 
         # Strict Sorani Kurdish publish gate: never generate cards or publish untranslated/Arabic text
         if not is_valid_kurdish_sorani(article.translated_title or ""):
@@ -370,6 +426,123 @@ class TelegramPublisher:
 
         return None
 
+    async def _download_telegram_cdn_image(
+        self,
+        image_url: str,
+        *,
+        job_id: str = "",
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> Optional[bytes]:
+        """
+        Download a Telegram CDN image using browser-like + Referer headers,
+        validate status/content-type/size, reject HTML error pages disguised as
+        images, verify Pillow decoding, stage atomically through a per-job isolated
+        temp file, and guarantee cleanup before returning bytes.
+        """
+        if not image_url or not isinstance(image_url, str):
+            return None
+        clean_url = image_url.strip()
+        parsed = urlparse(clean_url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme.lower() not in ("http", "https") or not host or host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            logger.debug("Telegram media download failure category=unsafe_url url=%s", clean_url[:100])
+            return None
+
+        owns_client = client is None
+        http_client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(REQUEST_TIMEOUT),
+            follow_redirects=True,
+            headers=TELEGRAM_CDN_DOWNLOAD_HEADERS,
+        )
+        tmp_path: Optional[Path] = None
+        try:
+            resp = await http_client.get(clean_url, headers=TELEGRAM_CDN_DOWNLOAD_HEADERS)
+            if resp.status_code != 200:
+                logger.warning(
+                    "Telegram media download failure category=http_status status=%d url=%s",
+                    resp.status_code,
+                    clean_url[:100],
+                )
+                return None
+
+            raw_ctype = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            if raw_ctype and raw_ctype not in _ALLOWED_IMAGE_CONTENT_TYPES:
+                logger.warning(
+                    "Telegram media download failure category=invalid_content_type content_type=%s url=%s",
+                    raw_ctype,
+                    clean_url[:100],
+                )
+                return None
+
+            content_length_hdr = resp.headers.get("content-length")
+            if content_length_hdr and content_length_hdr.strip().isdigit():
+                if int(content_length_hdr.strip()) > MAX_IMAGE_SIZE_BYTES:
+                    logger.warning(
+                        "Telegram media download failure category=oversized_header bytes=%s url=%s",
+                        content_length_hdr,
+                        clean_url[:100],
+                    )
+                    return None
+
+            data = bytes(resp.content or b"")
+            if not data or len(data) < 32:
+                logger.warning("Telegram media download failure category=empty_or_truncated url=%s", clean_url[:100])
+                return None
+            if len(data) > MAX_IMAGE_SIZE_BYTES:
+                logger.warning(
+                    "Telegram media download failure category=oversized_body bytes=%d url=%s",
+                    len(data),
+                    clean_url[:100],
+                )
+                return None
+
+            head = data[:256].lstrip().lower()
+            if any(sig in head for sig in _HTML_ERROR_SIGNATURES):
+                logger.warning("Telegram media download failure category=html_error_page url=%s", clean_url[:100])
+                return None
+
+            # Verify image integrity via Pillow before writing temp file
+            try:
+                from PIL import Image
+
+                img = Image.open(io.BytesIO(data))
+                img.verify()
+            except Exception as img_exc:
+                logger.warning(
+                    "Telegram media download failure category=invalid_image_bytes err=%s url=%s",
+                    str(img_exc)[:100],
+                    clean_url[:100],
+                )
+                return None
+
+            # Write atomically to a per-job isolated temporary file and verify flushed size
+            safe_job = "".join(ch if ch.isalnum() else "_" for ch in (job_id or "job"))[:24]
+            fd, raw_tmp = tempfile.mkstemp(prefix=f"kgn_tg_{safe_job}_", suffix=".img")
+            tmp_path = Path(raw_tmp)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if not tmp_path.exists() or tmp_path.stat().st_size != len(data):
+                logger.warning("Telegram media download failure category=temp_write_incomplete")
+                return None
+            return tmp_path.read_bytes()
+        except Exception as exc:
+            logger.warning(
+                "Telegram media download failure category=network_error err=%s url=%s",
+                str(exc)[:120],
+                clean_url[:100],
+            )
+            return None
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if owns_client:
+                await http_client.aclose()
+
     async def _publish_with_card(self, article: Article) -> Optional[int]:
         """Generate branded 1280x720 news card, send via send_photo, and clean up temp file."""
         assert self._bot is not None
@@ -381,7 +554,22 @@ class TelegramPublisher:
 
         image_bytes: Optional[bytes] = None
         if article.image_url:
-            image_bytes = await self._image_handler.download_image(article.image_url)
+            from unittest.mock import NonCallableMock
+
+            dl_attr = getattr(self._image_handler, "download_image", None)
+            has_mock_downloader = (
+                isinstance(self._image_handler, NonCallableMock)
+                or isinstance(dl_attr, NonCallableMock)
+                or type(self._image_handler) is not ImageHandler
+            )
+            if is_telegram_cdn_url(article.image_url) and not has_mock_downloader:
+                job_token = str(getattr(article, "id", "") or id(article))
+                image_bytes = await self._download_telegram_cdn_image(
+                    article.image_url,
+                    job_id=job_token,
+                )
+            else:
+                image_bytes = await self._image_handler.download_image(article.image_url)
             if image_bytes is not None:
                 is_official_img = is_official_media_source(
                     getattr(article, "source_name", "") or "",

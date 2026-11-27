@@ -66,11 +66,22 @@ X_REQUIRE_CLEAN_NO_LOGO_FOR_UNOFFICIAL: bool = _bool(
 )
 X_ALLOW_OFFICIAL_MEDIA_LOGO: bool = _bool(os.getenv("X_ALLOW_OFFICIAL_MEDIA_LOGO"), True)
 
+# Bounded X ingestion rotation, jitter, timeout, circuit-breaker, and budget settings
+X_BATCH_SIZE: int = max(1, min(16, _int(os.getenv("X_BATCH_SIZE"), 5)))
+X_JITTER_MIN: float = max(0.0, min(10.0, _float(os.getenv("X_JITTER_MIN"), 1.5)))
+X_JITTER_MAX: float = max(X_JITTER_MIN, min(30.0, _float(os.getenv("X_JITTER_MAX"), 2.5)))
+X_SYNDICATION_COOLDOWN_S: int = max(1, min(86400, _int(os.getenv("X_SYNDICATION_COOLDOWN_S"), 600)))
+X_REQUEST_TIMEOUT_S: int = max(3, min(120, _int(os.getenv("X_REQUEST_TIMEOUT_S"), 15)))
+X_MAX_RSS_ITEMS_PER_ACCOUNT: int = max(1, min(50, _int(os.getenv("X_MAX_RSS_ITEMS_PER_ACCOUNT"), 5)))
+X_MAX_FALLBACK_RESULTS_PER_CYCLE: int = max(
+    1, min(100, _int(os.getenv("X_MAX_FALLBACK_RESULTS_PER_CYCLE"), 20))
+)
+
 X_NITTER_RSS_MIRRORS: list[str] = [
     m.strip().rstrip("/")
     for m in os.getenv(
         "X_RSS_MIRRORS",
-        "https://xcancel.com,https://nitter.poast.org,https://nitter.privacyredirect.com",
+        "https://rsshub.app/twitter/user/{},https://nitter.net/{}/rss",
     ).split(",")
     if m.strip()
 ]
@@ -511,6 +522,8 @@ RSS_FEEDS: list[dict[str, str]] = [
 # Public Telegram News Channels (https://t.me/s/{username})
 # ═══════════════════════════════════════════════════
 TELEGRAM_SOURCE_CHANNELS: list[dict[str, str]] = [
+    # Official International / Middle East Tier-1 Breaking Wire (Arabic — lang="ar", credibility_tier=1)
+    {"username": "AjaNews", "name": "Al Jazeera", "region_hint": "middle_east", "lang": "ar", "credibility_tier": "1", "source_group": "aljazeera"},
     # Southern Kurdistan (Sorani Kurdish — lang="ckb", credibility_tier=2)
     {"username": "rudawdigital", "name": "Rudaw", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "rudaw"},
     {"username": "Kurdistan24news", "name": "Kurdistan24", "region_hint": "kurdistan_bashur", "lang": "ckb", "credibility_tier": "2", "source_group": "kurdistan24"},
@@ -518,9 +531,6 @@ TELEGRAM_SOURCE_CHANNELS: list[dict[str, str]] = [
     # Neutral Conflict / OSINT (English — credibility_tier=2)
     {"username": "liveuamap", "name": "Liveuamap", "region_hint": "global", "lang": "en", "credibility_tier": "2", "source_group": "liveuamap"},
     {"username": "ClashReport", "name": "Clash Report", "region_hint": "global", "lang": "en", "credibility_tier": "2", "source_group": "clashreport"},
-    # Regional Factional / Unverified (Arabic — credibility_tier=3)
-    {"username": "SabrenNewss", "name": "Sabereen News", "region_hint": "iraq_region", "lang": "ar", "credibility_tier": "3", "source_group": "sabereen"},
-    {"username": "Sabren_News1", "name": "Sabereen Plus", "region_hint": "iraq_region", "lang": "ar", "credibility_tier": "3", "source_group": "sabereen"},
 ]
 
 # ═══════════════════════════════════════════════════
@@ -539,6 +549,9 @@ SOURCE_CREDIBILITY: dict[str, float] = {
     "associated press": 0.95,
     "ap news": 0.95,
     "al jazeera": 0.85,
+    "al jazeera arabic": 0.85,
+    "ajanews": 0.85,
+    "الجزيرة": 0.85,
     "france24": 0.85,
     "dw": 0.85,
     "the guardian": 0.88,

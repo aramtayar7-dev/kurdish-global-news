@@ -133,8 +133,8 @@ class TestURLAndScriptNormalization:
 
         sab_1 = _make_article(
             title="عَاجِلْ | الدِّفَاعُ الجَوِّيُّ يُسْقِطُ طَائِرَةً مُسَيَّرَةً قُرْبَ مَطَارِ أَرْبِيلَ",
-            url="https://t.me/SabrenNewss/5001",
-            source_name="Sabereen News",
+            url="https://t.me/AjaNews/5001",
+            source_name="Al Jazeera",
             summary=(
                 "أفادت مصادر أمنية بإسقاط طائرة مسيرة قرب مطار أربيل دون تسجيل خسائر بشرية. "
                 "وأضافت المصادر أن القوات الأمنية طوقت محيط المنطقة وفتحت تحقيقاً فورياً."
@@ -146,11 +146,11 @@ class TestURLAndScriptNormalization:
         sab_1_id = await temp_db.insert_article(sab_1)
         await temp_db.update_article_status(sab_1_id, ArticleStatus.PUBLISHED, published_at=sab_1.published_at)
 
-        # Identical repost on Sabren_News1 without diacritics + different URL & hamza spelling
+        # Identical repost on Al Jazeera Web without diacritics + different URL & hamza spelling
         sab_2 = _make_article(
             title="الدفاع الجوي يسقط طائره مسيره قرب مطار اربيل",
-            url="https://t.me/Sabren_News1/7009?utm_source=forward",
-            source_name="Sabereen Plus",
+            url="https://www.aljazeera.com/news/erbil-7009?utm_source=forward",
+            source_name="Al Jazeera",
             summary=(
                 "افادت مصادر امنيه باسقاط طائره مسيره قرب مطار اربيل دون خسائر بشريه "
                 "فيما بدات الجهات المختصه تحقيقا في الحادث."
@@ -205,8 +205,8 @@ class TestCrossLanguageEventFingerprinting:
         )
         sab_ar = _make_article(
             title="مصدر امني يؤكد تعامل المنظومة مع جسم طائر غامض شمال البلاد",
-            url="https://t.me/SabrenNewss/8802",
-            source_name="Sabereen News",
+            url="https://t.me/AjaNews/8802",
+            source_name="Al Jazeera",
             category="military_conflict",
             region="iraq_region",
             summary=(

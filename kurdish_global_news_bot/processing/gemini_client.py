@@ -30,11 +30,28 @@ from config import (
     OPENROUTER_API_KEY,
     REQUEST_TIMEOUT,
 )
-from processing.openrouter_client import OpenRouterClient, OpenRouterError
+from processing.openrouter_client import (
+    NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION,
+    OpenRouterClient,
+    OpenRouterError,
+)
 
 logger = logging.getLogger("processing.gemini")
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def resolve_gemini_system_instruction(
+    system_prompt: Optional[str] = None,
+    enforce_editorial_policy: bool = False,
+) -> str:
+    """Resolve the Gemini systemInstruction text using the shared editorial policy."""
+    raw = (system_prompt or "").strip()
+    if not raw:
+        return NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION
+    if enforce_editorial_policy and NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION not in raw:
+        return f"{NEUTRAL_EDITORIAL_SYSTEM_INSTRUCTION}\n\n{raw}"
+    return raw
 
 
 class GeminiAPIError(Exception):
@@ -261,12 +278,13 @@ class GeminiClient:
         when every key is already in cooldown.
         Fails over cleanly to OpenRouter free models if all Gemini keys are unavailable.
         """
+        resolved_system_prompt = resolve_gemini_system_instruction(system_prompt)
         if not self._api_keys:
             if openrouter := self._get_openrouter_client():
                 logger.info("No Gemini keys configured; delegating to OpenRouter fallback...")
                 try:
                     res = await openrouter.generate_json(
-                        system_prompt, user_content, temperature, max_tokens
+                        resolved_system_prompt, user_content, temperature, max_tokens
                     )
                     self._openrouter_rescued_cycle += 1
                     return res
@@ -291,7 +309,7 @@ class GeminiClient:
                 logger.info("All Gemini keys in 429 cooldown; failing over to OpenRouter free models...")
                 try:
                     res = await openrouter.generate_json(
-                        system_prompt, user_content, temperature, max_tokens
+                        resolved_system_prompt, user_content, temperature, max_tokens
                     )
                     self._openrouter_rescued_cycle += 1
                     return res
@@ -308,7 +326,7 @@ class GeminiClient:
             generation_config["thinkingConfig"] = {"thinkingBudget": 0}
 
         payload = {
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "systemInstruction": {"parts": [{"text": resolved_system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_content}]}],
             "generationConfig": generation_config,
         }
@@ -327,7 +345,7 @@ class GeminiClient:
                 )
                 try:
                     res = await openrouter.generate_json(
-                        system_prompt, user_content, temperature, max_tokens
+                        resolved_system_prompt, user_content, temperature, max_tokens
                     )
                     self._openrouter_rescued_cycle += 1
                     return res
