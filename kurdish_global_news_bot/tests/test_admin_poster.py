@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from admin_webhook import create_webhook_app
 from tg_bot.admin_poster import (
     build_admin_article,
+    extract_and_strip_admin_url,
     is_authorized_admin_message,
     parse_admin_post_text,
     publish_admin_manual_post,
@@ -81,6 +82,72 @@ def test_build_admin_article_preserves_kurdish_verbatim():
     assert article.is_breaking is True
     assert article.importance_score >= 9.0
     assert article.category == "kurdistan"
+
+
+@pytest.mark.parametrize(
+    "raw_text,expected_clean,expected_url",
+    [
+        (
+            "کۆبوونەوەی ئەمنی لە هەولێر http://t.me/Kurdistan24news",
+            "کۆبوونەوەی ئەمنی لە هەولێر",
+            "http://t.me/Kurdistan24news",
+        ),
+        (
+            "سەردێڕی هەواڵ\nدرێژەی بابەتەکە لێرەیە.\nسەرچاوە: t.me/Kurdistan24news/9988",
+            "سەردێڕی هەواڵ\nدرێژەی بابەتەکە لێرەیە.",
+            "https://t.me/Kurdistan24news/9988",
+        ),
+        (
+            "بەپەلە | ڕاگەیەندراوی فەرمی\nوردەکاری لە کۆنگرەکە https://www.reuters.com/world/item-1",
+            "بەپەلە | ڕاگەیەندراوی فەرمی\nوردەکاری لە کۆنگرەکە",
+            "https://www.reuters.com/world/item-1",
+        ),
+    ],
+)
+def test_extract_and_strip_admin_url(raw_text: str, expected_clean: str, expected_url: str):
+    cleaned, url = extract_and_strip_admin_url(raw_text)
+    assert cleaned == expected_clean
+    assert url == expected_url
+
+
+@pytest.mark.asyncio
+async def test_admin_post_with_url_strips_raw_url_and_renders_clean_source_link(tmp_path: Path):
+    bot = _make_mock_bot()
+    fake_card = tmp_path / "card_url.jpg"
+    fake_card.write_bytes(b"JPEGDATA")
+
+    card_gen = MagicMock()
+    card_gen.generate_card_file = AsyncMock(return_value=fake_card)
+
+    msg = _make_message(
+        user_id=111222333,
+        text=(
+            "هەرێمی کوردستان پلانی نوێی ڕاگەیاند\n"
+            "وەزارەت وردەکاری پرۆژەکەی بڵاوکردەوە http://t.me/Kurdistan24news"
+        ),
+    )
+
+    result = await publish_admin_manual_post(
+        bot,
+        msg,
+        card_generator=card_gen,
+        channel_id="@KurdishGlobalNews",
+        admin_chat_id=111222333,
+    )
+    assert result["status"] == "published"
+
+    sent_article = card_gen.generate_card_file.await_args.args[0]
+    assert "http://" not in sent_article.translated_title
+    assert "http://" not in sent_article.translated_summary
+    assert sent_article.original_url == "http://t.me/Kurdistan24news"
+
+    caption = bot.send_photo.await_args.kwargs["caption"]
+    assert '<a href="http://t.me/Kurdistan24news">سەرچاوە</a>' in caption
+    assert "🔗 <a href=" in caption
+    assert "بابەتی ئەسڵی" not in caption
+    # Raw URL must NOT appear in body lines outside the bottom <a href="..."> anchor
+    caption_without_anchor = caption.replace('<a href="http://t.me/Kurdistan24news">سەرچاوە</a>', "")
+    assert "http://t.me/Kurdistan24news" not in caption_without_anchor
 
 
 @pytest.mark.asyncio

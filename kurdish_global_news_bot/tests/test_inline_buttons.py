@@ -167,17 +167,17 @@ class TestCaptionDeduplication:
         # With inline button -> clean caption WITHOUT redundant bottom link anchor
         cap_with_btn = formatter.format_caption(art, has_inline_source_button=True)
         msg_with_btn = formatter.format_telegram_message(art, has_inline_source_button=True)
-        assert "بابەتی ئەسڵی" not in cap_with_btn
+        assert "🔗 <a href=" not in cap_with_btn
         assert "reuters.com" not in cap_with_btn
         assert "Reuters" in cap_with_btn
         assert len(cap_with_btn) <= 1024
-        assert "بابەتی ئەسڵی" not in msg_with_btn
+        assert "🔗 <a href=" not in msg_with_btn
 
-        # Without inline button -> keeps fallback bottom link anchor cleanly
+        # Without inline button -> keeps fallback bottom link anchor cleanly with سەرچاوە label
         cap_without_btn = formatter.format_caption(art, has_inline_source_button=False)
         msg_without_btn = formatter.format_telegram_message(art, has_inline_source_button=False)
-        assert '<a href="https://www.reuters.com/world/summit-101">بابەتی ئەسڵی</a>' in cap_without_btn
-        assert '<a href="https://www.reuters.com/world/summit-101">بابەتی ئەسڵی</a>' in msg_without_btn
+        assert '<a href="https://www.reuters.com/world/summit-101">سەرچاوە</a>' in cap_without_btn
+        assert '<a href="https://www.reuters.com/world/summit-101">سەرچاوە</a>' in msg_without_btn
 
         # Clean formatted label check
         assert format_source_button_label("Reuters") == "🔗 سەرچاوە — Reuters"
@@ -215,7 +215,7 @@ class TestPublisherInlineButtonIntegration:
             assert msg_id == 501
             p_kw = mock_bot.send_photo.call_args.kwargs
             assert p_kw["reply_to_message_id"] == 400
-            assert "بابەتی ئەسڵی" not in p_kw["caption"]
+            assert "🔗 <a href=" not in p_kw["caption"]
             markup = p_kw["reply_markup"]
             assert isinstance(markup, InlineKeyboardMarkup)
             assert markup.inline_keyboard[0][0].text == "🔗 سەرچاوە — Kurdistan24"
@@ -227,7 +227,7 @@ class TestPublisherInlineButtonIntegration:
             assert txt_id == 502
             m_kw = mock_bot.send_message.call_args.kwargs
             assert m_kw["reply_to_message_id"] == 400
-            assert "بابەتی ئەسڵی" not in m_kw["text"]
+            assert "🔗 <a href=" not in m_kw["text"]
             assert isinstance(m_kw["reply_markup"], InlineKeyboardMarkup)
 
         mock_gemini.assert_not_awaited()

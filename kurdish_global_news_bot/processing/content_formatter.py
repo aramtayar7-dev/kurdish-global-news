@@ -605,7 +605,7 @@ class ContentFormatter:
             raw_url = article.original_url.strip()
             if raw_url.lower().startswith(("http://", "https://")):
                 safe_url = self._escape_html(raw_url)
-                parts.append(f'\n🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
+                parts.append(f'\n🔗 <a href="{safe_url}">سەرچاوە</a>')
 
         return "\n".join(parts)
 
@@ -639,7 +639,7 @@ class ContentFormatter:
             raw_url = article.original_url.strip()
             if raw_url.lower().startswith(("http://", "https://")):
                 safe_url = self._escape_html(raw_url)
-                footer_parts.append(f'🔗 <a href="{safe_url}">بابەتی ئەسڵی</a>')
+                footer_parts.append(f'🔗 <a href="{safe_url}">سەرچاوە</a>')
         footer = "\n".join(footer_parts)
 
         summary = sanitize_neutral_sorani_text(

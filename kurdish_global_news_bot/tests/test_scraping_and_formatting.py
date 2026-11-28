@@ -166,7 +166,7 @@ class TestKurdishCategoriesAndCleanCaption:
         assert "زانست و بۆشایی ئاسمان" in caption
         assert "🚀" in caption
         assert "..." not in caption
-        assert '<a href="https://nasa.gov/mission/deep-space-research-report">بابەتی ئەسڵی</a>' in caption
+        assert '<a href="https://nasa.gov/mission/deep-space-research-report">سەرچاوە</a>' in caption
 
     @pytest.mark.asyncio
     async def test_publish_text_only_disables_link_preview(self):

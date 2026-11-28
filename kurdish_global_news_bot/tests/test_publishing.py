@@ -32,7 +32,8 @@ class TestContentFormatter:
         assert "پوختەی تاقیکاری" in message  # Kurdish summary
         assert "Reuters" in message  # Source name
         assert "reuters.com/test-article" in message  # Original link
-        assert "بابەتی ئەسڵی" in message  # "Original article" in Kurdish
+        assert "سەرچاوە" in message  # Source link label in Kurdish
+        assert "بابەتی ئەسڵی" not in message
         assert "🌍" in message  # Category emoji
 
     def test_format_caption(self):
@@ -321,7 +322,8 @@ class TestTelegramVideoPublishingAndFallback:
         assert len(kwargs["caption"]) <= 1024
         assert "Sabereen News" in kwargs["caption"]
         assert "https://t.me/SabrenNewss/4200" in kwargs["caption"]
-        assert "بابەتی ئەسڵی" in kwargs["caption"]
+        assert "سەرچاوە" in kwargs["caption"]
+        assert "بابەتی ئەسڵی" not in kwargs["caption"]
         assert "🔴 بەپەلە | " not in kwargs["caption"]
         assert not branded_file.exists()
 

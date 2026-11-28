@@ -18,7 +18,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import config
 from storage.models import Article
 
-DEFAULT_BUTTON_LABEL = "🔗 بابەتی ئەسڵی"
+DEFAULT_BUTTON_LABEL = "🔗 سەرچاوە"
 SOURCE_BUTTON_PREFIX = "🔗 سەرچاوە — "
 
 _TELEGRAM_DOMAINS = {"t.me", "telegram.me", "telegram.dog"}
@@ -99,7 +99,7 @@ def format_source_button_label(
 ) -> str:
     """
     Format compact Sorani button text (`🔗 سەرچاوە — <Source>`), falling back to
-    `🔗 بابەتی ئەسڵی` if source_name is missing or exceeds `max_len`.
+    `🔗 سەرچاوە` if source_name is missing or exceeds `max_len`.
     """
     cap = (
         int(getattr(config, "INLINE_SOURCE_BUTTON_MAX_LABEL_LEN", 36))

@@ -37,6 +37,45 @@ logger = logging.getLogger(__name__)
 _BREAKING_PREFIX_RE = re.compile(
     r"^(?:🔴\s*)?بەپەلە(?:\s*[:|\-–—]\s*|\s+|$)"
 )
+_ADMIN_URL_RE = re.compile(
+    r"(?:https?://[^\s<>\"'()]+|\b(?:t\.me|telegram\.me|telegram\.dog)/[^\s<>\"'()]+)",
+    re.IGNORECASE,
+)
+_URL_TRAILING_PUNCT = ".,;!?،؛»)\"'|"
+
+
+def extract_and_strip_admin_url(raw_text: str) -> tuple[str, str]:
+    """
+    Extract the first URL (`http(s)://...` or `t.me/...`) from admin text
+    and strip all raw URLs from the body so captions only show a clean `🔗 سەرچاوە` link.
+    """
+    text = (raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    extracted_url = ""
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal extracted_url
+        candidate = match.group(0).rstrip(_URL_TRAILING_PUNCT)
+        if not extracted_url and candidate:
+            if not candidate.lower().startswith(("http://", "https://")):
+                candidate = f"https://{candidate}"
+            extracted_url = candidate
+        return " "
+
+    stripped = _ADMIN_URL_RE.sub(_replace, text)
+    cleaned_lines: list[str] = []
+    for line in stripped.split("\n"):
+        # Clean stray prefix markers left after removing a standalone source URL
+        line_clean = re.sub(
+            r"(?:🔗|سەرچاوە|source)\s*[:\-–—]?\s*$",
+            "",
+            line,
+            flags=re.IGNORECASE,
+        )
+        line_clean = re.sub(r"[ \t]{2,}", " ", line_clean).strip()
+        if line_clean:
+            cleaned_lines.append(line_clean)
+
+    return "\n".join(cleaned_lines), extracted_url
 
 
 def _parse_int_id(value: Any) -> Optional[int]:
@@ -147,14 +186,16 @@ def infer_admin_article_category(headline: str, summary: str) -> str:
 def build_admin_article(raw_text: str, source_name: str = "") -> Article:
     """
     Construct an Article directly from the admin's Kurdish text with zero
-    translation or LLM rewriting.
+    translation or LLM rewriting, extracting any embedded source URL cleanly.
     """
-    headline, summary, is_breaking = parse_admin_post_text(raw_text)
+    clean_text, extracted_url = extract_and_strip_admin_url(raw_text)
+    headline, summary, is_breaking = parse_admin_post_text(clean_text)
     category = infer_admin_article_category(headline, summary)
     return Article(
         original_title=headline,
         translated_title=headline,
         translated_summary=summary,
+        original_url=extracted_url,
         category=category,
         source_name=source_name,
         is_breaking=is_breaking,
@@ -252,8 +293,16 @@ async def publish_admin_manual_post(
 
     card_path: Optional[Path] = None
     try:
-        image_bytes = await download_highest_res_photo(bot, message)
         article = build_admin_article(raw_text)
+        if not article.translated_title:
+            await _reply_admin(
+                bot,
+                message,
+                "⚠️ تکایە دەق یان سەردێڕ بنێرە لەگەڵ پۆستەکەدا.",
+            )
+            return {"status": "rejected", "reason": "empty_text"}
+
+        image_bytes = await download_highest_res_photo(bot, message)
 
         card_path = await generator.generate_card_file(
             article,
