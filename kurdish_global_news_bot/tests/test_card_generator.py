@@ -287,9 +287,14 @@ class TestNewsCardGenerator:
             ("Woman speaks about diplomacy globally", None),
             ("Officials told us talks continue today", None),
             ("ئاڵۆزییەکانی ڕۆژهەڵاتی ناوەڕاست لە ئوردن باس کرا", "jordan.png"),
+            ("کۆمپانیای نەوتی باکوور بەرهەمهێنانی زیاد کرد", None),
+            ("هێزە ئەمنییەکان لە ناوچەی ئەسکەندەرییە لە پارێزگای بابل ئۆپەراسیۆنیان ئەنجامدا", "iraq.png"),
+            ("ئەنبار و دیالە و نەینەوا و سەڵاحەدین و زیقار و میسان و واست و موسەننا و قادسیە", "iraq.png"),
+            ("پەلاماری دانیشتوان بۆ سەر فەلەستینییەکان و موڵکەکانیان لە کەرتی ڕۆژئاوا", "palestine.png"),
+            ("بەیاننامەیەک لە کەرتی رۆژئاوا و فەلەستینی بڵاوکرایەوە", "palestine.png"),
             # Kurdistan & higher priority over Iraq
             ("کوردستان و هەرێمی کوردستان لە هەولێر و سلێمانی و دهۆک و کەرکوک و هەڵەبجە", "kurdistan.png"),
-            ("باشوری کوردستان و رۆژهەلات و باکوور و رۆژئاوە و پێشمەرگە", "kurdistan.png"),
+            ("باشوری کوردستان و باکووری کوردستان و ڕۆژهەڵاتی کوردستان و ڕۆژئاوای کوردستان و پێشمەرگە", "kurdistan.png"),
             ("عێراق و بەغدا لەگەڵ هەولێر و کەرکوک ڕێککەوتن", "kurdistan.png"),
             ("Kurdistan forces in Erbil, Sulaymaniyah, Duhok, and Kirkuk", "kurdistan.png"),
             ("Baghdad talks with Erbil and Kurdistan", "kurdistan.png"),
@@ -439,4 +444,36 @@ class TestNewsCardGenerator:
             # Kurdistan flag golden sun emblem sits centered at (MARGIN_X + 45, 36 + 28)
             center_px = rendered.getpixel((MARGIN_X + 45, 36 + 28))
             assert center_px[0] > 180 and center_px[1] > 140  # yellow sun emblem rendered over dark photo!
+
+    def test_flag_detection_headline_priority_and_specific_cases(self):
+        generator = NewsCardGenerator()
+
+        # 1. Babel / Alexandria (Iraq) must resolve to iraq.png even if body mentions other places
+        babil_art = Article(
+            translated_title="هێزە ئەمنییەکان لە ناوچەی ئەسکەندەرییە لە پارێزگای بابل ئۆپەراسیۆنێکیان ئەنجامدا",
+            translated_summary="لە هەولێر و واشنتۆن باس لە دۆخەکە کرا",
+        )
+        assert generator._resolve_article_flag_path(babil_art).name == "iraq.png"
+
+        # 2. Palestinians in the West Bank must resolve to palestine.png, never kurdistan.png
+        west_bank_art = Article(
+            translated_title="پەلاماری دانیشتوان بۆ سەر فەلەستینییەکان و موڵکەکانیان لە کەرتی ڕۆژئاوا",
+            translated_summary="بەپێی ڕاپۆرتەکان بارودۆخەکە لە تەلئەبیب و واشنتۆن تاوتوێ کرا",
+        )
+        assert generator._resolve_article_flag_path(west_bank_art).name == "palestine.png"
+
+        # 3. Erbil / Kurdistan Region continues to resolve to kurdistan.png
+        kurdistan_art = Article(
+            translated_title="سەرۆکی حکومەتی هەرێمی کوردستان لە هەولێر پێشوازی لە شاندێک کرد",
+            translated_summary="لە کۆبوونەوەکەدا باس لە پەیوەندییەکانی بەغدا و واشنتۆن کرا",
+        )
+        assert generator._resolve_article_flag_path(kurdistan_art).name == "kurdistan.png"
+
+    def test_workflow_schedule_every_5_minutes_and_limit_5(self):
+        workflow_path = ASSETS_DIR.parent.parent / ".github" / "workflows" / "news_bot.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        assert "cron: '*/5 * * * *'" in workflow_text
+        assert "BATCH_TARGET_POSTS: '5'" in workflow_text
+        assert "BATCH_PUBLISH_LIMIT: '5'" in workflow_text
+        assert "MAX_NORMAL_POSTS_PER_CYCLE: '5'" in workflow_text
 

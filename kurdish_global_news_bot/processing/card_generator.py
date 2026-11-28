@@ -85,14 +85,15 @@ _COUNTRY_FLAG_KEYWORDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
         "kurdistan.png",
         (
             "هەرێمی کوردستان",
-            "باشوری کوردستان",
             "باشووری کوردستان",
+            "باشوری کوردستان",
+            "باکووری کوردستان",
+            "ڕۆژهەڵاتی کوردستان",
+            "رۆژهەڵاتی کوردستان",
+            "رۆژهەلاتی کوردستان",
+            "ڕۆژئاوای کوردستان",
+            "رۆژئاوای کوردستان",
             "کوردستان",
-            "رۆژهەلات",
-            "ڕۆژهەڵات",
-            "باکوور",
-            "رۆژئاوە",
-            "ڕۆژئاوا",
             "هەولێر",
             "سلێمانی",
             "دهۆک",
@@ -154,7 +155,24 @@ _COUNTRY_FLAG_KEYWORDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ),
     (
         "iraq.png",
-        ("عێراق", "بەغدا", "بەسرە", "نەجەف", "کەربەلا", "مووسڵ"),
+        (
+            "عێراق",
+            "بەغدا",
+            "بەسرە",
+            "نەجەف",
+            "کەربەلا",
+            "مووسڵ",
+            "بابل",
+            "ئەنبار",
+            "دیالە",
+            "نەینەوا",
+            "سەڵاحەدین",
+            "زیقار",
+            "میسان",
+            "واست",
+            "موسەننا",
+            "قادسیە",
+        ),
         ("Iraq", "Baghdad"),
     ),
     (
@@ -179,7 +197,18 @@ _COUNTRY_FLAG_KEYWORDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ),
     (
         "palestine.png",
-        ("کەرتی غەززە", "فەلەستین", "غەززە", "ڕامەڵڵا", "ڕەفەح", "خان یونس"),
+        (
+            "کەرتی ڕۆژئاوا",
+            "کەرتی رۆژئاوا",
+            "کەرتی غەززە",
+            "فەلەستینییەکان",
+            "فەلەستینی",
+            "فەلەستین",
+            "غەززە",
+            "ڕامەڵڵا",
+            "ڕەفەح",
+            "خان یونس",
+        ),
         ("Palestine", "Gaza", "Ramallah"),
     ),
     (
@@ -253,14 +282,7 @@ _COUNTRY_FLAG_KEYWORDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
 def _compile_country_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
     compiled: list[tuple[str, re.Pattern[str]]] = []
     for filename, ku_terms, en_terms in _COUNTRY_FLAG_KEYWORDS:
-        ku_parts: list[str] = []
-        for term in ku_terms:
-            if term in {"رۆژهەلات", "ڕۆژهەڵات"}:
-                ku_parts.append(rf"{_KU_LEFT}{re.escape(term)}(?!ی\s+ناوە[ڕر]است){_KU_RIGHT}")
-            elif term == "باکوور":
-                ku_parts.append(rf"(?<!کۆریای\s)(?<!ئەمریکای\s){_KU_LEFT}{re.escape(term)}{_KU_RIGHT}")
-            else:
-                ku_parts.append(rf"{_KU_LEFT}{re.escape(term)}{_KU_RIGHT}")
+        ku_parts = [rf"{_KU_LEFT}{re.escape(term)}{_KU_RIGHT}" for term in ku_terms]
         en_parts: list[str] = []
         for term in en_terms:
             if term == "US":
@@ -276,24 +298,28 @@ def _compile_country_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
 _COMPILED_COUNTRY_FLAG_PATTERNS = _compile_country_patterns()
 
 
-def detect_country_flag_filename(text: str) -> Optional[str]:
-    """Detect the highest-priority country/region flag PNG filename in text."""
-    if not text or not text.strip():
-        return None
-    matches: list[tuple[int, str]] = []
-    matched_names: set[str] = set()
-    for filename, pattern in _COMPILED_COUNTRY_FLAG_PATTERNS:
-        m = pattern.search(text)
-        if m is not None:
-            matches.append((m.start(), filename))
-            matched_names.add(filename)
-    if not matches:
-        return None
-    matches.sort(key=lambda item: item[0])
-    winner = matches[0][1]
-    if winner == "iraq.png" and "kurdistan.png" in matched_names:
-        return "kurdistan.png"
-    return winner
+def detect_country_flag_filename(text: str, body_text: str = "") -> Optional[str]:
+    """
+    Detect the highest-priority country/region flag PNG filename.
+    Matches against headline/text first before falling back to body_text.
+    """
+    for segment in (text, body_text):
+        if not segment or not segment.strip():
+            continue
+        matches: list[tuple[int, str]] = []
+        matched_names: set[str] = set()
+        for filename, pattern in _COMPILED_COUNTRY_FLAG_PATTERNS:
+            m = pattern.search(segment)
+            if m is not None:
+                matches.append((m.start(), filename))
+                matched_names.add(filename)
+        if matches:
+            matches.sort(key=lambda item: item[0])
+            winner = matches[0][1]
+            if winner == "iraq.png" and "kurdistan.png" in matched_names:
+                return "kurdistan.png"
+            return winner
+    return None
 
 
 class NewsCardGenerator:
@@ -583,15 +609,17 @@ class NewsCardGenerator:
         return lines, font, int(38 * 1.42)
 
     def _resolve_article_flag_path(self, article: Article) -> Optional[Path]:
-        """Resolve local PNG flag icon for an article's headline/text, if matched."""
-        headline_text = f"{article.translated_title or ''} {article.original_title or ''}"
-        filename = detect_country_flag_filename(headline_text)
-        if filename is None:
-            filename = detect_country_flag_filename(article.translated_summary or "")
-        if filename is None:
-            return None
-        flag_path = self._assets_dir / "flags" / filename
-        return flag_path if flag_path.exists() else None
+        """Resolve local PNG flag icon from headline/title first, falling back to body text."""
+        for candidate in (
+            article.translated_title or "",
+            article.original_title or "",
+            article.translated_summary or "",
+        ):
+            filename = detect_country_flag_filename(candidate)
+            if filename is not None:
+                flag_path = self._assets_dir / "flags" / filename
+                return flag_path if flag_path.exists() else None
+        return None
 
     def _draw_country_flag_badge(self, canvas: Image.Image, flag_path: Path) -> None:
         """Draw a polished rounded country flag badge in the top-left corner."""

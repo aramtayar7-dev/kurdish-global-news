@@ -1,6 +1,8 @@
 name: Kurdish Global News Bot
 
 on:
+  schedule:
+    - cron: '*/5 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime
 
 concurrency:
@@ -65,5 +67,11 @@ jobs:
           ENABLE_LOCAL_LLM: 'false'
           AUTO_PUBLISH: 'true'
           MAX_ARTICLE_AGE_MINUTES: '60'
+          BATCH_TARGET_POSTS: '5'
+          BATCH_PUBLISH_LIMIT: '5'
+          MAX_NORMAL_POSTS_PER_CYCLE: '5'
+          BATCH_REST_COOLDOWN_MINUTES: '0'
+          BATCH_PUBLISH_INTERVAL_SECONDS: '10'
+          BATCH_ALIGN_TO_MINUTE_BOUNDARY: 'false'
         run: |
           python main.py --once
