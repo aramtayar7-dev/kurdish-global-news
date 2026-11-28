@@ -21,6 +21,7 @@ def _make_mock_bot() -> MagicMock:
     bot = MagicMock()
     bot.defaults = None
     bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=4321))
+    bot.send_video = AsyncMock(return_value=SimpleNamespace(message_id=4322))
     bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=99))
 
     tg_file = MagicMock()
@@ -148,6 +149,69 @@ async def test_admin_post_with_url_strips_raw_url_and_renders_clean_source_link(
     # Raw URL must NOT appear in body lines outside the bottom <a href="..."> anchor
     caption_without_anchor = caption.replace('<a href="http://t.me/Kurdistan24news">سەرچاوە</a>', "")
     assert "http://t.me/Kurdistan24news" not in caption_without_anchor
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "media_kwargs,expected_file_id",
+    [
+        ({"video": SimpleNamespace(file_id="BAACAgIAAxkBAAI_vid123")}, "BAACAgIAAxkBAAI_vid123"),
+        ({"animation": SimpleNamespace(file_id="CgACAgIAAxkBAAI_anim456")}, "CgACAgIAAxkBAAI_anim456"),
+        (
+            {"document": SimpleNamespace(file_id="BQACAgIAAxkBAAI_doc789", mime_type="video/mp4")},
+            "BQACAgIAAxkBAAI_doc789",
+        ),
+    ],
+)
+async def test_admin_manual_video_post_publishes_directly_via_send_video(
+    media_kwargs: dict,
+    expected_file_id: str,
+):
+    bot = _make_mock_bot()
+    card_gen = MagicMock()
+    card_gen.generate_card_file = AsyncMock()
+
+    msg = _make_message(
+        user_id=111222333,
+        caption=(
+            "بەپەلە | دیمەنی ڕاستەوخۆ لە هەولێرەوە\n"
+            "کۆبوونەوەی بەپەلە بەڕێوەچوو https://t.me/Kurdistan24news/555"
+        ),
+    )
+    for k, v in media_kwargs.items():
+        setattr(msg, k, v)
+
+    result = await publish_admin_manual_post(
+        bot,
+        msg,
+        card_generator=card_gen,
+        channel_id="@KurdishGlobalNews",
+        admin_chat_id=111222333,
+        channel_handle="@KurdishGlobalNews",
+    )
+
+    assert result["status"] == "published"
+    assert result["used_video"] is True
+    assert result["used_photo"] is False
+    assert result["is_breaking"] is True
+    # Zero download / zero re-encoding / zero card generation on Vercel
+    bot.get_file.assert_not_called()
+    card_gen.generate_card_file.assert_not_called()
+    bot.send_photo.assert_not_called()
+
+    send_video_kwargs = bot.send_video.await_args.kwargs
+    assert send_video_kwargs["chat_id"] == "@KurdishGlobalNews"
+    assert send_video_kwargs["video"] == expected_file_id
+    assert send_video_kwargs["disable_notification"] is False
+    caption = send_video_kwargs["caption"]
+    assert "🔴 بەپەلە |" in caption
+    assert '<a href="https://t.me/Kurdistan24news/555">سەرچاوە</a>' in caption
+    clean_cap = caption.replace('<a href="https://t.me/Kurdistan24news/555">سەرچاوە</a>', "")
+    assert "https://t.me/Kurdistan24news/555" not in clean_cap
+
+    reply_text = bot.send_message.await_args.kwargs["text"]
+    assert "✅ بڵاوکرایەوە" in reply_text
+    assert "https://t.me/KurdishGlobalNews/4322" in reply_text
 
 
 @pytest.mark.asyncio

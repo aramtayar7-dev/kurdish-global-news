@@ -217,6 +217,30 @@ async def download_highest_res_photo(
     return bytes(data)
 
 
+def extract_admin_video_file_id(message: Optional[Message]) -> Optional[str]:
+    """
+    Extract Telegram `file_id` for video, animation, or video/* document
+    without downloading or re-encoding the media.
+    """
+    if message is None:
+        return None
+
+    for attr in ("video", "animation"):
+        media = getattr(message, attr, None)
+        file_id = getattr(media, "file_id", None) if media is not None else None
+        if isinstance(file_id, str) and file_id.strip():
+            return file_id.strip()
+
+    doc = getattr(message, "document", None)
+    if doc is not None:
+        mime = str(getattr(doc, "mime_type", "") or "").strip().lower()
+        file_id = getattr(doc, "file_id", None)
+        if mime.startswith("video/") and isinstance(file_id, str) and file_id.strip():
+            return file_id.strip()
+
+    return None
+
+
 def _build_channel_message_link(
     channel_id: Any,
     message_id: Optional[int],
@@ -261,10 +285,12 @@ async def publish_admin_manual_post(
     channel_id: Any = None,
     admin_chat_id: Any = None,
     channel_handle: Optional[str] = None,
+    video_file_id: Optional[str] = None,
+    caption_override: Optional[str] = None,
 ) -> dict[str, Any]:
     """
-    Validate admin authority, render the branded news card, publish immediately
-    to TELEGRAM_CHANNEL_ID, and confirm back to the admin in private chat.
+    Validate admin authority, render the branded news card (or pass through video file_id),
+    publish immediately to TELEGRAM_CHANNEL_ID, and confirm back to the admin in private chat.
     """
     if not is_authorized_admin_message(message, admin_chat_id=admin_chat_id):
         sender = getattr(getattr(message, "from_user", None), "id", None)
@@ -273,9 +299,13 @@ async def publish_admin_manual_post(
 
     assert message is not None
     raw_text = (
-        getattr(message, "caption", None)
-        or getattr(message, "text", None)
-        or ""
+        caption_override
+        if caption_override is not None
+        else (
+            getattr(message, "caption", None)
+            or getattr(message, "text", None)
+            or ""
+        )
     ).strip()
 
     if not raw_text:
@@ -290,6 +320,11 @@ async def publish_admin_manual_post(
     handle = channel_handle if channel_handle is not None else config.CHANNEL_HANDLE
     generator = card_generator or NewsCardGenerator()
     fmt = formatter or ContentFormatter()
+    resolved_video_id = (
+        video_file_id.strip()
+        if isinstance(video_file_id, str) and video_file_id.strip()
+        else extract_admin_video_file_id(message)
+    )
 
     card_path: Optional[Path] = None
     try:
@@ -302,23 +337,36 @@ async def publish_admin_manual_post(
             )
             return {"status": "rejected", "reason": "empty_text"}
 
-        image_bytes = await download_highest_res_photo(bot, message)
-
-        card_path = await generator.generate_card_file(
-            article,
-            image_bytes=image_bytes,
-            is_breaking=article.is_breaking,
-        )
         caption = fmt.format_caption(article, has_inline_source_button=False)
 
-        with open(card_path, "rb") as photo_fh:
-            sent_msg = await bot.send_photo(
+        if resolved_video_id:
+            sent_msg = await bot.send_video(
                 chat_id=target_channel,
-                photo=photo_fh,
+                video=resolved_video_id,
                 caption=caption[:1024],
                 parse_mode=ParseMode.HTML,
                 disable_notification=not article.is_breaking,
+                supports_streaming=True,
             )
+            used_photo = False
+            used_video = True
+        else:
+            image_bytes = await download_highest_res_photo(bot, message)
+            card_path = await generator.generate_card_file(
+                article,
+                image_bytes=image_bytes,
+                is_breaking=article.is_breaking,
+            )
+            with open(card_path, "rb") as photo_fh:
+                sent_msg = await bot.send_photo(
+                    chat_id=target_channel,
+                    photo=photo_fh,
+                    caption=caption[:1024],
+                    parse_mode=ParseMode.HTML,
+                    disable_notification=not article.is_breaking,
+                )
+            used_photo = image_bytes is not None
+            used_video = False
 
         msg_id = getattr(sent_msg, "message_id", None)
         link = _build_channel_message_link(target_channel, msg_id, handle)
@@ -332,7 +380,8 @@ async def publish_admin_manual_post(
             "message_id": msg_id,
             "is_breaking": article.is_breaking,
             "category": article.category,
-            "used_photo": image_bytes is not None,
+            "used_photo": used_photo,
+            "used_video": used_video,
         }
     except Exception as exc:
         logger.exception("Admin manual publish failed: %s", exc)

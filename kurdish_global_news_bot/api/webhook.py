@@ -25,7 +25,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from telegram import Bot, Update
 
 import config
-from tg_bot.admin_poster import publish_admin_manual_post
+from tg_bot.admin_poster import extract_admin_video_file_id, publish_admin_manual_post
 
 
 async def process_webhook_payload(
@@ -49,6 +49,9 @@ async def process_webhook_payload(
         if message is None:
             return {"ok": True, "status": "ignored"}
 
+        video_file_id = extract_admin_video_file_id(message)
+        video_caption = getattr(message, "caption", None) if video_file_id else None
+
         result = await publish_admin_manual_post(
             tg_bot,
             message,
@@ -56,6 +59,8 @@ async def process_webhook_payload(
             formatter=formatter,
             channel_id=channel_id,
             admin_chat_id=admin_chat_id,
+            video_file_id=video_file_id,
+            caption_override=video_caption,
         )
         return {"ok": True, **result}
     finally:

@@ -15,6 +15,7 @@ def _make_mock_bot() -> MagicMock:
     bot = MagicMock()
     bot.defaults = None
     bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=777))
+    bot.send_video = AsyncMock(return_value=SimpleNamespace(message_id=779))
     bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=888))
     return bot
 
@@ -112,6 +113,52 @@ def test_vercel_webhook_publishes_admin_post_and_blocks_non_admin(tmp_path: Path
     assert res_ok["status"] == "published"
     assert res_ok["is_breaking"] is True
     bot.send_photo.assert_awaited_once()
+    assert "✅ بڵاوکرایەوە" in bot.send_message.await_args.kwargs["text"]
+
+
+def test_vercel_webhook_forwards_admin_video_file_id_without_download(tmp_path: Path):
+    bot = _make_mock_bot()
+    card_gen = MagicMock()
+    card_gen.generate_card_file = AsyncMock()
+
+    video_payload = json.dumps(
+        {
+            "update_id": 202,
+            "message": {
+                "message_id": 5,
+                "date": 1700000002,
+                "chat": {"id": 111222333, "type": "private"},
+                "from": {"id": 111222333, "is_bot": False, "first_name": "Admin"},
+                "caption": "گرتە ڤیدیۆیی ڕووداوەکە https://reuters.com/world/clip-1",
+                "video": {
+                    "file_id": "VID_FILE_ID_999",
+                    "file_unique_id": "uniq999",
+                    "width": 1280,
+                    "height": 720,
+                    "duration": 12,
+                },
+            },
+        }
+    ).encode("utf-8")
+
+    status, body = handle_webhook_request(
+        video_payload,
+        headers={"X-Telegram-Bot-Api-Secret-Token": "sec"},
+        webhook_secret="sec",
+        bot=bot,
+        card_generator=card_gen,
+        channel_id="@KurdishGlobalNews",
+        admin_chat_id=111222333,
+    )
+    assert status == 200
+    assert body["status"] == "published"
+    assert body["used_video"] is True
+    card_gen.generate_card_file.assert_not_called()
+    bot.send_photo.assert_not_called()
+    bot.send_video.assert_awaited_once()
+    v_kwargs = bot.send_video.await_args.kwargs
+    assert v_kwargs["video"] == "VID_FILE_ID_999"
+    assert '<a href="https://reuters.com/world/clip-1">سەرچاوە</a>' in v_kwargs["caption"]
     assert "✅ بڵاوکرایەوە" in bot.send_message.await_args.kwargs["text"]
 
 
