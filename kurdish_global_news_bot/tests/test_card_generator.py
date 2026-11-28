@@ -338,12 +338,17 @@ class TestNewsCardGenerator:
             ("India talks in New Delhi", "india.png"),
             ("پاکستان و ئیسلامئاباد کۆبوونەوە", "pakistan.png"),
             ("Pakistan officials in Islamabad", "pakistan.png"),
+            ("لە ئەفغانستان و کابول و کابوڵ و کۆنار و قەندەهار تالیبان ڕایگەیاند", "afghanistan.png"),
+            ("Afghanistan blast reported in Kabul", "afghanistan.png"),
+            # Outlet dateline stripping
+            ("کۆبوونەوەیەکی گشتی بەڕێوەچوو - هەولێر-کوردستان24", None),
+            ("بەپەلە | هەولێر - کوردستان24 و Kurdistan 24 و ڕووداو و Rudaw", None),
         ],
     )
     def test_detect_country_flag_all_10_countries_and_guards(self, text: str, expected_flag: str | None):
         assert detect_country_flag_filename(text) == expected_flag
 
-    def test_all_30_country_flag_assets_exist(self):
+    def test_all_31_country_flag_assets_exist(self):
         expected = {
             "oman.png", "bahrain.png", "yemen.png", "lebanon.png", "egypt.png",
             "jordan.png", "qatar.png", "uae.png", "kuwait.png", "saudi.png",
@@ -351,6 +356,7 @@ class TestNewsCardGenerator:
             "palestine.png", "usa.png", "russia.png", "china.png", "uk.png",
             "kurdistan.png", "france.png", "germany.png", "ukraine.png", "italy.png",
             "spain.png", "canada.png", "japan.png", "india.png", "pakistan.png",
+            "afghanistan.png",
         }
         flags_dir = ASSETS_DIR / "flags"
         for fname in expected:
@@ -469,11 +475,32 @@ class TestNewsCardGenerator:
         )
         assert generator._resolve_article_flag_path(kurdistan_art).name == "kurdistan.png"
 
-    def test_workflow_schedule_every_5_minutes_and_limit_5(self):
+    def test_workflow_dispatch_only_and_limit_5(self):
         workflow_path = ASSETS_DIR.parent.parent / ".github" / "workflows" / "news_bot.yml"
         workflow_text = workflow_path.read_text(encoding="utf-8")
-        assert "cron: '*/5 * * * *'" in workflow_text
+        assert "workflow_dispatch:" in workflow_text
+        assert "schedule:" not in workflow_text
+        assert "cron:" not in workflow_text
         assert "BATCH_TARGET_POSTS: '5'" in workflow_text
         assert "BATCH_PUBLISH_LIMIT: '5'" in workflow_text
         assert "MAX_NORMAL_POSTS_PER_CYCLE: '5'" in workflow_text
+
+    def test_headline_only_matching_and_afghanistan_dateline_isolation(self):
+        generator = NewsCardGenerator()
+
+        # 1. Afghanistan headline + body containing Erbil-Kurdistan24 dateline -> afghanistan.png
+        afg_art = Article(
+            translated_title="لە تەقینەوەیەکدا لە نزیک قوتابخانەیەک لە ئەفغانستان حەوت قوتابی گیانیان لەدەستدا",
+            translated_summary="هەولێر-کوردستان24: لە ناوچەکەدا تەقینەوە ڕوویدا و تیمەکان گەیشتن.",
+            source_name="Kurdistan24",
+        )
+        assert generator._resolve_article_flag_path(afg_art).name == "afghanistan.png"
+
+        # 2. Unmapped country headline + body containing هەولێر-کوردستان24 -> None (never falls back to body)
+        unmapped_art = Article(
+            translated_title="لە بەرازیل کۆنفرانسی نێودەوڵەتی ژینگە بەڕێوەچوو",
+            translated_summary="هەولێر-کوردستان24: بەپێی زانیارییەکان شاندەکان لە هەولێرەوە چاودێری کۆنفرانسەکە دەکەن.",
+            source_name="Kurdistan24",
+        )
+        assert generator._resolve_article_flag_path(unmapped_art) is None
 

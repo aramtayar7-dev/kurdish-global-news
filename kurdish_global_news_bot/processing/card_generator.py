@@ -276,7 +276,29 @@ _COUNTRY_FLAG_KEYWORDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
         ("پاکستان", "ئیسلامئاباد"),
         ("Pakistan", "Islamabad"),
     ),
+    (
+        "afghanistan.png",
+        ("ئەفغانستان", "کابول", "کابوڵ", "کۆنار", "قەندەهار", "تالیبان"),
+        ("Afghanistan", "Kabul"),
+    ),
 )
+
+_OUTLET_DATELINE_STRIP_RE = re.compile(
+    r"(?:"
+    r"هەولێر\s*[-–—:|]+\s*کوردستان\s*(?:24|٢٤)?|"
+    r"Erbil\s*[-–—:|]+\s*Kurdistan\s*(?:24)?|"
+    r"کوردستان\s*(?:24|٢٤)|"
+    r"Kurdistan\s*24|"
+    r"\bRudaw\b|"
+    r"(?:ڕووداو|رووداو)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _strip_outlet_datelines(text: str) -> str:
+    """Remove news outlet names and datelines before country-flag matching."""
+    return _OUTLET_DATELINE_STRIP_RE.sub(" ", text or "")
 
 
 def _compile_country_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
@@ -298,28 +320,28 @@ def _compile_country_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
 _COMPILED_COUNTRY_FLAG_PATTERNS = _compile_country_patterns()
 
 
-def detect_country_flag_filename(text: str, body_text: str = "") -> Optional[str]:
+def detect_country_flag_filename(text: str) -> Optional[str]:
     """
-    Detect the highest-priority country/region flag PNG filename.
-    Matches against headline/text first before falling back to body_text.
+    Detect the highest-priority country/region flag PNG filename from headline text.
+    Strips outlet names/datelines before matching and never scans article body text.
     """
-    for segment in (text, body_text):
-        if not segment or not segment.strip():
-            continue
-        matches: list[tuple[int, str]] = []
-        matched_names: set[str] = set()
-        for filename, pattern in _COMPILED_COUNTRY_FLAG_PATTERNS:
-            m = pattern.search(segment)
-            if m is not None:
-                matches.append((m.start(), filename))
-                matched_names.add(filename)
-        if matches:
-            matches.sort(key=lambda item: item[0])
-            winner = matches[0][1]
-            if winner == "iraq.png" and "kurdistan.png" in matched_names:
-                return "kurdistan.png"
-            return winner
-    return None
+    cleaned = _strip_outlet_datelines(text)
+    if not cleaned.strip():
+        return None
+    matches: list[tuple[int, str]] = []
+    matched_names: set[str] = set()
+    for filename, pattern in _COMPILED_COUNTRY_FLAG_PATTERNS:
+        m = pattern.search(cleaned)
+        if m is not None:
+            matches.append((m.start(), filename))
+            matched_names.add(filename)
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0])
+    winner = matches[0][1]
+    if winner == "iraq.png" and "kurdistan.png" in matched_names:
+        return "kurdistan.png"
+    return winner
 
 
 class NewsCardGenerator:
@@ -609,11 +631,10 @@ class NewsCardGenerator:
         return lines, font, int(38 * 1.42)
 
     def _resolve_article_flag_path(self, article: Article) -> Optional[Path]:
-        """Resolve local PNG flag icon from headline/title first, falling back to body text."""
+        """Resolve local PNG flag icon strictly from headline/title only (never body or source)."""
         for candidate in (
             article.translated_title or "",
             article.original_title or "",
-            article.translated_summary or "",
         ):
             filename = detect_country_flag_filename(candidate)
             if filename is not None:
