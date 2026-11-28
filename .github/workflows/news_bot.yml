@@ -1,12 +1,10 @@
 name: Kurdish Global News Bot
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime
+  workflow_dispatch: # Triggered every 5 minutes externally via cron-job.org or manually from Actions tab
 
 concurrency:
-  group: news-bot-run
+  group: kurdish-global-news-bot
   cancel-in-progress: false
 
 jobs:
